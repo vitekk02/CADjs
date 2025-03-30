@@ -1,11 +1,9 @@
+// src/navbar/navbar.tsx
 import React, { FC, useState } from "react";
+import { useScene, SceneMode } from "../contexts/SceneContext";
 
-interface Props {
-  mode: "draw" | "move" | "union";
-  setMode: (mode: "draw" | "move" | "union") => void;
-}
-
-const Navbar: FC<Props> = ({ mode, setMode }) => {
+const Navbar: FC = () => {
+  const { mode, setMode, currentShape, setCurrentShape } = useScene();
   const [activeMenu, setActiveMenu] = useState<"operations" | "create" | null>(
     null
   );
@@ -82,27 +80,37 @@ const Navbar: FC<Props> = ({ mode, setMode }) => {
             >
               <ul className="flex flex-col">
                 <li
-                  onClick={() => setActiveMenu(null)}
-                  className="px-4 py-2 hover:bg-gray-700 cursor-pointer"
+                  onClick={() => setCurrentShape("rectangle")}
+                  className={`px-4 py-2 hover:bg-gray-700 cursor-pointer ${
+                    currentShape === "rectangle" ? "bg-gray-700" : ""
+                  }`}
                 >
                   Create Rectangle
                 </li>
                 <li
-                  onClick={() => setActiveMenu(null)}
-                  className="px-4 py-2 hover:bg-gray-700 cursor-pointer"
+                  onClick={() => setCurrentShape("circle")}
+                  className={`px-4 py-2 hover:bg-gray-700 cursor-pointer ${
+                    currentShape === "circle" ? "bg-gray-700" : ""
+                  }`}
                 >
                   Create Circle
                 </li>
                 <li
-                  onClick={() => setActiveMenu(null)}
-                  className="px-4 py-2 hover:bg-gray-700 cursor-pointer"
+                  onClick={() => setCurrentShape("triangle")}
+                  className={`px-4 py-2 hover:bg-gray-700 cursor-pointer ${
+                    currentShape === "triangle" ? "bg-gray-700" : ""
+                  }`}
                 >
                   Create Triangle
                 </li>
-                {/* Add additional shape options here */}
               </ul>
             </div>
           )}
+        </div>
+
+        {/* Display current mode indicator */}
+        <div className="ml-auto px-4 py-2 bg-gray-800 rounded">
+          Mode: {mode.charAt(0).toUpperCase() + mode.slice(1)}
         </div>
       </nav>
     </div>

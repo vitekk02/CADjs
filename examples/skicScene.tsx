@@ -1,56 +1,124 @@
-// src/ThreeScene.tsx
-import React, { useRef, useEffect } from "react";
+// examples/skicScene.tsx
+import React, { useRef, useEffect, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
-import {
-  Brep,
-  BrepConnection,
-  BrepGraph,
-  BrepNode,
-  Edge,
-  Face,
-  Vertex,
-} from "../src/geometry";
-import { unionBrepCompound } from "../src/convertBRepToGeometry";
+import { Brep, Edge, Face, Vertex } from "../src/geometry";
+import { useScene } from "../src/contexts/SceneContext";
+import { createTriangleBRep } from "../src/models/2d/triangle";
+import { createCircleBRep } from "../src/models/2d/circle";
 
-interface ThreeSceneProps {
-  mode: "draw" | "move" | "union";
-}
+const SkicScene: React.FC = () => {
+  // Since we now get state fields directly from context, not nested under "state"
+  const {
+    elements, // Was state.elements
+    selectedElements, // Was state.selectedElements
+    mode, // Was state.mode
+    addElement,
+    updateElementPosition,
+    selectElement,
+    deselectElement,
+    unionSelectedElements,
+    getObject,
+    currentShape,
+    setCurrentShape,
+  } = useScene();
 
-let globalIdCounter = 1; // for unique node IDs
-
-const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
   const mountRef = useRef<HTMLDivElement>(null);
 
   // --- Three.js Core Objects ---
-  const sceneRef = useRef<THREE.Scene>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-
-  // --- Connectivity Graph ---
-  const brepGraphRef = useRef<BrepGraph>(new BrepGraph());
-
-  // --- Draggable Objects (now generic Object3D to support both Mesh and Group) ---
-  const draggableObjectsRef = useRef<THREE.Object3D[]>([]);
 
   // --- Drawing State ---
   const isDrawingRef = useRef(false);
   const startPointRef = useRef<THREE.Vector3 | null>(null);
-  const previewRectRef = useRef<THREE.Mesh | null>(null);
+  const previewShapeRef = useRef<THREE.Mesh | null>(null);
 
   // --- Move Mode State ---
-  const selectedObjectRef = useRef<THREE.Object3D | null>(null);
   const moveOffsetRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const initialMousePosRef = useRef<{ x: number; y: number } | null>(null);
   const isDraggingRef = useRef(false);
+  const selectedMoveNodeIdRef = useRef<string | null>(null);
 
-  // --- Union Mode: Selected objects for union (generic Object3D) ---
-  const selectedForUnionRef = useRef<THREE.Object3D[]>([]);
+  // For forcing updates to the scene
+  const [forceUpdate, setForceUpdate] = useState(0);
+
+  // Add functions for creating these shapes
+  const createTriangle = (start: THREE.Vector3, end: THREE.Vector3) => {
+    // Create a triangle using the start and end points
+    // The third point will be calculated to form an isosceles triangle
+    const direction = new THREE.Vector3().subVectors(end, start);
+    const perpendicular = new THREE.Vector3(
+      -direction.y,
+      direction.x,
+      0
+    ).normalize();
+    const height = direction.length() * 0.866; // Height for equilateral triangle
+    const thirdPoint = new THREE.Vector3().addVectors(
+      start,
+      new THREE.Vector3().addVectors(
+        new THREE.Vector3().copy(direction).multiplyScalar(0.5),
+        new THREE.Vector3().copy(perpendicular).multiplyScalar(height)
+      )
+    );
+
+    const brep = createTriangleBRep(start, end, thirdPoint);
+
+    // Calculate center position
+    const center = new THREE.Vector3()
+      .add(start)
+      .add(end)
+      .add(thirdPoint)
+      .divideScalar(3);
+
+    // Create a visual mesh for the triangle
+    const vertices = [
+      new THREE.Vector3(start.x, start.y, start.z),
+      new THREE.Vector3(end.x, end.y, end.z),
+      new THREE.Vector3(thirdPoint.x, thirdPoint.y, thirdPoint.z),
+    ];
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setFromPoints(vertices);
+    geometry.computeVertexNormals();
+    geometry.setIndex([0, 1, 2]);
+
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x0000ff,
+      side: THREE.DoubleSide,
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.copy(new THREE.Vector3(0, 0, 0));
+
+    // Add the element to the scene
+    addElement(brep, center, mesh);
+  };
+
+  const createCircle = (center: THREE.Vector3, radius: number) => {
+    const brep = createCircleBRep(center, radius);
+
+    // Create a visual mesh for the circle
+    const geometry = new THREE.CircleGeometry(radius, 32);
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x0000ff,
+      side: THREE.DoubleSide,
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.copy(center);
+
+    // Add the element to the scene
+    addElement(brep, center, mesh);
+  };
 
   // --- Initialization (Scene, Camera, Renderer, OrbitControls) ---
   useEffect(() => {
     const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x808080);
+
     const camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
@@ -77,6 +145,13 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
     cameraRef.current = camera;
     rendererRef.current = renderer;
 
+    // Add ambient and directional lights
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(10, 10, 10);
+    scene.add(directionalLight);
+
     const animate = () => {
       requestAnimationFrame(animate);
       controls.update();
@@ -99,7 +174,24 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
     };
   }, []);
 
-  // --- Draw Mode (unchanged from before) ---
+  useEffect(() => {
+    const handleShapeTypeChange = (event: CustomEvent) => {
+      setCurrentShape(event.detail);
+    };
+
+    window.addEventListener(
+      "shapeTypeChange",
+      handleShapeTypeChange as EventListener
+    );
+    return () => {
+      window.removeEventListener(
+        "shapeTypeChange",
+        handleShapeTypeChange as EventListener
+      );
+    };
+  }, []);
+
+  // --- Draw Mode ---
   useEffect(() => {
     if (mode !== "draw") return;
     const renderer = rendererRef.current;
@@ -136,69 +228,156 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
       const currentPoint = getMouseIntersection(event);
       if (!currentPoint) return;
       const start = startPointRef.current;
-      const width = currentPoint.x - start.x;
-      const height = currentPoint.y - start.y;
-      if (previewRectRef.current) scene.remove(previewRectRef.current);
-      const geometry = new THREE.PlaneGeometry(
-        Math.abs(width),
-        Math.abs(height)
-      );
-      const material = new THREE.MeshBasicMaterial({
+
+      // Remove any existing preview mesh
+      if (previewShapeRef.current) {
+        scene.remove(previewShapeRef.current);
+        previewShapeRef.current = null;
+      }
+
+      let previewMesh: THREE.Mesh;
+      const previewMaterial = new THREE.MeshBasicMaterial({
         color: 0x0000ff,
         side: THREE.DoubleSide,
         transparent: true,
         opacity: 0.5,
       });
-      const rectMesh = new THREE.Mesh(geometry, material);
-      rectMesh.position.set(start.x + width / 2, start.y + height / 2, 0);
-      previewRectRef.current = rectMesh;
-      scene.add(rectMesh);
+
+      switch (currentShape) {
+        case "rectangle":
+          // Create rectangle preview
+          const width = currentPoint.x - start.x;
+          const height = currentPoint.y - start.y;
+          const rectGeometry = new THREE.PlaneGeometry(
+            Math.abs(width),
+            Math.abs(height)
+          );
+          previewMesh = new THREE.Mesh(rectGeometry, previewMaterial);
+          previewMesh.position.set(
+            start.x + width / 2,
+            start.y + height / 2,
+            0
+          );
+          break;
+
+        case "triangle":
+          // Create triangle preview
+          const direction = new THREE.Vector3().subVectors(currentPoint, start);
+          const perpendicular = new THREE.Vector3(
+            -direction.y,
+            direction.x,
+            0
+          ).normalize();
+          const height2 = direction.length() * 0.866; // Height for equilateral triangle
+          const thirdPoint = new THREE.Vector3().addVectors(
+            start,
+            new THREE.Vector3().addVectors(
+              new THREE.Vector3().copy(direction).multiplyScalar(0.5),
+              new THREE.Vector3().copy(perpendicular).multiplyScalar(height2)
+            )
+          );
+
+          // Create triangle geometry
+          const triangleGeometry = new THREE.BufferGeometry();
+          triangleGeometry.setFromPoints([
+            new THREE.Vector3(start.x, start.y, start.z),
+            new THREE.Vector3(currentPoint.x, currentPoint.y, currentPoint.z),
+            new THREE.Vector3(thirdPoint.x, thirdPoint.y, thirdPoint.z),
+          ]);
+          triangleGeometry.setIndex([0, 1, 2]);
+          triangleGeometry.computeVertexNormals();
+
+          previewMesh = new THREE.Mesh(triangleGeometry, previewMaterial);
+          break;
+
+        case "circle":
+          // Create circle preview
+          const radius = new THREE.Vector3()
+            .subVectors(currentPoint, start)
+            .length();
+          const circleGeometry = new THREE.CircleGeometry(radius, 32);
+          previewMesh = new THREE.Mesh(circleGeometry, previewMaterial);
+          previewMesh.position.copy(start);
+          break;
+
+        default:
+          // Fallback to simple rectangle
+          const defaultGeometry = new THREE.PlaneGeometry(1, 1);
+          previewMesh = new THREE.Mesh(defaultGeometry, previewMaterial);
+          previewMesh.position.copy(start);
+      }
+
+      previewShapeRef.current = previewMesh;
+      scene.add(previewMesh);
     };
 
+    // Also update onMouseUp to use previewShapeRef instead of previewRectRef
     const onMouseUp = (event: MouseEvent) => {
       if (!isDrawingRef.current || !startPointRef.current) return;
       const endPoint = getMouseIntersection(event);
       if (!endPoint) return;
       isDrawingRef.current = false;
-      let finalRectMesh: THREE.Mesh | null = null;
-      if (previewRectRef.current) {
-        finalRectMesh = previewRectRef.current;
-        previewRectRef.current = null;
+
+      // Remove the preview mesh from the scene
+      if (previewShapeRef.current) {
+        scene.remove(previewShapeRef.current);
+        previewShapeRef.current = null;
       }
       const start = startPointRef.current;
       const end = endPoint;
-      const minX = Math.min(start.x, end.x);
-      const maxX = Math.max(start.x, end.x);
-      const minY = Math.min(start.y, end.y);
-      const maxY = Math.max(start.y, end.y);
 
-      // Create the B‑rep.
-      const v1 = new Vertex(minX, minY, 0);
-      const v2 = new Vertex(maxX, minY, 0);
-      const v3 = new Vertex(maxX, maxY, 0);
-      const v4 = new Vertex(minX, maxY, 0);
-      const e1 = new Edge(v1, v2);
-      const e2 = new Edge(v2, v3);
-      const e3 = new Edge(v3, v4);
-      const e4 = new Edge(v4, v1);
-      const face = new Face([v1, v2, v3, v4]);
-      const brep = new Brep([v1, v2, v3, v4], [e1, e2, e3, e4], [face]);
-      console.log("New rectangle BREP:", brep);
+      // Handle different shape types
+      switch (currentShape) {
+        case "rectangle":
+          // Existing rectangle creation code
+          const minX = Math.min(start.x, end.x);
+          const maxX = Math.max(start.x, end.x);
+          const minY = Math.min(start.y, end.y);
+          const maxY = Math.max(start.y, end.y);
 
-      const nodeId = "node_" + globalIdCounter++;
-      if (finalRectMesh) {
-        finalRectMesh.userData.draggable = true;
-        finalRectMesh.userData.brep = brep;
-        finalRectMesh.userData.nodeId = nodeId;
-        draggableObjectsRef.current.push(finalRectMesh);
-        const node: BrepNode = {
-          id: nodeId,
-          brep,
-          mesh: finalRectMesh,
-          connections: [],
-        };
-        brepGraphRef.current.addNode(node);
+          // Create the B-rep
+          const v1 = new Vertex(minX, minY, 0);
+          const v2 = new Vertex(maxX, minY, 0);
+          const v3 = new Vertex(maxX, maxY, 0);
+          const v4 = new Vertex(minX, maxY, 0);
+          const e1 = new Edge(v1, v2);
+          const e2 = new Edge(v2, v3);
+          const e3 = new Edge(v3, v4);
+          const e4 = new Edge(v4, v1);
+          const face = new Face([v1, v2, v3, v4]);
+          const brep = new Brep([v1, v2, v3, v4], [e1, e2, e3, e4], [face]);
+
+          // Calculate the center position
+          const position = new THREE.Vector3(
+            (minX + maxX) / 2,
+            (minY + maxY) / 2,
+            0
+          );
+
+          // Create the actual plane
+          const width = maxX - minX;
+          const height = maxY - minY;
+          const geometry = new THREE.PlaneGeometry(width, height);
+          const material = new THREE.MeshStandardMaterial({
+            color: 0x0000ff,
+            side: THREE.DoubleSide,
+          });
+          const rectMesh = new THREE.Mesh(geometry, material);
+          rectMesh.position.copy(position);
+
+          addElement(brep, position, rectMesh);
+          break;
+
+        case "triangle":
+          createTriangle(start, end);
+          break;
+
+        case "circle":
+          const radius = new THREE.Vector3().subVectors(end, start).length();
+          createCircle(start, radius);
+          break;
       }
+
       startPointRef.current = null;
     };
 
@@ -211,15 +390,14 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
       canvas.removeEventListener("mousemove", onMouseMove);
       canvas.removeEventListener("mouseup", onMouseUp);
     };
-  }, [mode]);
+  }, [mode, addElement, currentShape]);
 
-  // --- Move Mode: Updated to use THREE.Object3D (supports groups) ---
+  // --- Move Mode ---
   useEffect(() => {
     if (mode !== "move") return;
     const renderer = rendererRef.current;
     const camera = cameraRef.current;
-    const scene = sceneRef.current;
-    if (!renderer || !camera || !scene) return;
+    if (!renderer || !camera) return;
     const raycaster = new THREE.Raycaster();
     const drawingPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
     const threshold = 5;
@@ -245,32 +423,41 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
         -((event.clientY - rect.top) / rect.height) * 2 + 1
       );
       raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObjects(
-        draggableObjectsRef.current,
-        true
-      );
-      console.log("Intersects:", intersects);
+
+      // Create an array of objects to check for intersection
+      const objects: THREE.Object3D[] = [];
+      elements.forEach((el) => {
+        const obj = getObject(el.nodeId);
+        if (obj) objects.push(obj);
+      });
+
+      const intersects = raycaster.intersectObjects(objects, true);
+
       if (intersects.length > 0) {
-        let picked = intersects[0].object;
-        // If the picked object has a parent that is in our draggable list, select the parent.
-        if (
-          picked.parent &&
-          draggableObjectsRef.current.includes(picked.parent)
-        ) {
-          picked = picked.parent;
+        const pickedObject = intersects[0].object;
+
+        // Find the element this object belongs to
+        for (const el of elements) {
+          const obj = getObject(el.nodeId);
+          if (
+            obj === pickedObject ||
+            (pickedObject.parent && obj === pickedObject.parent)
+          ) {
+            selectedMoveNodeIdRef.current = el.nodeId;
+            const intersection = new THREE.Vector3();
+            raycaster.ray.intersectPlane(drawingPlane, intersection);
+            moveOffsetRef.current.copy(el.position).sub(intersection);
+            event.stopPropagation();
+            break;
+          }
         }
-        selectedObjectRef.current = picked;
-        const intersection = new THREE.Vector3();
-        raycaster.ray.intersectPlane(drawingPlane, intersection);
-        moveOffsetRef.current
-          .copy(selectedObjectRef.current.position)
-          .sub(intersection);
-        event.stopPropagation();
       }
       isDraggingRef.current = false;
     };
+
     const onMouseMove = (event: MouseEvent) => {
-      if (!selectedObjectRef.current) return;
+      if (!selectedMoveNodeIdRef.current) return;
+
       if (initialMousePosRef.current) {
         const dx = event.clientX - initialMousePosRef.current.x;
         const dy = event.clientY - initialMousePosRef.current.y;
@@ -278,17 +465,20 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
           isDraggingRef.current = true;
         }
       }
+
       if (isDraggingRef.current) {
         const intersection = getMouseIntersection(event);
         if (!intersection) return;
-        selectedObjectRef.current.position.copy(
-          intersection.clone().add(moveOffsetRef.current)
-        );
+
+        const newPosition = intersection.clone().add(moveOffsetRef.current);
+
+        // Update position using the context method
+        updateElementPosition(selectedMoveNodeIdRef.current, newPosition);
       }
     };
 
     const onMouseUp = () => {
-      selectedObjectRef.current = null;
+      selectedMoveNodeIdRef.current = null;
       initialMousePosRef.current = null;
       isDraggingRef.current = false;
     };
@@ -302,15 +492,14 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
       canvas.removeEventListener("mousemove", onMouseMove);
       canvas.removeEventListener("mouseup", onMouseUp);
     };
-  }, [mode]);
+  }, [mode, elements, updateElementPosition, getObject]);
 
-  // --- Union Mode: Updated Selection Handler ---
+  // --- Union Mode ---
   useEffect(() => {
     if (mode !== "union") return;
     const renderer = rendererRef.current;
     const camera = cameraRef.current;
-    const scene = sceneRef.current;
-    if (!renderer || !camera || !scene) return;
+    if (!renderer || !camera) return;
     const raycaster = new THREE.Raycaster();
 
     const onMouseDown = (event: MouseEvent) => {
@@ -321,28 +510,34 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
         -((event.clientY - rect.top) / rect.height) * 2 + 1
       );
       raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObjects(
-        draggableObjectsRef.current,
-        true
-      );
+
+      // Create an array of objects to check for intersection
+      const objects: THREE.Object3D[] = [];
+      elements.forEach((el) => {
+        const obj = getObject(el.nodeId);
+        if (obj) objects.push(obj);
+      });
+
+      const intersects = raycaster.intersectObjects(objects, true);
+
       if (intersects.length > 0) {
-        const obj = intersects[0].object;
-        // Toggle selection.
-        if (obj.userData.selected) {
-          // If it's a Mesh, update color; if a Group, simply clear the flag.
-          if (obj instanceof THREE.Mesh) {
-            (obj.material as THREE.MeshBasicMaterial).color.set(0x0000ff);
+        const pickedObject = intersects[0].object;
+
+        // Find the element this object belongs to
+        for (const el of elements) {
+          const obj = getObject(el.nodeId);
+          if (
+            obj === pickedObject ||
+            (pickedObject.parent && obj === pickedObject.parent)
+          ) {
+            // Toggle selection
+            if (selectedElements.includes(el.nodeId)) {
+              deselectElement(el.nodeId);
+            } else {
+              selectElement(el.nodeId);
+            }
+            break;
           }
-          obj.userData.selected = false;
-          selectedForUnionRef.current = selectedForUnionRef.current.filter(
-            (o) => o !== obj
-          );
-        } else {
-          if (obj instanceof THREE.Mesh) {
-            (obj.material as THREE.MeshBasicMaterial).color.set(0xff0000);
-          }
-          obj.userData.selected = true;
-          selectedForUnionRef.current.push(obj);
         }
       }
     };
@@ -352,78 +547,106 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
     return () => {
       canvas.removeEventListener("mousedown", onMouseDown);
     };
-  }, [mode]);
+  }, [
+    mode,
+    elements,
+    selectedElements,
+    selectElement,
+    deselectElement,
+    getObject,
+  ]);
 
-  // --- Union Selected Button Handler ---
-  const unionSelected = () => {
+  // Add this debug function above your component
+  const debugObject = (obj: THREE.Object3D) => {
+    return obj
+      ? {
+          type: obj.type,
+          id: obj.id,
+          userData: obj.userData,
+        }
+      : null;
+  };
+
+  // Add event listener for forced updates
+  useEffect(() => {
+    const handleSceneUpdate = () => {
+      // This will force the scene sync effect to run
+      setForceUpdate((prev) => prev + 1);
+    };
+
+    window.addEventListener("sceneUpdate", handleSceneUpdate);
+    return () => {
+      window.removeEventListener("sceneUpdate", handleSceneUpdate);
+    };
+  }, []);
+
+  // Then in your component, replace the scene sync effect
+  useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
-    const selected = selectedForUnionRef.current;
-    if (selected.length < 2) {
-      alert("Select at least 2 objects to union.");
-      return;
-    }
-    // Create a compound BRep using our resolver.
-    let compoundBrep = unionBrepCompound(
-      selected[0].userData.brep as Brep,
-      selected[1].userData.brep as Brep
+
+    console.log("Scene sync running, elements:", elements.length);
+
+    // Key step: ensure all elements have corresponding objects in the scene
+    elements.forEach((element) => {
+      const obj = getObject(element.nodeId);
+      if (obj) {
+        if (!scene.children.includes(obj)) {
+          console.log("Adding missing object to scene:", element.nodeId);
+          scene.add(obj);
+        }
+      } else {
+        console.error("Missing object for element:", element.nodeId);
+      }
+    });
+
+    // Find all THREE.js objects that should be removed from the scene
+    const validNodeIds = new Set(elements.map((el) => el.nodeId));
+    const objectsToRemove = scene.children.filter(
+      (child) =>
+        // Skip special objects
+        !(child instanceof THREE.Light) &&
+        !(child instanceof THREE.Camera) &&
+        child.type !== "GridHelper" &&
+        child.type !== "AxesHelper" &&
+        child.type !== "AxesHelper" &&
+        // Check if this object should remain
+        !Array.from(validNodeIds).some((id) => getObject(id) === child)
     );
-    if (selected.length > 2) {
-      for (let i = 2; i < selected.length; i++) {
-        compoundBrep = unionBrepCompound(
-          compoundBrep,
-          selected[i].userData.brep as Brep
-        );
-      }
+
+    // Remove objects that are no longer in the state
+    if (objectsToRemove.length > 0) {
+      console.log("Removing objects:", objectsToRemove.length);
+      objectsToRemove.forEach((child) => {
+        scene.remove(child);
+      });
     }
-    // Create a new group and attach selected objects.
-    const group = new THREE.Group();
-    selected.forEach((obj) => {
-      group.attach(obj);
-      if (obj instanceof THREE.Mesh) {
-        (obj.material as THREE.MeshBasicMaterial).color.set(0x0000ff);
-      }
-      obj.userData.selected = false;
-      // Remove from draggable list.
-      const idx = draggableObjectsRef.current.indexOf(obj);
-      if (idx > -1) draggableObjectsRef.current.splice(idx, 1);
-    });
-    scene.add(group);
-    draggableObjectsRef.current.push(group);
-    const nodeId = "node_" + globalIdCounter++;
-    group.userData.nodeId = nodeId;
-    group.userData.brep = compoundBrep;
-    const newNode: BrepNode = {
-      id: nodeId,
-      brep: compoundBrep,
-      mesh: group,
-      connections: [],
-    };
-    brepGraphRef.current.addNode(newNode);
-    selected.forEach((obj) => {
-      const sourceId = obj.userData.nodeId;
-      if (sourceId) {
-        const connection: BrepConnection = {
-          targetId: nodeId,
-          connectionType: "union",
-        };
-        brepGraphRef.current.addConnection(sourceId, connection);
-      }
-    });
-    selectedForUnionRef.current = [];
-  };
+
+    // Debug output - after sync
+    console.log("Scene children after sync:", scene.children.length);
+    console.log("Valid scene objects:", validNodeIds.size);
+  }, [elements, getObject, forceUpdate]);
 
   return (
     <div style={{ position: "relative" }} ref={mountRef}>
-      {mode === "union" && (
+      {mode === "union" && selectedElements.length >= 2 && (
         <button
-          onClick={unionSelected}
+          onClick={() => {
+            unionSelectedElements();
+            // Force a re-render of the scene
+            setForceUpdate((prev) => prev + 1);
+          }}
           style={{
             position: "absolute",
             top: 10,
             left: 10,
             zIndex: 1,
             padding: "8px 12px",
+            backgroundColor: "#2563eb",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer",
           }}
         >
           Union Selected
@@ -433,4 +656,4 @@ const ThreeScene: React.FC<ThreeSceneProps> = ({ mode }) => {
   );
 };
 
-export default ThreeScene;
+export default SkicScene;

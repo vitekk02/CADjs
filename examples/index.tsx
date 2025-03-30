@@ -4,15 +4,17 @@ import { createRoot } from "react-dom/client";
 import CubeScene from "./cubeScene";
 import SkicScene from "./skicScene";
 import Navbar from "../src/navbar/navbar";
+import { SceneProvider } from "../src/contexts/SceneContext";
+import { CadCoreProvider } from "../src/contexts/CoreContext";
+import { CadVisualizerProvider } from "../src/contexts/VisualizerContext";
+import SimpleCadScene from "./simpleCadScene";
 const App = () => {
-  const [mode, setMode] = React.useState<"draw" | "move" | "union">("draw");
-
   return (
-    <div>
-      <Navbar mode={mode} setMode={setMode} />
-      {/* <CubeScene /> */}
-      <SkicScene mode={mode} />
-    </div>
+    <CadCoreProvider>
+      <CadVisualizerProvider>
+        <SimpleCadScene />
+      </CadVisualizerProvider>
+    </CadCoreProvider>
   );
 };
 
