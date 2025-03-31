@@ -52,13 +52,14 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   const selectedObjectRef = useRef<string | null>(null);
   const moveOffsetRef = useRef(new THREE.Vector3());
   const isDraggingRef = useRef(false);
-
+  const previewMeshRef = useRef<THREE.Mesh | null>(null);
   // Edge and vertex visualization
   const [edgeHelpers, setEdgeHelpers] = useState<THREE.LineSegments | null>(
     null
   );
-  const [vertexHelpers, setVertexHelpers] = useState<THREE.Points | null>(null);
-
+  const [vertexHelpers, setVertexHelpers] = useState<THREE.Object3D | null>(
+    null
+  );
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
@@ -100,8 +101,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       setVertexHelpers(null);
     }
     setContextMenu({ visible: false, x: 0, y: 0, nodeId: null });
-  }, [scene, edgeHelpers, vertexHelpers]);
-
+  }, [mode]);
   // Update visualizer shape when local shape changes
   useEffect(() => {
     setCurrentShape(shape);
@@ -119,8 +119,92 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       if (event.type === "mousedown") {
         isDrawingRef.current = true;
         startPointRef.current = point.clone();
+      } else if (event.type === "mousemove") {
+        // Only show preview when drawing
+        if (!isDrawingRef.current || !startPointRef.current) return;
+
+        // Remove any existing preview
+        if (previewMeshRef.current && scene) {
+          scene.remove(previewMeshRef.current);
+          previewMeshRef.current = null;
+        }
+
+        const start = startPointRef.current;
+        const material = new THREE.MeshBasicMaterial({
+          color: 0x0088ff,
+          transparent: true,
+          opacity: 0.5,
+          side: THREE.DoubleSide,
+        });
+
+        let previewMesh: THREE.Mesh;
+
+        switch (shape) {
+          case "rectangle":
+            const width = point.x - start.x;
+            const height = point.y - start.y;
+            const rectGeometry = new THREE.PlaneGeometry(
+              Math.abs(width),
+              Math.abs(height)
+            );
+            previewMesh = new THREE.Mesh(rectGeometry, material);
+            previewMesh.position.set(
+              start.x + width / 2,
+              start.y + height / 2,
+              0
+            );
+            break;
+
+          case "triangle":
+            const direction = new THREE.Vector3().subVectors(point, start);
+            const perpendicular = new THREE.Vector3(
+              -direction.y,
+              direction.x,
+              0
+            ).normalize();
+            const height2 = direction.length() * 0.866; // Height for equilateral triangle
+            const thirdPoint = new THREE.Vector3().addVectors(
+              start,
+              new THREE.Vector3().addVectors(
+                new THREE.Vector3().copy(direction).multiplyScalar(0.5),
+                new THREE.Vector3().copy(perpendicular).multiplyScalar(height2)
+              )
+            );
+
+            const triangleGeometry = new THREE.BufferGeometry();
+            triangleGeometry.setFromPoints([
+              new THREE.Vector3(start.x, start.y, start.z),
+              new THREE.Vector3(point.x, point.y, point.z),
+              new THREE.Vector3(thirdPoint.x, thirdPoint.y, thirdPoint.z),
+            ]);
+            triangleGeometry.setIndex([0, 1, 2]);
+            triangleGeometry.computeVertexNormals();
+
+            previewMesh = new THREE.Mesh(triangleGeometry, material);
+            break;
+
+          case "circle":
+            const radius = new THREE.Vector3()
+              .subVectors(point, start)
+              .length();
+            const circleGeometry = new THREE.CircleGeometry(radius, 32);
+            previewMesh = new THREE.Mesh(circleGeometry, material);
+            previewMesh.position.copy(start);
+            break;
+        }
+
+        if (scene && previewMesh) {
+          scene.add(previewMesh);
+          previewMeshRef.current = previewMesh;
+        }
       } else if (event.type === "mouseup") {
         if (!isDrawingRef.current || !startPointRef.current) return;
+
+        // Clean up preview
+        if (previewMeshRef.current && scene) {
+          scene.remove(previewMeshRef.current);
+          previewMeshRef.current = null;
+        }
 
         // Complete the drawing operation
         drawShape(startPointRef.current, point);
@@ -174,18 +258,18 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                 // Create new helpers
                 const newEdgeHelpers = createEdgeHelpers(el);
                 const newVertexHelpers = createVertexHelpers(el);
-
                 if (newEdgeHelpers) {
+                  newEdgeHelpers.position.copy(el.position);
                   scene.add(newEdgeHelpers);
                   setEdgeHelpers(newEdgeHelpers);
                 }
 
                 if (newVertexHelpers) {
+                  newVertexHelpers.position.copy(el.position);
                   scene.add(newVertexHelpers);
                   setVertexHelpers(newVertexHelpers);
                 }
               }
-
               // Set up for movement
               const intersection = getMouseIntersection(event);
               if (intersection) {
@@ -228,9 +312,23 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             // Move the element
             updateElementPosition(selectedObjectRef.current, newPosition);
 
-            // Update helper visualizations
-            if (edgeHelpers) edgeHelpers.position.copy(newPosition);
-            if (vertexHelpers) vertexHelpers.position.copy(newPosition);
+            // Find the updated element
+            const updatedElement = elements.find(
+              (el) => el.nodeId === selectedObjectRef.current
+            );
+
+            // Update the helper positions directly without recreating them
+            if (updatedElement && scene) {
+              if (edgeHelpers) {
+                // Don't set state during drag - just update position directly
+                edgeHelpers.position.copy(updatedElement.position);
+              }
+
+              if (vertexHelpers) {
+                // Don't set state during drag - just update position directly
+                vertexHelpers.position.copy(updatedElement.position);
+              }
+            }
 
             // Move context menu with object
             if (
@@ -312,6 +410,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     if (mode === "draw") {
       renderer.domElement.addEventListener("mousedown", handleDrawMode);
       renderer.domElement.addEventListener("mouseup", handleDrawMode);
+      renderer.domElement.addEventListener("mousemove", handleDrawMode);
     } else if (mode === "move") {
       renderer.domElement.addEventListener("mousedown", handleMoveMode);
       renderer.domElement.addEventListener("mousemove", handleMoveMode);
@@ -328,6 +427,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.removeEventListener("mousemove", handleMoveMode);
       renderer.domElement.removeEventListener("mouseup", handleMoveMode);
       renderer.domElement.removeEventListener("mousedown", handleUnionMode);
+      renderer.domElement.removeEventListener("mousemove", handleDrawMode);
     };
   }, [
     mode,
@@ -337,6 +437,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     scene,
     elements,
     selectedElements,
+    shape,
+    drawShape,
   ]);
 
   // Render simple UI controls alongside the canvas

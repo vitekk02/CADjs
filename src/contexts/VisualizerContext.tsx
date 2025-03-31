@@ -6,6 +6,7 @@ import React, {
   useRef,
   ReactNode,
   useEffect,
+  useCallback,
 } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
@@ -35,8 +36,7 @@ interface CadVisualizerContextType {
 
   // Helper visualization methods
   createEdgeHelpers: (element: SceneElement) => THREE.LineSegments | null;
-  createVertexHelpers: (element: SceneElement) => THREE.Points | null;
-
+  createVertexHelpers: (element: SceneElement) => THREE.Object3D | null;
   // Mouse interaction helpers
   getMouseIntersection: (event: MouseEvent) => THREE.Vector3 | null;
 
@@ -289,22 +289,24 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   };
 
   // Generic shape drawing function based on current shape type
-  const drawShape = (start: THREE.Vector3, end: THREE.Vector3) => {
-    switch (currentShape) {
-      case "rectangle":
-        createRectangle(start, end);
-        break;
-      case "triangle":
-        createTriangle(start, end);
-        break;
-      case "circle":
-        const radius = new THREE.Vector3().subVectors(end, start).length();
-        createCircle(start, radius);
-        break;
-    }
-  };
+  const drawShape = useCallback(
+    (start: THREE.Vector3, end: THREE.Vector3) => {
+      switch (currentShape) {
+        case "rectangle":
+          createRectangle(start, end);
+          break;
+        case "triangle":
+          createTriangle(start, end);
+          break;
+        case "circle":
+          const radius = new THREE.Vector3().subVectors(end, start).length();
+          createCircle(start, radius);
+          break;
+      }
+    },
+    [currentShape]
+  );
 
-  // Create edge helpers for visualization
   const createEdgeHelpers = (
     element: SceneElement
   ): THREE.LineSegments | null => {
@@ -313,13 +315,14 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
     const edgePositions: number[] = [];
     element.brep.edges.forEach((edge) => {
+      // Store positions relative to element position
       edgePositions.push(
-        edge.start.x,
-        edge.start.y,
-        edge.start.z,
-        edge.end.x,
-        edge.end.y,
-        edge.end.z
+        edge.start.x - element.position.x,
+        edge.start.y - element.position.y,
+        edge.start.z - element.position.z,
+        edge.end.x - element.position.x,
+        edge.end.y - element.position.y,
+        edge.end.z - element.position.z
       );
     });
 
@@ -330,47 +333,61 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     );
 
     const edgeMaterial = new THREE.LineBasicMaterial({
-      color: 0xff00ff,
+      color: 0x00ffff,
       linewidth: 2,
+      depthTest: false,
     });
+
     const lines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
-    lines.position.copy(element.position);
+    lines.renderOrder = 999;
+
+    // Set userData to mark this as a helper
+    lines.userData.isHelper = true;
+    lines.userData.helperType = "edge";
+    lines.userData.elementId = element.nodeId;
 
     return lines;
   };
 
-  // Create vertex helpers for visualization
-  const createVertexHelpers = (element: SceneElement): THREE.Points | null => {
+  const createVertexHelpers = (
+    element: SceneElement
+  ): THREE.Object3D | null => {
     if (
       !element ||
       !element.brep.vertices ||
       element.brep.vertices.length === 0
-    )
+    ) {
       return null;
+    }
 
-    const vertexPositions: number[] = [];
-    element.brep.vertices.forEach((v) => {
-      vertexPositions.push(v.x, v.y, v.z);
+    const vertexGroup = new THREE.Group();
+
+    element.brep.vertices.forEach((vertex) => {
+      const sphereGeometry = new THREE.SphereGeometry(0.05, 16, 16);
+      const sphereMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        transparent: false,
+        depthTest: false,
+      });
+
+      const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+      // Position relative to element position
+      sphere.position.set(
+        vertex.x - element.position.x,
+        vertex.y - element.position.y,
+        vertex.z - element.position.z
+      );
+      sphere.renderOrder = 1000;
+      vertexGroup.add(sphere);
     });
 
-    const vertexGeometry = new THREE.BufferGeometry();
-    vertexGeometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(vertexPositions, 3)
-    );
+    // Set userData to mark this as a helper
+    vertexGroup.userData.isHelper = true;
+    vertexGroup.userData.helperType = "vertex";
+    vertexGroup.userData.elementId = element.nodeId;
 
-    const vertexMaterial = new THREE.PointsMaterial({
-      color: 0xffff00,
-      size: 0.1,
-      sizeAttenuation: false,
-    });
-
-    const points = new THREE.Points(vertexGeometry, vertexMaterial);
-    points.position.copy(element.position);
-
-    return points;
+    return vertexGroup;
   };
-
   // Highlight an element (e.g., on hover)
   const highlightElement = (nodeId: string) => {
     const object = getObject(nodeId);
@@ -442,6 +459,8 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         !(child instanceof THREE.Camera) &&
         child.type !== "GridHelper" &&
         child.type !== "AxesHelper" &&
+        // Skip our custom helpers
+        !child.userData.isHelper &&
         // Check if this object should remain
         !Array.from(validNodeIds).some((id) => getObject(id) === child)
     );
