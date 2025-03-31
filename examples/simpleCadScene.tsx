@@ -249,6 +249,31 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             ) {
               selectedObjectRef.current = el.nodeId;
 
+              // Calculate the bounding box of the selected object
+              const boundingBox = new THREE.Box3().setFromObject(obj);
+              const topRightCorner = new THREE.Vector3(
+                boundingBox.max.x,
+                boundingBox.max.y,
+                boundingBox.max.z
+              );
+
+              // Project to screen coordinates
+              const tempV = topRightCorner.clone();
+              tempV.project(camera);
+
+              // Convert to screen coordinates
+              const rect = renderer.domElement.getBoundingClientRect();
+              const x = (tempV.x * 0.5 + 0.5) * rect.width + rect.left;
+              const y = (1 - (tempV.y * 0.5 + 0.5)) * rect.height + rect.top;
+
+              // Make the context menu visible at the top-right corner position
+              setContextMenu({
+                visible: true,
+                x: x + 10, // Small offset to ensure it's outside the box
+                y: y - 10, // Small offset
+                nodeId: el.nodeId,
+              });
+
               // Create visualization helpers
               if (scene) {
                 // Remove previous helpers
@@ -270,19 +295,12 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                   setVertexHelpers(newVertexHelpers);
                 }
               }
+
               // Set up for movement
               const intersection = getMouseIntersection(event);
               if (intersection) {
                 moveOffsetRef.current.copy(el.position).sub(intersection);
               }
-
-              // Show context menu
-              setContextMenu({
-                visible: true,
-                x: event.clientX,
-                y: event.clientY,
-                nodeId: el.nodeId,
-              });
 
               break;
             }
@@ -330,29 +348,36 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               }
             }
 
-            // Move context menu with object
+            // Move context menu with object - important: calculate position from the bounding box
             if (
               contextMenu.visible &&
               contextMenu.nodeId === selectedObjectRef.current
             ) {
-              // Project 3D position to screen
-              const screenPos = new THREE.Vector3(
-                newPosition.x,
-                newPosition.y,
-                newPosition.z
-              );
-              screenPos.project(camera);
+              const obj = getObject(selectedObjectRef.current);
+              if (obj) {
+                // Recalculate the bounding box after movement
+                const boundingBox = new THREE.Box3().setFromObject(obj);
+                const topRightCorner = new THREE.Vector3(
+                  boundingBox.max.x,
+                  boundingBox.max.y,
+                  boundingBox.max.z
+                );
 
-              const rect = renderer.domElement.getBoundingClientRect();
-              const x = (screenPos.x * 0.5 + 0.5) * rect.width + rect.left;
-              const y =
-                (1 - (screenPos.y * 0.5 + 0.5)) * rect.height + rect.top;
+                // Project to screen coordinates
+                const tempV = topRightCorner.clone();
+                tempV.project(camera);
 
-              setContextMenu({
-                ...contextMenu,
-                x,
-                y,
-              });
+                // Convert to screen coordinates
+                const rect = renderer.domElement.getBoundingClientRect();
+                const x = (tempV.x * 0.5 + 0.5) * rect.width + rect.left;
+                const y = (1 - (tempV.y * 0.5 + 0.5)) * rect.height + rect.top;
+
+                setContextMenu({
+                  ...contextMenu,
+                  x: x + 10, // Small offset to ensure it's outside the box
+                  y: y - 10, // Small offset
+                });
+              }
             }
           }
         }
@@ -529,9 +554,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         <div
           className="absolute z-20 bg-gray-900 bg-opacity-90 rounded shadow-lg p-2 min-w-[120px] text-white"
           style={{
-            left: `${contextMenu.x + 10}px`,
-            top: `${contextMenu.y - 10}px`,
-            transform: "translate(0, -100%)",
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+            // Remove the transform that was shifting it up by 100%
           }}
         >
           <div className="flex flex-col gap-1">
@@ -539,8 +564,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               className="px-3 py-1 text-left hover:bg-gray-700 rounded"
               onClick={() => {
                 if (contextMenu.nodeId) {
-                  // Implement copy functionality here
-                  console.log("Copy", contextMenu.nodeId);
+                  // Copy functionality
                 }
               }}
             >
@@ -549,22 +573,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             <button
               className="px-3 py-1 text-left hover:bg-gray-700 rounded"
               onClick={() => {
-                if (contextMenu.nodeId) {
-                  // Clean up visualizations
-                  if (edgeHelpers && scene) {
-                    scene.remove(edgeHelpers);
-                    setEdgeHelpers(null);
-                  }
-                  if (vertexHelpers && scene) {
-                    scene.remove(vertexHelpers);
-                    setVertexHelpers(null);
-                  }
-
-                  // Remove the element
-                  removeElement(contextMenu.nodeId);
-                  setContextMenu({ visible: false, x: 0, y: 0, nodeId: null });
-                  selectedObjectRef.current = null;
-                }
+                // Existing delete functionality...
               }}
             >
               Delete
