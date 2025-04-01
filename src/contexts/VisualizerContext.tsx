@@ -183,110 +183,123 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   };
 
   // Create and visualize a rectangle
-  const createRectangle = (start: THREE.Vector3, end: THREE.Vector3) => {
-    const minX = Math.min(start.x, end.x);
-    const maxX = Math.max(start.x, end.x);
-    const minY = Math.min(start.y, end.y);
-    const maxY = Math.max(start.y, end.y);
+  const createRectangle = useCallback(
+    (start: THREE.Vector3, end: THREE.Vector3) => {
+      const minX = Math.min(start.x, end.x);
+      const maxX = Math.max(start.x, end.x);
+      const minY = Math.min(start.y, end.y);
+      const maxY = Math.max(start.y, end.y);
 
-    // Create B-rep vertices, edges, and face
-    const v1 = new Vertex(minX, minY, 0);
-    const v2 = new Vertex(maxX, minY, 0);
-    const v3 = new Vertex(maxX, maxY, 0);
-    const v4 = new Vertex(minX, maxY, 0);
-    const e1 = new Edge(v1, v2);
-    const e2 = new Edge(v2, v3);
-    const e3 = new Edge(v3, v4);
-    const e4 = new Edge(v4, v1);
-    const face = new Face([v1, v2, v3, v4]);
-    const brep = new Brep([v1, v2, v3, v4], [e1, e2, e3, e4], [face]);
+      // Create B-rep vertices, edges, and face
+      const v1 = new Vertex(minX, minY, 0);
+      const v2 = new Vertex(maxX, minY, 0);
+      const v3 = new Vertex(maxX, maxY, 0);
+      const v4 = new Vertex(minX, maxY, 0);
+      const e1 = new Edge(v1, v2);
+      const e2 = new Edge(v2, v3);
+      const e3 = new Edge(v3, v4);
+      const e4 = new Edge(v4, v1);
+      const face = new Face([v1, v2, v3, v4]);
+      const brep = new Brep([v1, v2, v3, v4], [e1, e2, e3, e4], [face]);
 
-    // Calculate center position
-    const position = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, 0);
+      // Calculate center position
+      const position = new THREE.Vector3(
+        (minX + maxX) / 2,
+        (minY + maxY) / 2,
+        0
+      );
 
-    // Create visual mesh
-    const width = maxX - minX;
-    const height = maxY - minY;
-    const geometry = new THREE.PlaneGeometry(width, height);
-    const material = new THREE.MeshStandardMaterial({
-      color: 0x0000ff,
-      side: THREE.DoubleSide,
-    });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.copy(position);
+      // Create visual mesh
+      const width = maxX - minX;
+      const height = maxY - minY;
+      const geometry = new THREE.PlaneGeometry(width, height);
+      const material = new THREE.MeshStandardMaterial({
+        color: 0x0000ff,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.copy(position);
 
-    // Add to scene via core context
-    addElement(brep, position, mesh);
-  };
+      // Add to scene via core context
+      addElement(brep, position, mesh);
+    },
+    [addElement]
+  );
 
   // Create and visualize a triangle
-  const createTriangle = (start: THREE.Vector3, end: THREE.Vector3) => {
-    const direction = new THREE.Vector3().subVectors(end, start);
-    const perpendicular = new THREE.Vector3(
-      -direction.y,
-      direction.x,
-      0
-    ).normalize();
-    const height = direction.length() * 0.866; // Height for equilateral triangle
-    const thirdPoint = new THREE.Vector3().addVectors(
-      start,
-      new THREE.Vector3().addVectors(
-        new THREE.Vector3().copy(direction).multiplyScalar(0.5),
-        new THREE.Vector3().copy(perpendicular).multiplyScalar(height)
-      )
-    );
+  const createTriangle = useCallback(
+    (start: THREE.Vector3, end: THREE.Vector3) => {
+      const direction = new THREE.Vector3().subVectors(end, start);
+      const perpendicular = new THREE.Vector3(
+        -direction.y,
+        direction.x,
+        0
+      ).normalize();
+      const height = direction.length() * 0.866; // Height for equilateral triangle
+      const thirdPoint = new THREE.Vector3().addVectors(
+        start,
+        new THREE.Vector3().addVectors(
+          new THREE.Vector3().copy(direction).multiplyScalar(0.5),
+          new THREE.Vector3().copy(perpendicular).multiplyScalar(height)
+        )
+      );
 
-    // Create B-rep
-    const brep = createTriangleBRep(start, end, thirdPoint);
+      // Create B-rep
+      const brep = createTriangleBRep(start, end, thirdPoint);
 
-    // Calculate center
-    const center = new THREE.Vector3()
-      .add(start)
-      .add(end)
-      .add(thirdPoint)
-      .divideScalar(3);
+      // Calculate center
+      const center = new THREE.Vector3()
+        .add(start)
+        .add(end)
+        .add(thirdPoint)
+        .divideScalar(3);
 
-    // Create visual mesh
-    const vertices = [
-      new THREE.Vector3(start.x, start.y, start.z),
-      new THREE.Vector3(end.x, end.y, end.z),
-      new THREE.Vector3(thirdPoint.x, thirdPoint.y, thirdPoint.z),
-    ];
+      // Create visual mesh
+      const vertices = [
+        new THREE.Vector3(start.x, start.y, start.z),
+        new THREE.Vector3(end.x, end.y, end.z),
+        new THREE.Vector3(thirdPoint.x, thirdPoint.y, thirdPoint.z),
+      ];
 
-    const geometry = new THREE.BufferGeometry();
-    geometry.setFromPoints(vertices);
-    geometry.computeVertexNormals();
-    geometry.setIndex([0, 1, 2]);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setFromPoints(vertices);
+      geometry.computeVertexNormals();
+      geometry.setIndex([0, 1, 2]);
 
-    const material = new THREE.MeshStandardMaterial({
-      color: 0x0000ff,
-      side: THREE.DoubleSide,
-    });
+      const material = new THREE.MeshStandardMaterial({
+        color: 0x0000ff,
+        side: THREE.DoubleSide,
+      });
 
-    const mesh = new THREE.Mesh(geometry, material);
+      const mesh = new THREE.Mesh(geometry, material);
 
-    // Add to scene via core context
-    addElement(brep, center, mesh);
-  };
+      // Add to scene via core context
+      addElement(brep, center, mesh);
+    },
+    [addElement]
+  );
 
   // Create and visualize a circle
-  const createCircle = (center: THREE.Vector3, radius: number) => {
-    // Create B-rep
-    const brep = createCircleBRep(center, radius);
+  const createCircle = useCallback(
+    (center: THREE.Vector3, radius: number) => {
+      // Create B-rep
+      const brep = createCircleBRep(center, radius);
 
-    // Create visual mesh
-    const geometry = new THREE.CircleGeometry(radius, 32);
-    const material = new THREE.MeshStandardMaterial({
-      color: 0x0000ff,
-      side: THREE.DoubleSide,
-    });
+      // Create visual mesh
+      const geometry = new THREE.CircleGeometry(radius, 32);
+      const material = new THREE.MeshStandardMaterial({
+        color: 0x0000ff,
+        side: THREE.DoubleSide,
+      });
 
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.copy(center);
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.copy(center);
 
-    // Add to scene via core context
-    addElement(brep, center, mesh);
-  };
+      // Add to scene via core context
+      addElement(brep, center, mesh);
+    },
+    [addElement]
+  );
 
   // Generic shape drawing function based on current shape type
   const drawShape = useCallback(
@@ -304,7 +317,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
           break;
       }
     },
-    [currentShape]
+    [currentShape, createCircle, createRectangle, createTriangle]
   );
 
   const createEdgeHelpers = (
@@ -390,39 +403,52 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   };
   // Highlight an element (e.g., on hover)
   const highlightElement = (nodeId: string) => {
-    const object = getObject(nodeId);
-    if (object instanceof THREE.Mesh) {
-      (object.material as THREE.MeshStandardMaterial).color.set(0xff9900);
-      (object.material as THREE.MeshStandardMaterial).needsUpdate = true;
-    } else if (object instanceof THREE.Group) {
-      object.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          (child.material as THREE.MeshStandardMaterial).color.set(0xff9900);
-          (child.material as THREE.MeshStandardMaterial).needsUpdate = true;
-        }
-      });
+    const obj = getObject(nodeId);
+    if (!obj) return;
+
+    // Set the color of the main mesh
+    if (obj instanceof THREE.Mesh) {
+      (obj.material as THREE.MeshStandardMaterial).color.set(0xff9900);
+      (obj.material as THREE.MeshStandardMaterial).needsUpdate = true;
     }
+
+    // Show helpers
+    obj.traverse((child) => {
+      if (
+        child.userData.helperType === "edge" ||
+        child.userData.helperType === "vertex"
+      ) {
+        child.visible = true;
+      }
+      if (child instanceof THREE.Mesh) {
+        (child.material as THREE.MeshStandardMaterial).color.set(0xff9900);
+        (child.material as THREE.MeshStandardMaterial).needsUpdate = true;
+      }
+    });
   };
 
   // Unhighlight an element
   const unhighlightElement = (nodeId: string) => {
-    const object = getObject(nodeId);
-    const element = elements.find((el) => el.nodeId === nodeId);
+    const obj = getObject(nodeId);
+    if (!obj) return;
 
-    // If selected, keep it red, otherwise return to blue
+    // Reset the color
+    const element = elements.find((el) => el.nodeId === nodeId);
     const color = element?.selected ? 0xff0000 : 0x0000ff;
 
-    if (object instanceof THREE.Mesh) {
-      (object.material as THREE.MeshStandardMaterial).color.set(color);
-      (object.material as THREE.MeshStandardMaterial).needsUpdate = true;
-    } else if (object instanceof THREE.Group) {
-      object.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          (child.material as THREE.MeshStandardMaterial).color.set(color);
-          (child.material as THREE.MeshStandardMaterial).needsUpdate = true;
-        }
-      });
-    }
+    // Hide helpers unless element is selected
+    obj.traverse((child) => {
+      if (
+        child.userData.helperType === "edge" ||
+        child.userData.helperType === "vertex"
+      ) {
+        child.visible = element?.selected || false;
+      }
+      if (child instanceof THREE.Mesh) {
+        (child.material as THREE.MeshStandardMaterial).color.set(color);
+        (child.material as THREE.MeshStandardMaterial).needsUpdate = true;
+      }
+    });
   };
 
   // Force scene update
@@ -435,7 +461,11 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     const scene = sceneRef.current;
     if (!scene) return;
 
-    console.log("Scene sync running, elements:", elements.length);
+    console.log(
+      "Scene sync running, elements:",
+      elements.length,
+      elements.map((e) => e.nodeId)
+    );
 
     // Ensure all elements have corresponding objects in the scene
     elements.forEach((element) => {
@@ -450,8 +480,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       }
     });
 
-    // Find objects to remove
+    // Find objects to remove - more precise object comparison
     const validNodeIds = new Set(elements.map((el) => el.nodeId));
+    const validObjects = new Set(elements.map((el) => getObject(el.nodeId)));
+
     const objectsToRemove = scene.children.filter(
       (child) =>
         // Skip special objects
@@ -461,13 +493,13 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         child.type !== "AxesHelper" &&
         // Skip our custom helpers
         !child.userData.isHelper &&
-        // Check if this object should remain
-        !Array.from(validNodeIds).some((id) => getObject(id) === child)
+        // Check if this object should remain - improved comparison
+        !validObjects.has(child)
     );
 
     // Remove stale objects
     if (objectsToRemove.length > 0) {
-      console.log("Removing objects:", objectsToRemove.length);
+      console.log("Removing objects:", objectsToRemove.length, objectsToRemove);
       objectsToRemove.forEach((child) => {
         scene.remove(child);
       });

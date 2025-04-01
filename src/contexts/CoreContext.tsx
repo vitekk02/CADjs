@@ -1,5 +1,11 @@
 // src/contexts/CadCoreContext.tsx
-import React, { createContext, useContext, useState, ReactNode } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  ReactNode,
+  useCallback,
+} from "react";
 import * as THREE from "three";
 import { Brep, BrepGraph, CompoundBrep } from "../geometry";
 import {
@@ -74,25 +80,40 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     setMode(result.mode);
     setSelectedElements([]);
   };
-
+  console.log("Core context elements:", elements);
+  console.log("Id counter:", idCounter);
   // Element manipulation methods
-  const addElement = (
-    brep: Brep,
-    position: THREE.Vector3,
-    object?: THREE.Object3D
-  ) => {
-    const result = addElementOp(
-      elements,
-      brep,
-      position,
-      idCounter,
-      objectsMap,
-      object
-    );
-    setElements(result.updatedElements);
-    setIdCounter(result.nextId);
-    return result.nodeId;
-  };
+  const addElement = useCallback(
+    (brep: Brep, position: THREE.Vector3, object?: THREE.Object3D) => {
+      // Add debug logging to track the issue
+      console.log("Adding element, current ID counter:", idCounter);
+
+      const result = addElementOp(
+        elements,
+        brep,
+        position,
+        idCounter,
+        objectsMap,
+        object
+      );
+
+      // Set the elements and increment the ID counter
+      setElements(result.updatedElements);
+      setIdCounter(result.nextId);
+
+      // Debug the result
+      console.log(
+        "Element added with ID:",
+        result.nodeId,
+        "Next ID:",
+        result.nextId
+      );
+      console.log("New elements count:", result.updatedElements.length);
+
+      return result.nodeId;
+    },
+    [elements, idCounter, objectsMap]
+  );
 
   const removeElement = (nodeId: string) => {
     const result = removeElementOp(
