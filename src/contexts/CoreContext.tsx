@@ -6,6 +6,7 @@ import {
   addElement as addElementOp,
   removeElement as removeElementOp,
   updateElementPosition as updateElementPositionOp,
+  rotateElement as rotateElementOp,
 } from "../scene-operations/element-operations";
 import {
   handleSetMode as handleSetModeOp,
@@ -43,6 +44,7 @@ export interface CadCoreContextType {
   deselectElement: (nodeId: string) => void;
   deselectAll: () => void;
   unionSelectedElements: () => void;
+  rotateElement: (nodeId: string, angleInRadians: number) => void;
 
   // Object access
   getObject: (nodeId: string) => THREE.Object3D | undefined;
@@ -159,6 +161,16 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     setIdCounter(result.nextIdCounter);
   };
 
+  const rotateElement = (nodeId: string, angleInRadians: number) => {
+    const updatedElements = rotateElementOp(
+      elements,
+      nodeId,
+      angleInRadians,
+      objectsMap
+    );
+    setElements(updatedElements);
+  };
+
   return (
     <CadCoreContext.Provider
       value={{
@@ -179,7 +191,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         deselectElement,
         deselectAll,
         unionSelectedElements,
-
+        rotateElement,
         // Object access methods
         getObject: (nodeId) => getObject(objectsMap, nodeId),
         getAllObjects: () => getAllObjects(objectsMap),

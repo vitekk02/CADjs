@@ -50,6 +50,20 @@ interface CadVisualizerContextType {
 
   // Force scene update
   forceSceneUpdate: () => void;
+
+  showWireframe: (nodeId: string) => void;
+  hideWireframe: () => void;
+
+  // Rotation control
+  showRotationControl: boolean;
+  rotationControlRef: React.RefObject<HTMLDivElement>;
+  startRotation: (e: React.MouseEvent) => void;
+  isRotating: boolean;
+
+  // Context menu positioning
+  positionContextMenuAtBoundingBoxCorner: (
+    nodeId: string
+  ) => { x: number; y: number } | null;
 }
 
 export const CadVisualizerContext = createContext<
@@ -59,8 +73,6 @@ export const CadVisualizerContext = createContext<
 export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   children,
 }) => {
-  const { addElement, elements, getObject } = useCadCore();
-
   // Three.js object references
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -76,6 +88,283 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
   // For forcing updates to the scene
   const [forceUpdate, setForceUpdate] = useState(0);
+  const {
+    elements,
+    getObject,
+    updateElementPosition,
+    rotateElement,
+    mode,
+    addElement,
+  } = useCadCore();
+
+  // Add these new states and refs
+  const [edgeHelpers, setEdgeHelpers] = useState<THREE.LineSegments | null>(
+    null
+  );
+  const [vertexHelpers, setVertexHelpers] = useState<THREE.Object3D | null>(
+    null
+  );
+  const [showRotationControl, setShowRotationControl] = useState(false);
+  const [rotationStartAngle, setRotationStartAngle] = useState(0);
+  const [isRotating, setIsRotating] = useState(false);
+  const rotationControlRef = useRef<HTMLDivElement>(null);
+  const selectedElementRef = useRef<string | null>(null);
+  const moveOffsetRef = useRef(new THREE.Vector3());
+
+  // Handle wireframe visualization
+  const showWireframe = (nodeId: string) => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    // Clean up any existing helpers
+    hideWireframe();
+
+    selectedElementRef.current = nodeId;
+
+    // Find the element
+    const element = elements.find((el) => el.nodeId === nodeId);
+    if (!element) return;
+
+    // Create new helpers
+    const newEdgeHelpers = createEdgeHelpers(element);
+    const newVertexHelpers = createVertexHelpers(element);
+
+    if (newEdgeHelpers) {
+      newEdgeHelpers.position.copy(element.position);
+      // Apply any existing rotation
+      const obj = getObject(nodeId);
+      if (obj && obj.rotation) {
+        newEdgeHelpers.rotation.copy(obj.rotation);
+      }
+      scene.add(newEdgeHelpers);
+      setEdgeHelpers(newEdgeHelpers);
+    }
+
+    if (newVertexHelpers) {
+      newVertexHelpers.position.copy(element.position);
+      // Apply any existing rotation
+      const obj = getObject(nodeId);
+      if (obj && obj.rotation) {
+        newVertexHelpers.rotation.copy(obj.rotation);
+      }
+      scene.add(newVertexHelpers);
+      setVertexHelpers(newVertexHelpers);
+    }
+
+    // Position and show rotation control if in move mode
+    if (mode === "move") {
+      positionRotationControl(element);
+    }
+  };
+
+  const hideWireframe = () => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    if (edgeHelpers) {
+      scene.remove(edgeHelpers);
+      setEdgeHelpers(null);
+    }
+
+    if (vertexHelpers) {
+      scene.remove(vertexHelpers);
+      setVertexHelpers(null);
+    }
+
+    setShowRotationControl(false);
+    selectedElementRef.current = null;
+  };
+
+  // Position rotation control at element center
+  const positionRotationControl = (element: SceneElement) => {
+    if (!cameraRef.current || !rendererRef.current) return;
+
+    const camera = cameraRef.current;
+    const renderer = rendererRef.current;
+
+    // Get the element's center position in screen coordinates
+    const center = new THREE.Vector3().copy(element.position);
+    const tempV = center.clone();
+    tempV.project(camera);
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const centerX = (tempV.x * 0.5 + 0.5) * rect.width + rect.left;
+    const centerY = (1 - (tempV.y * 0.5 + 0.5)) * rect.height + rect.top;
+
+    // Show the rotation control
+    setShowRotationControl(true);
+
+    // Position it at the element's center
+    if (rotationControlRef.current) {
+      rotationControlRef.current.style.left = `${centerX}px`;
+      rotationControlRef.current.style.top = `${centerY}px`;
+    }
+  };
+
+  // Rotation handlers
+  const startRotation = (e: React.MouseEvent) => {
+    if (
+      !cameraRef.current ||
+      !rendererRef.current ||
+      !selectedElementRef.current
+    )
+      return;
+
+    // Prevent other events
+    e.stopPropagation();
+
+    const camera = cameraRef.current;
+    const renderer = rendererRef.current;
+    const nodeId = selectedElementRef.current;
+
+    const element = elements.find((el) => el.nodeId === nodeId);
+    if (!element) return;
+
+    const center = new THREE.Vector3().copy(element.position);
+    const tempV = center.clone();
+    tempV.project(camera);
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const centerX = (tempV.x * 0.5 + 0.5) * rect.width + rect.left;
+    const centerY = (1 - (tempV.y * 0.5 + 0.5)) * rect.height + rect.top;
+
+    // Calculate the initial angle from center to mouse
+    const startAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX);
+
+    setRotationStartAngle(startAngle);
+    setIsRotating(true);
+  };
+
+  const updateRotation = useCallback(
+    (e: MouseEvent) => {
+      if (
+        !isRotating ||
+        !selectedElementRef.current ||
+        !cameraRef.current ||
+        !rendererRef.current
+      )
+        return;
+
+      const camera = cameraRef.current;
+      const renderer = rendererRef.current;
+      const nodeId = selectedElementRef.current;
+
+      const element = elements.find((el) => el.nodeId === nodeId);
+      if (!element) return;
+
+      // Get original position before rotation
+      const originalPosition = element.position.clone();
+
+      // Get the element's center position in screen coordinates
+      const center = new THREE.Vector3().copy(element.position);
+      const tempV = center.clone();
+      tempV.project(camera);
+
+      const rect = renderer.domElement.getBoundingClientRect();
+      const centerX = (tempV.x * 0.5 + 0.5) * rect.width + rect.left;
+      const centerY = (1 - (tempV.y * 0.5 + 0.5)) * rect.height + rect.top;
+
+      // Calculate the current angle from center to mouse
+      const currentAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX);
+
+      // Calculate the angle difference
+      let angleDiff = -(currentAngle - rotationStartAngle);
+
+      // Apply the rotation
+      rotateElement(nodeId, angleDiff);
+
+      // Force position reset after rotation
+      updateElementPosition(nodeId, originalPosition);
+
+      // Update the wireframe helpers
+      if (sceneRef.current) {
+        // Remove previous helpers
+        if (edgeHelpers) sceneRef.current.remove(edgeHelpers);
+        if (vertexHelpers) sceneRef.current.remove(vertexHelpers);
+
+        // Get updated element
+        const updatedElement = elements.find((el) => el.nodeId === nodeId);
+        if (updatedElement) {
+          // Create new helpers with rotated geometry
+          const newEdgeHelpers = createEdgeHelpers(updatedElement);
+          const newVertexHelpers = createVertexHelpers(updatedElement);
+
+          if (newEdgeHelpers) {
+            newEdgeHelpers.position.copy(updatedElement.position);
+            const obj = getObject(nodeId);
+            if (obj) {
+              newEdgeHelpers.rotation.z = obj.rotation.z;
+            }
+            sceneRef.current.add(newEdgeHelpers);
+            setEdgeHelpers(newEdgeHelpers);
+          }
+
+          if (newVertexHelpers) {
+            newVertexHelpers.position.copy(updatedElement.position);
+            const obj = getObject(nodeId);
+            if (obj) {
+              newVertexHelpers.rotation.z = obj.rotation.z;
+            }
+            sceneRef.current.add(newVertexHelpers);
+            setVertexHelpers(newVertexHelpers);
+          }
+        }
+      }
+
+      // Update the start angle for the next move
+      setRotationStartAngle(currentAngle);
+    },
+    [isRotating, rotationStartAngle, elements]
+  );
+
+  const endRotation = useCallback(() => {
+    setIsRotating(false);
+  }, []);
+
+  // Set up event listeners for rotation
+  useEffect(() => {
+    if (isRotating) {
+      window.addEventListener("mousemove", updateRotation);
+      window.addEventListener("mouseup", endRotation);
+
+      return () => {
+        window.removeEventListener("mousemove", updateRotation);
+        window.removeEventListener("mouseup", endRotation);
+      };
+    }
+  }, [isRotating, updateRotation, endRotation]);
+
+  // Calculate context menu position at bounding box corner
+  const positionContextMenuAtBoundingBoxCorner = (nodeId: string) => {
+    if (!cameraRef.current || !rendererRef.current) return null;
+
+    const camera = cameraRef.current;
+    const renderer = rendererRef.current;
+    const obj = getObject(nodeId);
+    if (!obj) return null;
+
+    // Calculate the bounding box
+    const boundingBox = new THREE.Box3().setFromObject(obj);
+    const topRightCorner = new THREE.Vector3(
+      boundingBox.max.x,
+      boundingBox.max.y,
+      boundingBox.max.z
+    );
+
+    // Project to screen coordinates
+    const tempV = topRightCorner.clone();
+    tempV.project(camera);
+
+    // Convert to screen coordinates
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = (tempV.x * 0.5 + 0.5) * rect.width + rect.left;
+    const y = (1 - (tempV.y * 0.5 + 0.5)) * rect.height + rect.top;
+
+    return {
+      x: x + 10, // Small offset
+      y: y - 10, // Small offset
+    };
+  };
 
   // Initialize scene, camera, renderer
   const initSceneObjects = () => {
@@ -507,6 +796,14 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
         // Scene updates
         forceSceneUpdate,
+
+        hideWireframe,
+        isRotating,
+        positionContextMenuAtBoundingBoxCorner,
+        rotationControlRef,
+        showRotationControl,
+        showWireframe,
+        startRotation,
       }}
     >
       {children}
