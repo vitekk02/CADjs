@@ -483,7 +483,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     // Find objects to remove - more precise object comparison
     const validNodeIds = new Set(elements.map((el) => el.nodeId));
     const validObjects = new Set(elements.map((el) => getObject(el.nodeId)));
-
+    console.log(scene.children.map((child) => child.type));
     const objectsToRemove = scene.children.filter(
       (child) =>
         // Skip special objects
@@ -494,7 +494,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         // Skip our custom helpers
         !child.userData.isHelper &&
         // Check if this object should remain - improved comparison
-        !validObjects.has(child)
+        !validObjects.has(child) &&
+        child.userData.helperType !== "gizmo" &&
+        child.type !== "TransformControlsGizmo"
     );
 
     // Remove stale objects

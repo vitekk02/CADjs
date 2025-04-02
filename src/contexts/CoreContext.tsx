@@ -80,6 +80,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     setMode(result.mode);
     setSelectedElements([]);
   };
+
   console.log("Core context elements:", elements);
   console.log("Id counter:", idCounter);
   // Element manipulation methods

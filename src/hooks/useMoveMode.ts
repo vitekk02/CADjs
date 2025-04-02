@@ -1,6 +1,6 @@
-// src/hooks/useMoveMode.ts
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import * as THREE from "three";
+import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { SceneElement } from "../scene-operations/types";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
@@ -34,6 +34,8 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     getMouseIntersection,
     createEdgeHelpers,
     createVertexHelpers,
+    controls: orbitControls,
+    forceSceneUpdate,
   } = useCadVisualizer();
 
   // State for selected object and context menu
@@ -50,11 +52,148 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     nodeId: null,
   });
 
-  // Refs for tracking move operations
-  const moveOffsetRef = useRef(new THREE.Vector3());
-  const isDraggingRef = useRef(false);
+  // Ref for transform controls (gizmo)
+  const transformControlsRef = useRef<TransformControls | null>(null);
   const edgeHelpersRef = useRef<THREE.LineSegments | null>(null);
   const vertexHelpersRef = useRef<THREE.Object3D | null>(null);
+  console.log(transformControlsRef.current?.gizmo);
+  // Initialize transform controls when scene is available
+  useEffect(() => {
+    if (!scene || !camera || !renderer) {
+      console.error("Scene, camera, or renderer not available");
+      return;
+    }
+
+    console.log("Scene, camera, and renderer are available");
+
+    // Clean up any existing transform controls
+    if (transformControlsRef.current) {
+      try {
+        scene.remove(transformControlsRef.current);
+        transformControlsRef.current.dispose();
+      } catch (e) {
+        console.error("Error cleaning up transform controls:", e);
+      }
+      transformControlsRef.current = null;
+    }
+
+    try {
+      // Create transform controls without instanceof check
+      const transformControls = new TransformControls(
+        camera,
+        renderer.domElement
+      );
+
+      // Basic setup
+      transformControls.setMode("translate");
+      transformControls.setSize(1.25);
+
+      // Make sure axes are visible
+      transformControls.showX = true;
+      transformControls.showY = true;
+      transformControls.showZ = true;
+
+      transformControls.enabled = true;
+
+      // Event listeners
+      transformControls.addEventListener("dragging-changed", (event) => {
+        if (orbitControls) {
+          orbitControls.enabled = !event.value;
+        }
+      });
+
+      transformControls.addEventListener("objectChange", () => {
+        if (selectedObject && transformControls.object) {
+          const position = new THREE.Vector3();
+          transformControls.object.getWorldPosition(position);
+          updateElementPosition(selectedObject, position);
+
+          if (contextMenu.visible && contextMenu.nodeId === selectedObject) {
+            updateContextMenuPosition(selectedObject);
+          }
+
+          forceSceneUpdate();
+        }
+      });
+
+      // Add to scene - use try/catch to capture any errors
+      try {
+        console.log("Adding TransformControls to scene");
+        const gizmo = transformControls.getHelper();
+        gizmo.userData.helperType = "gizmo";
+        scene.add(gizmo);
+        console.log("TransformControls added successfully");
+      } catch (e) {
+        console.error("Error adding TransformControls to scene:", e);
+        return;
+      }
+
+      transformControlsRef.current = transformControls;
+
+      // Force scene update to make controls appear
+      forceSceneUpdate();
+    } catch (error) {
+      console.error("Error in TransformControls creation:", error);
+    }
+
+    return () => {
+      if (transformControlsRef.current) {
+        try {
+          transformControlsRef.current.dispose();
+          scene.remove(transformControlsRef.current);
+        } catch (e) {
+          console.error("Error cleaning up transform controls:", e);
+        }
+        transformControlsRef.current = null;
+      }
+    };
+  }, [scene, camera, renderer]);
+
+  // Attach/detach transform controls when selected object changes
+  useEffect(() => {
+    const transformControls = transformControlsRef.current;
+    if (!transformControls) {
+      console.log("No transform controls available for attaching object");
+      return;
+    }
+    if (!scene) {
+      console.log("No scene available for attaching object");
+      return;
+    }
+
+    try {
+      if (selectedObject) {
+        const obj = getObject(selectedObject);
+        console.log("Object to attach:", obj, "for nodeId:", selectedObject);
+
+        if (!obj) {
+          console.error("Object not found for ID:", selectedObject);
+          return;
+        }
+
+        if (!(obj instanceof THREE.Object3D)) {
+          console.error("Object is not an instance of THREE.Object3D:", obj);
+          return;
+        }
+
+        console.log("Attaching object to transform controls:", obj);
+        transformControls.attach(obj);
+        console.log(transformControls);
+        console.log(scene.children);
+        transformControls.visible = true;
+        forceSceneUpdate();
+        console.log(
+          "Object attached successfully, controls visible:",
+          transformControls.visible
+        );
+      } else {
+        transformControls.detach();
+        console.log("Transform controls detached (no selection)");
+      }
+    } catch (error) {
+      console.error("Error attaching object to TransformControls:", error);
+    }
+  }, [selectedObject, scene, getObject]);
 
   // Calculate context menu position at bounding box corner
   const updateContextMenuPosition = (nodeId: string | null) => {
@@ -121,12 +260,19 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
       }
     }
 
+    // Detach transform controls
+    if (transformControlsRef.current) {
+      transformControlsRef.current.detach();
+    }
+
     setSelectedObject(null);
     setContextMenu({ visible: false, x: 0, y: 0, nodeId: null });
   };
 
   // Mouse down handler for selection
   const handleMouseDown = (event: MouseEvent) => {
+    // Skip handling if this is a gizmo interaction
+    if (transformControlsRef.current?.dragging) return;
     if (!camera || !renderer || event.button !== 0) return;
 
     // Create raycaster for object selection
@@ -170,6 +316,7 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
           const tempV = topRightCorner.clone();
           tempV.project(camera);
 
+          const rect = renderer.domElement.getBoundingClientRect();
           const x = (tempV.x * 0.5 + 0.5) * rect.width + rect.left;
           const y = (1 - (tempV.y * 0.5 + 0.5)) * rect.height + rect.top;
 
@@ -183,12 +330,6 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
           // Create wireframe helpers
           updateWireframeHelpers(el.nodeId);
 
-          // Set up for movement
-          const intersection = getMouseIntersection(event);
-          if (intersection) {
-            moveOffsetRef.current.copy(el.position).sub(intersection);
-          }
-
           break;
         }
       }
@@ -196,51 +337,15 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
       // Clicked empty space, clear selection
       clearSelection();
     }
-
-    isDraggingRef.current = false;
   };
 
-  // Mouse move handler for dragging
+  // With gizmo-based movement, these handlers are much simpler
   const handleMouseMove = (event: MouseEvent) => {
-    if (!selectedObject) return;
-
-    if (isDraggingRef.current || event.buttons & 1) {
-      isDraggingRef.current = true;
-
-      const intersection = getMouseIntersection(event);
-      if (intersection) {
-        const newPosition = intersection.clone().add(moveOffsetRef.current);
-
-        // Move the element
-        updateElementPosition(selectedObject, newPosition);
-
-        // Find updated element
-        const updatedElement = elements.find(
-          (el) => el.nodeId === selectedObject
-        );
-
-        // Update helper positions
-        if (updatedElement && scene) {
-          if (edgeHelpersRef.current) {
-            edgeHelpersRef.current.position.copy(updatedElement.position);
-          }
-
-          if (vertexHelpersRef.current) {
-            vertexHelpersRef.current.position.copy(updatedElement.position);
-          }
-        }
-
-        // Update context menu position
-        if (contextMenu.visible && contextMenu.nodeId === selectedObject) {
-          updateContextMenuPosition(selectedObject);
-        }
-      }
-    }
+    // The TransformControls now handle movement
   };
 
-  // Mouse up handler
   const handleMouseUp = () => {
-    isDraggingRef.current = false;
+    // The TransformControls now handle releasing
   };
 
   // Return state and handlers
