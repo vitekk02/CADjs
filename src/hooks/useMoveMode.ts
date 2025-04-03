@@ -13,6 +13,7 @@ interface MoveModeState {
     y: number;
     nodeId: string | null;
   };
+  isRotating: boolean;
 }
 
 interface MoveModeActions {
@@ -25,7 +26,8 @@ interface MoveModeActions {
 
 const useMoveMode = (): [MoveModeState, MoveModeActions] => {
   // Get required context
-  const { elements, getObject, updateElementPosition } = useCadCore();
+  const { elements, getObject, updateElementPosition, updateElementRotation } =
+    useCadCore();
 
   const {
     camera,
@@ -52,11 +54,10 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     nodeId: null,
   });
 
+  const [isRotating, setIsRotating] = useState<boolean>(false);
+
   // Ref for transform controls (gizmo)
   const transformControlsRef = useRef<TransformControls | null>(null);
-  const edgeHelpersRef = useRef<THREE.LineSegments | null>(null);
-  const vertexHelpersRef = useRef<THREE.Object3D | null>(null);
-  console.log(transformControlsRef.current?.gizmo);
   // Initialize transform controls when scene is available
   useEffect(() => {
     if (!scene || !camera || !renderer) {
@@ -104,9 +105,23 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
 
       transformControls.addEventListener("objectChange", () => {
         if (selectedObject && transformControls.object) {
+          // Get the current position
           const position = new THREE.Vector3();
           transformControls.object.getWorldPosition(position);
+
+          // Update position in the data model
           updateElementPosition(selectedObject, position);
+
+          // If we're in rotation mode, also update rotation
+          if (isRotating) {
+            const rotation = new THREE.Euler();
+            rotation.setFromRotationMatrix(
+              new THREE.Matrix4().extractRotation(
+                transformControls.object.matrixWorld
+              )
+            );
+            updateElementRotation(selectedObject, rotation);
+          }
 
           if (contextMenu.visible && contextMenu.nodeId === selectedObject) {
             updateContextMenuPosition(selectedObject);
@@ -136,7 +151,37 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
       console.error("Error in TransformControls creation:", error);
     }
 
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Alt") {
+        event.preventDefault(); // Prevent browser default behavior
+        if (!isRotating && transformControlsRef.current) {
+          // Switch to rotate mode
+          transformControlsRef.current.setMode("rotate");
+          setIsRotating(true);
+        }
+      }
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Alt") {
+        console.log("Key up event detected");
+        console.log("Is rotating:", isRotating);
+        console.log("Transform controls:", transformControlsRef.current);
+        if (transformControlsRef.current) {
+          console.log("here");
+          // Switch back to translate mode
+          transformControlsRef.current.setMode("translate");
+          setIsRotating(false);
+        }
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("keyup", handleKeyUp);
+
     return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keyup", handleKeyUp);
       if (transformControlsRef.current) {
         try {
           transformControlsRef.current.dispose();

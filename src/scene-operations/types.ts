@@ -8,6 +8,7 @@ export interface SceneElement {
   nodeId: string;
   position: THREE.Vector3;
   selected?: boolean;
+  rotation?: THREE.Euler;
 }
 
 export interface SceneState {

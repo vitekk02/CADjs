@@ -49,6 +49,7 @@ export interface CadCoreContextType {
   deselectElement: (nodeId: string) => void;
   deselectAll: () => void;
   unionSelectedElements: () => void;
+  updateElementRotation: (nodeId: string, rotation: THREE.Euler) => void;
 
   // Object access
   getObject: (nodeId: string) => THREE.Object3D | undefined;
@@ -180,6 +181,26 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     setSelectedElements(result.updatedSelectedElements);
     setIdCounter(result.nextIdCounter);
   };
+  const updateElementRotation = (nodeId: string, rotation: THREE.Euler) => {
+    setElements((prevElements) =>
+      prevElements.map((element) => {
+        if (element.nodeId === nodeId) {
+          // Update the object in the scene
+          const obj = getObject(objectsMap, nodeId);
+          if (obj) {
+            obj.rotation.copy(rotation);
+          }
+
+          // Return the updated element
+          return {
+            ...element,
+            rotation: rotation,
+          };
+        }
+        return element;
+      })
+    );
+  };
 
   return (
     <CadCoreContext.Provider
@@ -202,6 +223,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         deselectAll,
         unionSelectedElements,
 
+        updateElementRotation,
         // Object access methods
         getObject: (nodeId) => getObject(objectsMap, nodeId),
         getAllObjects: () => getAllObjects(objectsMap),
