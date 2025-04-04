@@ -1,5 +1,5 @@
 // src/hooks/useDrawMode.ts
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { ShapeType, useCadVisualizer } from "../contexts/VisualizerContext";
@@ -20,27 +20,82 @@ interface UseDrawModeResult {
 }
 
 export function useDrawMode(): UseDrawModeResult {
-  const { drawShape, forceSceneUpdate } = useCadVisualizer();
-  const { camera, renderer, scene, getMouseIntersection } = useCadVisualizer();
+  const {
+    camera,
+    renderer,
+    scene,
+    getMouseIntersection,
+    drawShape,
+    forceSceneUpdate,
+    customShapeInProgress,
+    handleCustomShapePoint,
+    customShapePoints,
+    createCustomShapePreview,
+    showGroundPlane,
+  } = useCadVisualizer();
 
   // Refs to track drawing state
   const isDrawingRef = useRef(false);
   const startPointRef = useRef<THREE.Vector3 | null>(null);
   const previewMeshRef = useRef<THREE.Mesh | null>(null);
-
+  const lastClickTimeRef = useRef<number | null>(null); // Add this line
   // Get current shape from visualizer context
   const { currentShape } = useCadVisualizer();
+
+  const snapToGrid = useCallback(
+    (point: THREE.Vector3): THREE.Vector3 => {
+      if (showGroundPlane) {
+        // Snap to 0.5 unit grid
+        const gridSize = 0.5;
+        point.x = Math.round(point.x / gridSize) * gridSize;
+        point.y = Math.round(point.y / gridSize) * gridSize;
+      }
+      return point;
+    },
+    [showGroundPlane]
+  );
 
   // Handle drawing operations
   const handleDrawMode = (event: MouseEvent) => {
     if (event.button !== 0) return; // Left mouse button only
 
-    const point = getMouseIntersection(event);
+    let point = getMouseIntersection(event);
     if (!point) return;
 
+    if (showGroundPlane) {
+      point = snapToGrid(point);
+    }
+
     if (event.type === "mousedown") {
-      isDrawingRef.current = true;
-      startPointRef.current = point.clone();
+      if (currentShape === "custom") {
+        // For custom shape, toggle drawing start or add point
+        if (!customShapeInProgress) {
+          isDrawingRef.current = true;
+          startPointRef.current = point.clone();
+          handleCustomShapePoint(point);
+        } else {
+          // Add another point, check for double click to complete
+          const isDoubleClick =
+            lastClickTimeRef.current &&
+            Date.now() - lastClickTimeRef.current < 300;
+
+          if (isDoubleClick) {
+            // Complete the shape on double click
+            handleCustomShapePoint(point, true);
+            isDrawingRef.current = false;
+            startPointRef.current = null;
+            cleanupPreview();
+          } else {
+            // Just add the point
+            handleCustomShapePoint(point);
+          }
+          lastClickTimeRef.current = Date.now();
+        }
+      } else {
+        // Normal shape drawing (rectangle, triangle, circle)
+        isDrawingRef.current = true;
+        startPointRef.current = point.clone();
+      }
     } else if (event.type === "mousemove") {
       // Only show preview when drawing
       if (!isDrawingRef.current || !startPointRef.current) return;
@@ -110,6 +165,20 @@ export function useDrawMode(): UseDrawModeResult {
           const circleGeometry = new THREE.CircleGeometry(radius, 32);
           previewMesh = new THREE.Mesh(circleGeometry, material);
           previewMesh.position.copy(start);
+          break;
+
+        case "custom":
+          if (previewMeshRef.current && scene) {
+            scene.remove(previewMeshRef.current);
+            previewMeshRef.current = null;
+          }
+
+          // Create new preview mesh
+          if (customShapePoints.length > 0 && scene) {
+            const previewMesh = createCustomShapePreview(point);
+            scene.add(previewMesh);
+            previewMeshRef.current = previewMesh;
+          }
           break;
 
         default:

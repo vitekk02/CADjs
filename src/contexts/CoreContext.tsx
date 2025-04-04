@@ -75,12 +75,15 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   const [objectsMap] = useState<Map<string, THREE.Object3D>>(new Map());
 
   // State update methods
-  const handleSetMode = (newMode: SceneMode) => {
-    const result = handleSetModeOp(elements, newMode, objectsMap);
-    setElements(result.updatedElements);
-    setMode(result.mode);
-    setSelectedElements([]);
-  };
+  const handleSetMode = useCallback(
+    (newMode: SceneMode) => {
+      const result = handleSetModeOp(elements, newMode, objectsMap);
+      setElements(result.updatedElements);
+      setMode(result.mode);
+      setSelectedElements([]);
+    },
+    [elements, objectsMap]
+  );
 
   console.log("Core context elements:", elements);
   console.log("Id counter:", idCounter);
@@ -117,56 +120,68 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [elements, idCounter, objectsMap]
   );
 
-  const removeElement = (nodeId: string) => {
-    const result = removeElementOp(
-      elements,
-      selectedElements,
-      nodeId,
-      objectsMap
-    );
-    setElements(result.updatedElements);
-    setSelectedElements(result.updatedSelectedElements);
-  };
+  const removeElement = useCallback(
+    (nodeId: string) => {
+      const result = removeElementOp(
+        elements,
+        selectedElements,
+        nodeId,
+        objectsMap
+      );
+      setElements(result.updatedElements);
+      setSelectedElements(result.updatedSelectedElements);
+    },
+    [elements, selectedElements, objectsMap]
+  );
 
-  const updateElementPosition = (nodeId: string, position: THREE.Vector3) => {
-    const updatedElements = updateElementPositionOp(
-      elements,
-      nodeId,
-      position,
-      objectsMap
-    );
-    setElements(updatedElements);
-  };
+  const updateElementPosition = useCallback(
+    (nodeId: string, position: THREE.Vector3) => {
+      const updatedElements = updateElementPositionOp(
+        elements,
+        nodeId,
+        position,
+        objectsMap
+      );
+      setElements(updatedElements);
+    },
+    [elements, objectsMap]
+  );
 
-  const selectElement = (nodeId: string) => {
-    const result = selectElementOp(
-      elements,
-      selectedElements,
-      nodeId,
-      objectsMap
-    );
-    setElements(result.updatedElements);
-    setSelectedElements(result.updatedSelectedElements);
-  };
+  const selectElement = useCallback(
+    (nodeId: string) => {
+      const result = selectElementOp(
+        elements,
+        selectedElements,
+        nodeId,
+        objectsMap
+      );
+      setElements(result.updatedElements);
+      setSelectedElements(result.updatedSelectedElements);
+    },
+    [elements, selectedElements, objectsMap]
+  );
 
-  const deselectElement = (nodeId: string) => {
-    const result = deselectElementOp(
-      elements,
-      selectedElements,
-      nodeId,
-      objectsMap
-    );
-    setElements(result.updatedElements);
-    setSelectedElements(result.updatedSelectedElements);
-  };
+  const deselectElement = useCallback(
+    (nodeId: string) => {
+      const result = deselectElementOp(
+        elements,
+        selectedElements,
+        nodeId,
+        objectsMap
+      );
+      setElements(result.updatedElements);
+      setSelectedElements(result.updatedSelectedElements);
+    },
+    [elements, selectedElements, objectsMap]
+  );
 
-  const deselectAll = () => {
+  const deselectAll = useCallback(() => {
     const result = handleSetModeOp(elements, mode, objectsMap);
     setElements(result.updatedElements);
     setSelectedElements([]);
-  };
+  }, [elements, mode, objectsMap]);
 
-  const unionSelectedElements = () => {
+  const unionSelectedElements = useCallback(() => {
     if (selectedElements.length < 2) return;
 
     const result = unionSelectedElementsOp(
@@ -180,27 +195,31 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     setElements(result.updatedElements);
     setSelectedElements(result.updatedSelectedElements);
     setIdCounter(result.nextIdCounter);
-  };
-  const updateElementRotation = (nodeId: string, rotation: THREE.Euler) => {
-    setElements((prevElements) =>
-      prevElements.map((element) => {
-        if (element.nodeId === nodeId) {
-          // Update the object in the scene
-          const obj = getObject(objectsMap, nodeId);
-          if (obj) {
-            obj.rotation.copy(rotation);
-          }
+  }, [elements, selectedElements, idCounter, brepGraph, objectsMap]);
 
-          // Return the updated element
-          return {
-            ...element,
-            rotation: rotation,
-          };
-        }
-        return element;
-      })
-    );
-  };
+  const updateElementRotation = useCallback(
+    (nodeId: string, rotation: THREE.Euler) => {
+      setElements((prevElements) =>
+        prevElements.map((element) => {
+          if (element.nodeId === nodeId) {
+            // Update the object in the scene
+            const obj = getObject(objectsMap, nodeId);
+            if (obj) {
+              obj.rotation.copy(rotation);
+            }
+
+            // Return the updated element
+            return {
+              ...element,
+              rotation: rotation,
+            };
+          }
+          return element;
+        })
+      );
+    },
+    [objectsMap]
+  );
 
   return (
     <CadCoreContext.Provider

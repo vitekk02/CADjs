@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { SceneElement } from "../scene-operations/types";
@@ -33,11 +33,9 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     camera,
     renderer,
     scene,
-    getMouseIntersection,
-    createEdgeHelpers,
-    createVertexHelpers,
     controls: orbitControls,
     forceSceneUpdate,
+    showGroundPlane,
   } = useCadVisualizer();
 
   // State for selected object and context menu
@@ -55,9 +53,45 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
   });
 
   const [isRotating, setIsRotating] = useState<boolean>(false);
+  const [shiftKeyPressed, setShiftKeyPressed] = useState<boolean>(false);
+
+  const snapPositionToGrid = useCallback(
+    (position: THREE.Vector3): THREE.Vector3 => {
+      if (showGroundPlane && !shiftKeyPressed) {
+        const gridSize = 0.5;
+        const newPosition = position.clone();
+        newPosition.x = Math.round(newPosition.x / gridSize) * gridSize;
+        newPosition.y = Math.round(newPosition.y / gridSize) * gridSize;
+        return newPosition;
+      }
+      return position;
+    },
+    [showGroundPlane, shiftKeyPressed]
+  );
+
+  // Add this function to snap rotations to increments
+  const snapRotationToIncrement = useCallback(
+    (rotation: THREE.Euler): THREE.Euler => {
+      if (showGroundPlane && !shiftKeyPressed) {
+        // Snap to 15-degree increments (in radians)
+        const angleIncrement = Math.PI / 12; // 15 degrees
+        const newRotation = rotation.clone();
+        newRotation.x =
+          Math.round(newRotation.x / angleIncrement) * angleIncrement;
+        newRotation.y =
+          Math.round(newRotation.y / angleIncrement) * angleIncrement;
+        newRotation.z =
+          Math.round(newRotation.z / angleIncrement) * angleIncrement;
+        return newRotation;
+      }
+      return rotation;
+    },
+    [showGroundPlane, shiftKeyPressed]
+  );
 
   // Ref for transform controls (gizmo)
   const transformControlsRef = useRef<TransformControls | null>(null);
+
   // Initialize transform controls when scene is available
   useEffect(() => {
     if (!scene || !camera || !renderer) {
@@ -87,6 +121,7 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
 
       // Basic setup
       transformControls.setMode("translate");
+      transformControls.setSpace("world");
       transformControls.setSize(1.25);
 
       // Make sure axes are visible
@@ -109,10 +144,23 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
           const position = new THREE.Vector3();
           transformControls.object.getWorldPosition(position);
 
-          // Update position in the data model
-          updateElementPosition(selectedObject, position);
+          // Apply grid snapping to position if enabled
+          if (showGroundPlane && transformControls.mode === "translate") {
+            const snappedPosition = snapPositionToGrid(position);
 
-          // If we're in rotation mode, also update rotation
+            // Only update if actually changed (prevents loops)
+            if (!position.equals(snappedPosition)) {
+              transformControls.object.position.copy(snappedPosition);
+            }
+
+            // Update position in the data model
+            updateElementPosition(selectedObject, snappedPosition);
+          } else {
+            // Normal update without snapping
+            updateElementPosition(selectedObject, position);
+          }
+
+          // If we're in rotation mode, also update rotation with snapping
           if (isRotating) {
             const rotation = new THREE.Euler();
             rotation.setFromRotationMatrix(
@@ -120,14 +168,24 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
                 transformControls.object.matrixWorld
               )
             );
-            updateElementRotation(selectedObject, rotation);
-          }
 
-          if (contextMenu.visible && contextMenu.nodeId === selectedObject) {
-            updateContextMenuPosition(selectedObject);
-          }
+            // Apply rotation snapping if enabled
+            if (showGroundPlane) {
+              const snappedRotation = snapRotationToIncrement(rotation);
 
-          forceSceneUpdate();
+              // Only update if actually changed (prevents loops)
+              if (!rotation.equals(snappedRotation)) {
+                // We need to update the object's quaternion from the snapped Euler
+                const quaternion = new THREE.Quaternion();
+                quaternion.setFromEuler(snappedRotation);
+                transformControls.object.quaternion.copy(quaternion);
+              }
+
+              updateElementRotation(selectedObject, snappedRotation);
+            } else {
+              updateElementRotation(selectedObject, rotation);
+            }
+          }
         }
       });
 
@@ -151,37 +209,7 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
       console.error("Error in TransformControls creation:", error);
     }
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Alt") {
-        event.preventDefault(); // Prevent browser default behavior
-        if (!isRotating && transformControlsRef.current) {
-          // Switch to rotate mode
-          transformControlsRef.current.setMode("rotate");
-          setIsRotating(true);
-        }
-      }
-    };
-
-    const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.key === "Alt") {
-        console.log("Key up event detected");
-        console.log("Is rotating:", isRotating);
-        console.log("Transform controls:", transformControlsRef.current);
-        if (transformControlsRef.current) {
-          console.log("here");
-          // Switch back to translate mode
-          transformControlsRef.current.setMode("translate");
-          setIsRotating(false);
-        }
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    document.addEventListener("keyup", handleKeyUp);
-
     return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-      document.removeEventListener("keyup", handleKeyUp);
       if (transformControlsRef.current) {
         try {
           transformControlsRef.current.dispose();
@@ -194,6 +222,56 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     };
   }, [scene, camera, renderer]);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Alt") {
+        event.preventDefault();
+        if (!isRotating && transformControlsRef.current) {
+          transformControlsRef.current.setMode("rotate");
+          setIsRotating(true);
+        }
+      }
+      if (event.key === "Shift") {
+        console.log("Shift key down");
+        setShiftKeyPressed(true);
+        // Directly update transform controls
+        if (transformControlsRef.current) {
+          transformControlsRef.current.setTranslationSnap(null);
+          transformControlsRef.current.setRotationSnap(null);
+          console.log("Snapping disabled directly from keydown handler");
+          forceSceneUpdate();
+        }
+      }
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Alt") {
+        if (transformControlsRef.current) {
+          transformControlsRef.current.setMode("translate");
+          setIsRotating(false);
+        }
+      }
+      if (event.key === "Shift") {
+        console.log("Shift key up");
+        setShiftKeyPressed(false);
+        // Directly update transform controls
+        if (transformControlsRef.current && showGroundPlane) {
+          transformControlsRef.current.setTranslationSnap(0.5);
+          transformControlsRef.current.setRotationSnap(Math.PI / 12);
+          console.log("Snapping re-enabled directly from keyup handler");
+          forceSceneUpdate();
+        }
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("keyup", handleKeyUp);
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [showGroundPlane, isRotating]);
   // Attach/detach transform controls when selected object changes
   useEffect(() => {
     const transformControls = transformControlsRef.current;

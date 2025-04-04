@@ -17,7 +17,7 @@ import { SceneElement } from "../scene-operations/types";
 import { useCadCore } from "./CoreContext";
 
 // Define types for shape creation
-export type ShapeType = "rectangle" | "triangle" | "circle";
+export type ShapeType = "rectangle" | "triangle" | "circle" | "custom";
 
 // Define the visualizer context type (UI helpers and visualization-specific functionality)
 interface CadVisualizerContextType {
@@ -50,6 +50,18 @@ interface CadVisualizerContextType {
 
   // Force scene update
   forceSceneUpdate: () => void;
+
+  customShapePoints: THREE.Vector3[];
+  handleCustomShapePoint: (
+    point: THREE.Vector3,
+    isComplete?: boolean
+  ) => THREE.Mesh | null;
+  createCustomShapePreview: (currentPoint: THREE.Vector3) => THREE.Mesh;
+  resetCustomShape: () => void;
+  customShapeInProgress: boolean;
+
+  showGroundPlane: boolean;
+  toggleGroundPlane: () => void;
 }
 
 export const CadVisualizerContext = createContext<
@@ -67,18 +79,26 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-
+  // For custom shape drawing
+  const [customShapePoints, setCustomShapePoints] = useState<THREE.Vector3[]>(
+    []
+  );
+  const customShapeInProgressRef = useRef<boolean>(false);
   // Drawing state
   const [currentShape, setCurrentShape] = useState<ShapeType>("rectangle");
-  const isDrawingRef = useRef(false);
-  const startPointRef = useRef<THREE.Vector3 | null>(null);
-  const previewShapeRef = useRef<THREE.Mesh | null>(null);
 
   // For forcing updates to the scene
   const [forceUpdate, setForceUpdate] = useState(0);
+  const [showGroundPlane, setShowGroundPlane] = useState<boolean>(true);
+  const groundPlaneRef = useRef<THREE.Group | null>(null);
+
+  // Toggle ground plane visibility
+  const toggleGroundPlane = useCallback(() => {
+    setShowGroundPlane((prev) => !prev);
+  }, []);
 
   // Initialize scene, camera, renderer
-  const initSceneObjects = () => {
+  const initSceneObjects = useCallback(() => {
     // Setup scene
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x808080);
@@ -109,79 +129,212 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     rendererRef.current = renderer;
 
     return { scene, camera, renderer };
-  };
+  }, []);
 
   // Mount the renderer to a DOM element
-  const mountRenderer = (container: HTMLDivElement) => {
-    containerRef.current = container;
+  const mountRenderer = useCallback(
+    (container: HTMLDivElement) => {
+      containerRef.current = container;
 
-    const { scene, camera, renderer } = initSceneObjects();
+      const { scene, camera, renderer } = initSceneObjects();
 
-    // Add to DOM
-    container.appendChild(renderer.domElement);
+      // Add to DOM
+      container.appendChild(renderer.domElement);
 
-    // Setup controls
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.mouseButtons = {
-      LEFT: null, // reserve left-click
-      MIDDLE: THREE.MOUSE.ROTATE,
-      RIGHT: THREE.MOUSE.RIGHT,
-    };
-    controls.enableZoom = true;
-    controls.enableRotate = true;
-    controls.enablePan = true;
-    controlsRef.current = controls;
+      // Setup controls
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.mouseButtons = {
+        LEFT: null, // reserve left-click
+        MIDDLE: THREE.MOUSE.ROTATE,
+        RIGHT: THREE.MOUSE.RIGHT,
+      };
+      controls.enableZoom = true;
+      controls.enableRotate = true;
+      controls.enablePan = true;
+      controlsRef.current = controls;
 
-    // Animation loop
-    const animate = () => {
-      requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
-    };
-    animate();
+      // Animation loop
+      const animate = () => {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+      };
+      animate();
 
-    // Handle window resizing
-    const handleResize = () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    };
-    window.addEventListener("resize", handleResize);
+      // Handle window resizing
+      const handleResize = () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      };
+      window.addEventListener("resize", handleResize);
 
-    // Return cleanup function
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      controls.dispose();
-    };
-  };
+      // Return cleanup function
+      return () => {
+        window.removeEventListener("resize", handleResize);
+        controls.dispose();
+      };
+    },
+    [initSceneObjects]
+  );
 
   // Unmount the renderer
-  const unmountRenderer = () => {
+  const unmountRenderer = useCallback(() => {
     if (containerRef.current && rendererRef.current) {
       containerRef.current.removeChild(rendererRef.current.domElement);
     }
-  };
+  }, []);
 
   // Helper to get mouse intersection with drawing plane
-  const getMouseIntersection = (event: MouseEvent): THREE.Vector3 | null => {
-    const renderer = rendererRef.current;
-    const camera = cameraRef.current;
-    if (!renderer || !camera) return null;
+  const getMouseIntersection = useCallback(
+    (event: MouseEvent): THREE.Vector3 | null => {
+      const renderer = rendererRef.current;
+      const camera = cameraRef.current;
+      if (!renderer || !camera) return null;
 
-    const drawingPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
-    const raycaster = new THREE.Raycaster();
+      const drawingPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+      const raycaster = new THREE.Raycaster();
 
-    const rect = renderer.domElement.getBoundingClientRect();
-    const mouse = new THREE.Vector2(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1
-    );
-    raycaster.setFromCamera(mouse, camera);
-    const intersection = new THREE.Vector3();
-    const result = raycaster.ray.intersectPlane(drawingPlane, intersection);
-    return result ? intersection : null;
-  };
+      const rect = renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      raycaster.setFromCamera(mouse, camera);
+      const intersection = new THREE.Vector3();
+      const result = raycaster.ray.intersectPlane(drawingPlane, intersection);
+      return result ? intersection : null;
+    },
+    []
+  );
+  // Create and visualize a custom shape
+  const createCustomShape = useCallback(
+    (points: THREE.Vector3[]) => {
+      if (points.length < 3) {
+        console.error("Cannot create custom shape with fewer than 3 points");
+        return;
+      }
 
+      // Calculate center position
+      const center = new THREE.Vector3();
+      points.forEach((point) => center.add(point));
+      center.divideScalar(points.length);
+
+      // Create B-rep vertices, edges, and face
+      const vertices: Vertex[] = points.map(
+        (point) => new Vertex(point.x, point.y, point.z)
+      );
+
+      const edges: Edge[] = [];
+      for (let i = 0; i < vertices.length; i++) {
+        const nextIndex = (i + 1) % vertices.length;
+        edges.push(new Edge(vertices[i], vertices[nextIndex]));
+      }
+
+      const face = new Face(vertices);
+      const brep = new Brep(vertices, edges, [face]);
+
+      // Create visual mesh
+      const shape = new THREE.Shape();
+      shape.moveTo(points[0].x - center.x, points[0].y - center.y);
+      for (let i = 1; i < points.length; i++) {
+        shape.lineTo(points[i].x - center.x, points[i].y - center.y);
+      }
+      shape.closePath();
+
+      const geometry = new THREE.ShapeGeometry(shape);
+      const material = new THREE.MeshStandardMaterial({
+        color: 0x0000ff,
+        side: THREE.DoubleSide,
+      });
+
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.copy(center);
+
+      // Add to scene via core context
+      addElement(brep, center, mesh);
+
+      return mesh;
+    },
+    [addElement]
+  );
+
+  // Start, add points to, and complete a custom shape
+  const handleCustomShapePoint = useCallback(
+    (point: THREE.Vector3, isComplete: boolean = false) => {
+      // For the first point, start a new shape
+      if (!customShapeInProgressRef.current) {
+        setCustomShapePoints([point]);
+        customShapeInProgressRef.current = true;
+        return null; // No shape created yet
+      }
+
+      // Add the point to our collection
+      setCustomShapePoints((prevPoints) => [...prevPoints, point]);
+
+      // If this completes the shape and we have enough points, create it
+      if (isComplete && customShapePoints.length >= 2) {
+        // Need at least 3 points (including this one) for a valid shape
+        const allPoints = [...customShapePoints, point];
+
+        // Create the shape
+        const result = createCustomShape(allPoints);
+
+        // Reset the custom shape state
+        setCustomShapePoints([]);
+        customShapeInProgressRef.current = false;
+
+        return result;
+      }
+
+      return null; // No shape created yet
+    },
+    [customShapePoints, createCustomShape]
+  );
+
+  // Generate preview mesh for custom shape in progress
+  const createCustomShapePreview = useCallback(
+    (currentPoint: THREE.Vector3): THREE.Mesh => {
+      // Create a preview of the shape in progress
+      const previewPoints = [...customShapePoints, currentPoint];
+
+      // Need at least 3 points for a valid shape
+      if (previewPoints.length < 3) {
+        // For 2 points, just show a line
+        const lineGeometry = new THREE.BufferGeometry().setFromPoints(
+          previewPoints
+        );
+        const lineMaterial = new THREE.LineBasicMaterial({ color: 0x0088ff });
+        return new THREE.Line(
+          lineGeometry,
+          lineMaterial
+        ) as unknown as THREE.Mesh;
+      }
+
+      // Create a shape for preview (similar to final shape creation)
+      const shape = new THREE.Shape();
+      shape.moveTo(previewPoints[0].x, previewPoints[0].y);
+      for (let i = 1; i < previewPoints.length; i++) {
+        shape.lineTo(previewPoints[i].x, previewPoints[i].y);
+      }
+      shape.closePath();
+
+      const geometry = new THREE.ShapeGeometry(shape);
+      const material = new THREE.MeshBasicMaterial({
+        color: 0x0088ff,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.5,
+      });
+
+      return new THREE.Mesh(geometry, material);
+    },
+    [customShapePoints]
+  );
+  const resetCustomShape = useCallback(() => {
+    setCustomShapePoints([]);
+    customShapeInProgressRef.current = false;
+  }, []);
   // Create and visualize a rectangle
   const createRectangle = useCallback(
     (start: THREE.Vector3, end: THREE.Vector3) => {
@@ -315,9 +468,21 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
           const radius = new THREE.Vector3().subVectors(end, start).length();
           createCircle(start, radius);
           break;
+        case "custom":
+          return handleCustomShapePoint(end);
+        default:
+          console.error("Unknown shape type:", currentShape);
+          break;
       }
+      return null;
     },
-    [currentShape, createCircle, createRectangle, createTriangle]
+    [
+      currentShape,
+      createCircle,
+      createRectangle,
+      createTriangle,
+      handleCustomShapePoint,
+    ]
   );
 
   const createEdgeHelpers = (
@@ -496,6 +661,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         // Check if this object should remain - improved comparison
         !validObjects.has(child) &&
         child.userData.helperType !== "gizmo" &&
+        child.userData.isGroundPlane !== true &&
         child.type !== "TransformControlsGizmo"
     );
 
@@ -507,6 +673,57 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       });
     }
   }, [elements, forceUpdate]);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    // Clean up existing ground plane
+    if (groundPlaneRef.current) {
+      scene.remove(groundPlaneRef.current);
+      groundPlaneRef.current = null;
+    }
+
+    if (showGroundPlane) {
+      // Create ground plane group
+      const groundGroup = new THREE.Group();
+      groundGroup.userData.isGroundPlane = true;
+
+      // Create grid
+      const gridSize = 20;
+      const gridDivisions = 20;
+      const gridHelper = new THREE.GridHelper(
+        gridSize,
+        gridDivisions,
+        0x888888,
+        0x444444
+      );
+      gridHelper.rotation.x = Math.PI / 2; // Rotate to XY plane
+      gridHelper.position.z = -0.02; // Slightly below objects
+
+      // Create plane
+      const planeGeometry = new THREE.PlaneGeometry(gridSize, gridSize);
+      const planeMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.2,
+        side: THREE.DoubleSide,
+      });
+      const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+      plane.position.z = -0.01;
+
+      // Add both to group
+      groundGroup.add(gridHelper);
+      groundGroup.add(plane);
+      scene.add(groundGroup);
+
+      groundGroup.userData.isGroundPlane = true;
+      groundPlaneRef.current = groundGroup;
+    }
+
+    // Force scene update
+    forceSceneUpdate();
+  }, [showGroundPlane]);
 
   return (
     <CadVisualizerContext.Provider
@@ -541,6 +758,15 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
         // Scene updates
         forceSceneUpdate,
+
+        customShapePoints,
+        handleCustomShapePoint,
+        createCustomShapePreview,
+        resetCustomShape,
+        customShapeInProgress: customShapeInProgressRef.current,
+
+        showGroundPlane,
+        toggleGroundPlane,
       }}
     >
       {children}

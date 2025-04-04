@@ -44,6 +44,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     setCurrentShape,
     unhighlightElement,
     unmountRenderer,
+    showGroundPlane,
+    toggleGroundPlane,
   } = useCadVisualizer();
 
   // Local state for UI components
@@ -225,6 +227,15 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             >
               Union
             </button>
+
+            <button
+              className={`px-3 py-1 rounded ${
+                showGroundPlane ? "bg-blue-600" : "bg-gray-600"
+              }`}
+              onClick={toggleGroundPlane}
+            >
+              {showGroundPlane ? "Hide Grid" : "Show Grid"}
+            </button>
           </div>
 
           {mode === "draw" && (
@@ -254,6 +265,14 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                   onClick={() => setShape("circle")}
                 >
                   Circle
+                </button>
+                <button
+                  className={`px-3 py-1 rounded ${
+                    shape === "custom" ? "bg-blue-600" : "bg-gray-600"
+                  }`}
+                  onClick={() => setShape("custom")}
+                >
+                  Polygon
                 </button>
               </div>
             </>
