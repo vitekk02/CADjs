@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Brep, CompoundBrep, Edge, Face, Vertex } from "./geometry";
+import { createMeshFromBrep } from "./scene-operations";
 
 export function createGeometryFromBRep(faces: Face[]): THREE.BufferGeometry {
   const positions: number[] = [];
@@ -122,4 +123,39 @@ export function transformBrepVertices(
   });
 
   return new Brep(newVertices, newEdges, newFaces);
+}
+
+export async function createMeshFromCompoundBrep(
+  compoundBrep: CompoundBrep,
+  material?: THREE.Material
+): Promise<THREE.Mesh> {
+  // Default material
+  if (!material) {
+    material = new THREE.MeshStandardMaterial({
+      color: 0x0000ff,
+      side: THREE.DoubleSide,
+    });
+  }
+
+  try {
+    // Get the unified representation using OpenCascade
+    const unifiedBrep = await compoundBrep.getUnifiedBRep();
+
+    // Create a mesh from the unified BRep
+    return createMeshFromBrep(unifiedBrep);
+  } catch (error) {
+    console.error("Error creating mesh from compound BRep:", error);
+
+    // Fallback - use the original implementation
+    const allFaces: Face[] = [];
+    compoundBrep.children.forEach((childBrep) => {
+      if (childBrep.faces && childBrep.faces.length > 0) {
+        allFaces.push(...childBrep.faces);
+      }
+    });
+
+    const geometry = createGeometryFromBRep(allFaces);
+    const mesh = new THREE.Mesh(geometry, material);
+    return mesh;
+  }
 }

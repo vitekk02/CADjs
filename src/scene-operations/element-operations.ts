@@ -60,45 +60,19 @@ export function updateElementPosition(
   const elementIndex = elements.findIndex((el) => el.nodeId === nodeId);
   if (elementIndex === -1) return elements;
 
-  const element = elements[elementIndex];
-  const oldPosition = element.position.clone();
-
+  // Just update the 3D object position
   const object = objectsMap.get(nodeId);
   if (object) {
     object.position.copy(position);
   }
 
-  const positionDelta = new THREE.Vector3().subVectors(position, oldPosition);
-  let updatedBrep: Brep;
-
-  if (
-    "children" in element.brep &&
-    Array.isArray((element.brep as any).children)
-  ) {
-    const compoundBrep = element.brep as unknown as CompoundBrep;
-    const transformedChildren = compoundBrep.children.map((childBrep) => {
-      return transformBrepVertices(
-        childBrep,
-        new THREE.Vector3(0, 0, 0),
-        positionDelta
-      );
-    });
-
-    updatedBrep = new CompoundBrep(transformedChildren);
-  } else {
-    updatedBrep = transformBrepVertices(
-      element.brep,
-      new THREE.Vector3(0, 0, 0),
-      positionDelta
-    );
-  }
-
+  // Don't transform the BRep vertices - just update the position attribute
   return elements.map((el, idx) => {
     if (idx === elementIndex) {
       return {
         ...el,
-        position,
-        brep: updatedBrep,
+        position, // Only update the position property
+        // Keep the original BRep data unchanged
       };
     }
     return el;

@@ -10,7 +10,7 @@ import React, {
 } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
-import { Brep, Edge, Face, Vertex } from "../geometry";
+import { Brep, CompoundBrep, Edge, Face, Vertex } from "../geometry";
 import { createTriangleBRep } from "../models/2d/triangle";
 import { createCircleBRep } from "../models/2d/circle";
 import { SceneElement } from "../scene-operations/types";
@@ -62,6 +62,9 @@ interface CadVisualizerContextType {
 
   showGroundPlane: boolean;
   toggleGroundPlane: () => void;
+
+  cursorPosition: THREE.Vector3 | null;
+  updateCursorPosition: (event: MouseEvent) => void;
 }
 
 export const CadVisualizerContext = createContext<
@@ -206,6 +209,19 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       return result ? intersection : null;
     },
     []
+  );
+
+  const [cursorPosition, setCursorPosition] = useState<THREE.Vector3 | null>(
+    null
+  );
+
+  // Add this function
+  const updateCursorPosition = useCallback(
+    (event: MouseEvent) => {
+      const intersection = getMouseIntersection(event);
+      setCursorPosition(intersection);
+    },
+    [getMouseIntersection]
   );
   // Create and visualize a custom shape
   const createCustomShape = useCallback(
@@ -485,24 +501,94 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     ]
   );
 
+  // In the VisualizerContext provider
+
   const createEdgeHelpers = (
     element: SceneElement
   ): THREE.LineSegments | null => {
-    if (!element || !element.brep.edges || element.brep.edges.length === 0)
-      return null;
+    if (!element || !element.brep) return null;
 
-    const edgePositions: number[] = [];
-    element.brep.edges.forEach((edge) => {
-      // Store positions relative to element position
-      edgePositions.push(
-        edge.start.x - element.position.x,
-        edge.start.y - element.position.y,
-        edge.start.z - element.position.z,
-        edge.end.x - element.position.x,
-        edge.end.y - element.position.y,
-        edge.end.z - element.position.z
-      );
-    });
+    let edgePositions: number[] = [];
+
+    // Handle compound BReps (created by union) differently
+    if (
+      element.brep instanceof CompoundBrep ||
+      ("children" in element.brep &&
+        Array.isArray((element.brep as any).children))
+    ) {
+      const compoundBrep = element.brep as CompoundBrep;
+
+      // Create a map to track edges and how many times they appear
+      const edgeMap = new Map<string, { edge: Edge; count: number }>();
+
+      // Process all children's edges
+      compoundBrep.children.forEach((childBrep) => {
+        if (!childBrep.edges) return;
+
+        childBrep.edges.forEach((edge) => {
+          // Create a key for the edge (normalize direction by always sorting vertices)
+          const vertexA = edge.start;
+          const vertexB = edge.end;
+          let key: string;
+
+          // Sort vertices to ensure consistent key regardless of edge direction
+          if (
+            vertexA.x < vertexB.x ||
+            (vertexA.x === vertexB.x && vertexA.y < vertexB.y) ||
+            (vertexA.x === vertexB.x &&
+              vertexA.y === vertexB.y &&
+              vertexA.z < vertexB.z)
+          ) {
+            key = `${vertexA.x},${vertexA.y},${vertexA.z}-${vertexB.x},${vertexB.y},${vertexB.z}`;
+          } else {
+            key = `${vertexB.x},${vertexB.y},${vertexB.z}-${vertexA.x},${vertexA.y},${vertexA.z}`;
+          }
+
+          // Count occurrence of this edge
+          if (edgeMap.has(key)) {
+            const item = edgeMap.get(key);
+            if (item) item.count += 1;
+          } else {
+            edgeMap.set(key, { edge, count: 1 });
+          }
+        });
+      });
+
+      // Only keep edges that appear exactly once (these are boundary edges)
+      // Edges that appear twice or more are interior edges
+      for (const [_, item] of edgeMap) {
+        if (item.count === 1) {
+          // This is a boundary edge - add it to positions
+          const edge = item.edge;
+          edgePositions.push(
+            edge.start.x - element.position.x,
+            edge.start.y - element.position.y,
+            edge.start.z - element.position.z,
+            edge.end.x - element.position.x,
+            edge.end.y - element.position.y,
+            edge.end.z - element.position.z
+          );
+        }
+      }
+    } else {
+      // Original code for normal BReps
+      if (!element.brep.edges || element.brep.edges.length === 0) return null;
+
+      element.brep.edges.forEach((edge) => {
+        // Store positions relative to element position
+        edgePositions.push(
+          edge.start.x - element.position.x,
+          edge.start.y - element.position.y,
+          edge.start.z - element.position.z,
+          edge.end.x - element.position.x,
+          edge.end.y - element.position.y,
+          edge.end.z - element.position.z
+        );
+      });
+    }
+
+    // If no edges to show, return null
+    if (edgePositions.length === 0) return null;
 
     const edgeGeometry = new THREE.BufferGeometry();
     edgeGeometry.setAttribute(
@@ -530,17 +616,87 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   const createVertexHelpers = (
     element: SceneElement
   ): THREE.Object3D | null => {
+    if (!element || !element.brep) return null;
+
+    // Set to track unique vertices to avoid duplicates
+    const uniqueVertices = new Set<string>();
+    const vertices: Vertex[] = [];
+
     if (
-      !element ||
-      !element.brep.vertices ||
-      element.brep.vertices.length === 0
+      element.brep instanceof CompoundBrep ||
+      ("children" in element.brep &&
+        Array.isArray((element.brep as any).children))
     ) {
-      return null;
+      const compoundBrep = element.brep as CompoundBrep;
+
+      // First, gather all boundary edges (similar to edge logic above)
+      const edgeMap = new Map<string, { edge: Edge; count: number }>();
+
+      // Process all children's edges
+      compoundBrep.children.forEach((childBrep) => {
+        if (!childBrep.edges) return;
+
+        childBrep.edges.forEach((edge) => {
+          // Same key generation as in createEdgeHelpers
+          const vertexA = edge.start;
+          const vertexB = edge.end;
+          let key: string;
+
+          if (
+            vertexA.x < vertexB.x ||
+            (vertexA.x === vertexB.x && vertexA.y < vertexB.y) ||
+            (vertexA.x === vertexB.x &&
+              vertexA.y === vertexB.y &&
+              vertexA.z < vertexB.z)
+          ) {
+            key = `${vertexA.x},${vertexA.y},${vertexA.z}-${vertexB.x},${vertexB.y},${vertexB.z}`;
+          } else {
+            key = `${vertexB.x},${vertexB.y},${vertexB.z}-${vertexA.x},${vertexA.y},${vertexA.z}`;
+          }
+
+          if (edgeMap.has(key)) {
+            const item = edgeMap.get(key);
+            if (item) item.count += 1;
+          } else {
+            edgeMap.set(key, { edge, count: 1 });
+          }
+        });
+      });
+
+      // Now collect vertices from boundary edges
+      for (const [_, item] of edgeMap) {
+        if (item.count === 1) {
+          // Boundary edge - add its vertices if not already added
+          const edge = item.edge;
+          const startKey = `${edge.start.x},${edge.start.y},${edge.start.z}`;
+          const endKey = `${edge.end.x},${edge.end.y},${edge.end.z}`;
+
+          if (!uniqueVertices.has(startKey)) {
+            uniqueVertices.add(startKey);
+            vertices.push(edge.start);
+          }
+
+          if (!uniqueVertices.has(endKey)) {
+            uniqueVertices.add(endKey);
+            vertices.push(edge.end);
+          }
+        }
+      }
+    } else {
+      // Original code for normal BReps
+      if (!element.brep.vertices || element.brep.vertices.length === 0) {
+        return null;
+      }
+
+      vertices.push(...element.brep.vertices);
     }
+
+    // If no vertices to show, return null
+    if (vertices.length === 0) return null;
 
     const vertexGroup = new THREE.Group();
 
-    element.brep.vertices.forEach((vertex) => {
+    vertices.forEach((vertex) => {
       const sphereGeometry = new THREE.SphereGeometry(0.05, 16, 16);
       const sphereMaterial = new THREE.MeshBasicMaterial({
         color: 0xff0000,
@@ -559,7 +715,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       vertexGroup.add(sphere);
     });
 
-    // Set userData to mark this as a helper
+    // Set userData
     vertexGroup.userData.isHelper = true;
     vertexGroup.userData.helperType = "vertex";
     vertexGroup.userData.elementId = element.nodeId;
@@ -646,24 +802,52 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     });
 
     // Find objects to remove - more precise object comparison
-    const validNodeIds = new Set(elements.map((el) => el.nodeId));
     const validObjects = new Set(elements.map((el) => getObject(el.nodeId)));
+    console.log({ validObjects });
     console.log(scene.children.map((child) => child.type));
-    const objectsToRemove = scene.children.filter(
-      (child) =>
-        // Skip special objects
-        !(child instanceof THREE.Light) &&
-        !(child instanceof THREE.Camera) &&
-        child.type !== "GridHelper" &&
-        child.type !== "AxesHelper" &&
-        // Skip our custom helpers
-        !child.userData.isHelper &&
-        // Check if this object should remain - improved comparison
-        !validObjects.has(child) &&
-        child.userData.helperType !== "gizmo" &&
-        child.userData.isGroundPlane !== true &&
-        child.type !== "TransformControlsGizmo"
+    console.log(
+      "Scene children:",
+      scene.children.map((c) => ({
+        id: c.id,
+        type: c.type,
+        isValid: validObjects.has(c),
+        userData: c.userData,
+      }))
     );
+    const objectsToRemove = scene.children.filter((child) => {
+      // Don't remove if it's a special object type
+      if (
+        child instanceof THREE.Light ||
+        child instanceof THREE.Camera ||
+        child.type === "GridHelper" ||
+        child.type === "AxesHelper" ||
+        child.userData.isHelper ||
+        child.userData.helperType === "gizmo" ||
+        child.userData.isGroundPlane === true ||
+        child.type === "TransformControlsGizmo"
+      ) {
+        return false;
+      }
+
+      // Check if this object or any of its ancestors is in validObjects
+      let curr = child;
+      while (curr) {
+        if (validObjects.has(curr)) {
+          return false;
+        }
+        curr = curr.parent;
+      }
+
+      // Check by nodeId in userData
+      if (child.userData && child.userData.nodeId) {
+        const matchingElement = elements.find(
+          (el) => el.nodeId === child.userData.nodeId
+        );
+        if (matchingElement) return false;
+      }
+
+      return true;
+    });
 
     // Remove stale objects
     if (objectsToRemove.length > 0) {
@@ -672,7 +856,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         scene.remove(child);
       });
     }
-  }, [elements, forceUpdate]);
+  }, [elements, getObject]);
 
   useEffect(() => {
     const scene = sceneRef.current;
@@ -767,6 +951,8 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
         showGroundPlane,
         toggleGroundPlane,
+        cursorPosition,
+        updateCursorPosition,
       }}
     >
       {children}

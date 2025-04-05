@@ -7,6 +7,7 @@ import { ShapeType, useCadVisualizer } from "../src/contexts/VisualizerContext";
 import useMoveMode from "../src/hooks/useMoveMode";
 import { useUnionMode } from "../src/hooks/useUnionMode";
 import { useDrawMode } from "../src/hooks/useDrawMode";
+import { useUngroupMode } from "../src/hooks/useUngroupMode";
 
 interface SimpleCadSceneProps {
   initialMode?: SceneMode;
@@ -46,6 +47,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     unmountRenderer,
     showGroundPlane,
     toggleGroundPlane,
+    cursorPosition,
+    updateCursorPosition,
   } = useCadVisualizer();
 
   // Local state for UI components
@@ -62,6 +65,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     },
   ] = useMoveMode();
   const { handleUnionModeClick, performUnion, canUnion } = useUnionMode();
+  const { handleUngroupModeClick, performUngroup, canUngroup } =
+    useUngroupMode();
 
   const {
     handleDrawMode,
@@ -132,7 +137,19 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   useEffect(() => {
     setCurrentShape(shape);
   }, [shape]);
+  useEffect(() => {
+    if (!renderer) return;
 
+    const handleMouseMove = (event: MouseEvent) => {
+      updateCursorPosition(event);
+    };
+
+    renderer.domElement.addEventListener("mousemove", handleMouseMove);
+
+    return () => {
+      renderer.domElement.removeEventListener("mousemove", handleMouseMove);
+    };
+  }, [renderer, updateCursorPosition]);
   // Set up event handlers based on current mode
   useEffect(() => {
     if (!renderer || !camera || !scene) return;
@@ -288,6 +305,17 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               Union Selected ({selectedElements.length})
             </button>
           )}
+
+          <button
+            onClick={performUngroup}
+            disabled={!canUngroup}
+            className={`px-3 py-1 rounded ${
+              canUngroup ? "bg-blue-600 hover:bg-blue-700" : "bg-gray-400"
+            }`}
+            title="Break compound object into its parts"
+          >
+            Ungroup
+          </button>
         </div>
       </div>
 
@@ -323,6 +351,16 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
           </div>
         </div>
       )}
+      <div className="absolute bottom-4 left-4 bg-gray-800 bg-opacity-75 p-2 rounded text-white text-sm font-mono">
+        <h3 className="font-bold">Cursor Position</h3>
+        <p>
+          X: {cursorPosition ? cursorPosition.x.toFixed(2) : "--"}
+          <br />
+          Y: {cursorPosition ? cursorPosition.y.toFixed(2) : "--"}
+          <br />
+          Z: {cursorPosition ? cursorPosition.z.toFixed(2) : "--"}
+        </p>
+      </div>
 
       {/* Element info panel - shows properties of selected element */}
       {selectedObjectRef.current && (

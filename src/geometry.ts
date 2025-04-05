@@ -1,5 +1,11 @@
+import { OpenCascadeService } from "./services/OpenCascadeService";
+
 export class Vertex {
-  constructor(public x: number, public y: number, public z: number) {}
+  constructor(
+    public x: number,
+    public y: number,
+    public z: number
+  ) {}
 
   // Compare two vertices with a tolerance for floating point errors.
   equals(other: Vertex, tolerance = 1e-6): boolean {
@@ -12,7 +18,10 @@ export class Vertex {
 }
 
 export class Edge {
-  constructor(public start: Vertex, public end: Vertex) {}
+  constructor(
+    public start: Vertex,
+    public end: Vertex
+  ) {}
 
   // Get a vector representing the edge direction.
   get direction(): Vertex {
@@ -65,17 +74,67 @@ export class Brep {
 
 export class CompoundBrep extends Brep {
   children: Brep[];
+  private _unifiedBRep: Brep | null = null;
+
   constructor(children: Brep[]) {
-    // We don't compute new vertices/edges/faces here;
-    // we simply record the children.
     super([], [], []);
     this.children = children;
   }
-}
 
+  // Setter for the unified BRep
+  setUnifiedBrep(brep: Brep) {
+    this._unifiedBRep = brep;
+  }
+
+  // Lazy-load the unified BRep when needed
+  async getUnifiedBRep(): Promise<Brep> {
+    if (this._unifiedBRep) {
+      return this._unifiedBRep;
+    }
+
+    if (this.children.length === 0) {
+      return new Brep([], [], []);
+    }
+
+    if (this.children.length === 1) {
+      return this.children[0];
+    }
+
+    try {
+      // Use OpenCascade for unification
+      const ocService = OpenCascadeService.getInstance();
+      const oc = await ocService.getOC();
+
+      // Convert first child to OC shape
+      let resultShape = await ocService.brepToOCShape(this.children[0]);
+
+      // Union with each subsequent shape
+      for (let i = 1; i < this.children.length; i++) {
+        const nextShape = await ocService.brepToOCShape(this.children[i]);
+        const fusionOp = new oc.BRepAlgoAPI_Fuse(resultShape, nextShape);
+        await ocService.runOperation(fusionOp);
+
+        if (fusionOp.IsDone()) {
+          resultShape = fusionOp.Shape();
+        } else {
+          console.error("Boolean fusion operation failed");
+        }
+      }
+
+      // Convert the final shape back to our BRep format
+      this._unifiedBRep = await ocService.ocShapeToBRep(resultShape);
+
+      return this._unifiedBRep;
+    } catch (error) {
+      console.error("Error in OpenCascade union operation:", error);
+      // Fallback: return first child
+      return this.children[0];
+    }
+  }
+}
 export interface BrepConnection {
   targetId: string;
-  connectionType: "union" | "assembly";
+  connectionType: "union" | "assembly" | "ungroup";
 }
 
 export interface BrepNode {
