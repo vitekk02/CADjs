@@ -96,10 +96,11 @@ export function transformBrepVertices(
     (v) => new Vertex(v.x + offset.x, v.y + offset.y, v.z + offset.z)
   );
 
-  // Create edges with transformed vertices
+  // Create edges with transformed vertices using tolerance-based matching
   const newEdges = brep.edges.map((edge) => {
-    const startIndex = brep.vertices.findIndex((v) => v.equals(edge.start));
-    const endIndex = brep.vertices.findIndex((v) => v.equals(edge.end));
+    // Use tolerance-based vertex finding
+    const startIndex = findVertexIndexWithTolerance(brep.vertices, edge.start);
+    const endIndex = findVertexIndexWithTolerance(brep.vertices, edge.end);
 
     if (startIndex === -1 || endIndex === -1) {
       console.error("Could not find vertex in BREP", edge.start, edge.end);
@@ -112,7 +113,8 @@ export function transformBrepVertices(
   // Create faces with transformed vertices
   const newFaces = brep.faces.map((face) => {
     const faceVertices = face.vertices.map((v) => {
-      const index = brep.vertices.findIndex((vertex) => vertex.equals(v));
+      // Use tolerance-based vertex finding
+      const index = findVertexIndexWithTolerance(brep.vertices, v);
       if (index === -1) {
         console.error("Could not find face vertex in BREP", v);
         return newVertices[0];
@@ -123,6 +125,32 @@ export function transformBrepVertices(
   });
 
   return new Brep(newVertices, newEdges, newFaces);
+}
+
+// Add this helper function for tolerance-based vertex matching
+function findVertexIndexWithTolerance(
+  vertices: Vertex[],
+  target: Vertex,
+  tolerance: number = 1e-6
+): number {
+  for (let i = 0; i < vertices.length; i++) {
+    if (vertexEqualsWithTolerance(vertices[i], target, tolerance)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function vertexEqualsWithTolerance(
+  v1: Vertex,
+  v2: Vertex,
+  tolerance: number = 1e-6
+): boolean {
+  return (
+    Math.abs(v1.x - v2.x) < tolerance &&
+    Math.abs(v1.y - v2.y) < tolerance &&
+    Math.abs(v1.z - v2.z) < tolerance
+  );
 }
 
 export async function createMeshFromCompoundBrep(

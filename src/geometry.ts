@@ -1,5 +1,4 @@
 import { OpenCascadeService } from "./services/OpenCascadeService";
-
 export class Vertex {
   constructor(
     public x: number,
@@ -7,13 +6,16 @@ export class Vertex {
     public z: number
   ) {}
 
-  // Compare two vertices with a tolerance for floating point errors.
-  equals(other: Vertex, tolerance = 1e-6): boolean {
-    return (
-      Math.abs(this.x - other.x) < tolerance &&
-      Math.abs(this.y - other.y) < tolerance &&
-      Math.abs(this.z - other.z) < tolerance
-    );
+  equals(other: Vertex, tolerance: number = 0): boolean {
+    if (tolerance === 0) {
+      return this.x === other.x && this.y === other.y && this.z === other.z;
+    } else {
+      return (
+        Math.abs(this.x - other.x) < tolerance &&
+        Math.abs(this.y - other.y) < tolerance &&
+        Math.abs(this.z - other.z) < tolerance
+      );
+    }
   }
 }
 

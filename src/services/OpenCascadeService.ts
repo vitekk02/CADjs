@@ -483,7 +483,8 @@ export class OpenCascadeService {
     z: number,
     allVertices: Vertex[]
   ): Vertex {
-    const key = `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
+    // Increase precision to 7 decimal places for better vertex matching
+    const key = `${x.toFixed(7)},${y.toFixed(7)},${z.toFixed(7)}`;
     if (vertexMap.has(key)) {
       return vertexMap.get(key)!;
     } else {
@@ -493,18 +494,60 @@ export class OpenCascadeService {
       return vertex;
     }
   }
-  async booleanUnion(shape1: any, shape2: any): Promise<any> {
-    // Perform boolean operation directly since vertices are already in world space
+  async booleanUnion(shape1: TopoDS_Shape, shape2: TopoDS_Shape): Promise<any> {
     const oc = await this.getOC();
-    const progressRange = new oc.Message_ProgressRange_1();
 
-    const fusionOp = new oc.BRepAlgoAPI_Fuse_3(shape1, shape2, progressRange);
-    await this.runOperation(fusionOp);
+    try {
+      // Fix potentially problematic shapes with better precision
+      const fixer1 = new oc.ShapeFix_Shape_2(shape1);
+      fixer1.SetPrecision(1e-9); // Use higher precision
+      const progressRange2 = new oc.Message_ProgressRange_1();
+      fixer1.Perform(progressRange2);
+      const fixedShape1 = fixer1.Shape();
 
-    if (fusionOp.IsDone()) {
-      return { shape: fusionOp.Shape() };
-    } else {
-      throw new Error("Boolean union operation failed");
+      const fixer2 = new oc.ShapeFix_Shape_2(shape2);
+      fixer2.SetPrecision(1e-9);
+      fixer2.Perform(progressRange2);
+      const fixedShape2 = fixer2.Shape();
+
+      // Create boolean operation
+      const booleanOperation = new oc.BRepAlgoAPI_Fuse_3(
+        fixedShape1,
+        fixedShape2,
+        progressRange2
+      );
+
+      // Configure with optimal parameters for clean unions
+      booleanOperation.SetFuzzyValue(0); // Less aggressive fuzzy tolerance
+      booleanOperation.SetNonDestructive(true); // Preserve input shapes characteristics
+      booleanOperation.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueShift); // Better handling of coincident shapes
+      booleanOperation.SetCheckInverted(true); // Check for inverted solids
+
+      // Run the operation
+      await this.runOperation(booleanOperation);
+
+      if (booleanOperation.IsDone()) {
+        const resultShape = booleanOperation.Shape();
+
+        // Apply additional healing to result shape
+        const finalFixer = new oc.ShapeFix_Shape_2(resultShape);
+        finalFixer.SetPrecision(1e-9);
+        finalFixer.Perform(progressRange2);
+
+        // Orient faces correctly
+        try {
+          oc.BRepLib.OrientClosedSolid(resultShape);
+        } catch (e) {
+          console.log("Not a closed solid, orientation fix skipped");
+        }
+
+        return { shape: finalFixer.Shape() };
+      } else {
+        throw new Error("Boolean union operation failed");
+      }
+    } catch (error) {
+      console.error("Error during boolean operation:", error);
+      throw error;
     }
   }
 
