@@ -782,38 +782,20 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     const scene = sceneRef.current;
     if (!scene) return;
 
-    console.log(
-      "Scene sync running, elements:",
-      elements.length,
-      elements.map((e) => e.nodeId)
-    );
-
     // Ensure all elements have corresponding objects in the scene
     elements.forEach((element) => {
       const obj = getObject(element.nodeId);
       if (obj) {
         if (!scene.children.includes(obj)) {
-          console.log("Adding missing object to scene:", element.nodeId);
           scene.add(obj);
         }
       } else {
-        console.error("Missing object for element:", element.nodeId);
       }
     });
 
     // Find objects to remove - more precise object comparison
     const validObjects = new Set(elements.map((el) => getObject(el.nodeId)));
-    console.log({ validObjects });
-    console.log(scene.children.map((child) => child.type));
-    console.log(
-      "Scene children:",
-      scene.children.map((c) => ({
-        id: c.id,
-        type: c.type,
-        isValid: validObjects.has(c),
-        userData: c.userData,
-      }))
-    );
+
     const objectsToRemove = scene.children.filter((child) => {
       // Don't remove if it's a special object type
       if (
@@ -852,12 +834,12 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
     // Remove stale objects
     if (objectsToRemove.length > 0) {
-      console.log("Removing objects:", objectsToRemove.length, objectsToRemove);
       objectsToRemove.forEach((child) => {
         scene.remove(child);
       });
     }
   }, [elements, getObject]);
+  console.log({ elements });
 
   useEffect(() => {
     const scene = sceneRef.current;

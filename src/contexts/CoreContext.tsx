@@ -87,13 +87,10 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [elements, objectsMap]
   );
 
-  console.log("Core context elements:", elements);
-  console.log("Id counter:", idCounter);
   // Element manipulation methods
   const addElement = useCallback(
     (brep: Brep, position: THREE.Vector3, object?: THREE.Object3D) => {
       // Add debug logging to track the issue
-      console.log("Adding element, current ID counter:", idCounter);
 
       const result = addElementOp(
         elements,
@@ -107,15 +104,6 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       // Set the elements and increment the ID counter
       setElements(result.updatedElements);
       setIdCounter(result.nextId);
-
-      // Debug the result
-      console.log(
-        "Element added with ID:",
-        result.nodeId,
-        "Next ID:",
-        result.nextId
-      );
-      console.log("New elements count:", result.updatedElements.length);
 
       return result.nodeId;
     },
@@ -136,7 +124,6 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [elements, selectedElements, objectsMap]
   );
 
-  console.log(elements);
   const updateElementPosition = useCallback(
     (nodeId: string, position: THREE.Vector3) => {
       const updatedElements = updateElementPositionOp(
