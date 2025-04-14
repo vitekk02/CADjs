@@ -72,10 +72,14 @@ export function unionBrepCompound(
 export function transformBrepVertices(
   brep: Brep,
   sourcePos?: THREE.Vector3,
-  targetPos?: THREE.Vector3
+  targetPos?: THREE.Vector3,
+  scaleMatrix?: THREE.Matrix4
 ): Brep {
   // If no positions provided or they're the same, return the original
-  if (!sourcePos || !targetPos || sourcePos.equals(targetPos)) {
+  if (
+    (!sourcePos || !targetPos || sourcePos.equals(targetPos)) &&
+    !scaleMatrix
+  ) {
     return brep;
   }
 
@@ -84,17 +88,31 @@ export function transformBrepVertices(
     const compoundBrep = brep as unknown as CompoundBrep;
     return new CompoundBrep(
       compoundBrep.children.map((child) =>
-        transformBrepVertices(child, sourcePos, targetPos)
+        transformBrepVertices(child, sourcePos, targetPos, scaleMatrix)
       )
     );
   }
 
-  const offset = new THREE.Vector3().subVectors(targetPos, sourcePos);
+  const offset =
+    sourcePos && targetPos
+      ? new THREE.Vector3().subVectors(targetPos, sourcePos)
+      : new THREE.Vector3(0, 0, 0);
 
   // Clone vertices and apply transformation
-  const newVertices = brep.vertices.map(
-    (v) => new Vertex(v.x + offset.x, v.y + offset.y, v.z + offset.z)
-  );
+  const newVertices = brep.vertices.map((v) => {
+    // Create a Vector3 for the vertex
+    const vertex = new THREE.Vector3(v.x, v.y, v.z);
+
+    // Apply scaling if provided
+    if (scaleMatrix) {
+      vertex.applyMatrix4(scaleMatrix);
+    }
+
+    // Apply translation
+    vertex.add(offset);
+
+    return new Vertex(vertex.x, vertex.y, vertex.z);
+  });
 
   // Create edges with transformed vertices using tolerance-based matching
   const newEdges = brep.edges.map((edge) => {

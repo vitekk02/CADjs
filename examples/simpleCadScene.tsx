@@ -8,6 +8,7 @@ import useMoveMode from "../src/hooks/useMoveMode";
 import { useUnionMode } from "../src/hooks/useUnionMode";
 import { useDrawMode } from "../src/hooks/useDrawMode";
 import { useUngroupMode } from "../src/hooks/useUngroupMode";
+import { useResizeMode } from "../src/hooks/useResizeMode";
 
 interface SimpleCadSceneProps {
   initialMode?: SceneMode;
@@ -75,6 +76,12 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     startPointRef,
     cleanupPreview,
   } = useDrawMode();
+  const {
+    handleMouseDown: handleResizeMouseDown,
+    handleMouseMove: handleResizeMouseMove,
+    handleMouseUp: handleResizeMouseUp,
+    cleanup: cleanupResize,
+  } = useResizeMode();
 
   const selectedObjectRef = useRef<string | null>(null);
   useEffect(() => {
@@ -164,6 +171,16 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       }
     };
 
+    const handleResizeMode = (event: MouseEvent) => {
+      if (event.type === "mousedown") {
+        handleResizeMouseDown(event);
+      } else if (event.type === "mousemove") {
+        handleResizeMouseMove(event);
+      } else if (event.type === "mouseup") {
+        handleResizeMouseUp();
+      }
+    };
+
     // Attach event listeners based on current mode
     if (mode === "draw") {
       renderer.domElement.addEventListener("mousedown", handleDrawMode);
@@ -175,11 +192,16 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.addEventListener("mouseup", handleMoveMode);
     } else if (mode === "union") {
       renderer.domElement.addEventListener("mousedown", handleUnionModeClick);
+    } else if (mode === "resize") {
+      renderer.domElement.addEventListener("mousedown", handleResizeMode);
+      renderer.domElement.addEventListener("mousemove", handleResizeMode);
+      renderer.domElement.addEventListener("mouseup", handleResizeMode);
     }
 
     // Clean up event listeners
     return () => {
       renderer.domElement.removeEventListener("mousedown", handleDrawMode);
+      renderer.domElement.removeEventListener("mousemove", handleDrawMode);
       renderer.domElement.removeEventListener("mouseup", handleDrawMode);
       renderer.domElement.removeEventListener("mousedown", handleMoveMode);
       renderer.domElement.removeEventListener("mousemove", handleMoveMode);
@@ -188,8 +210,12 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         "mousedown",
         handleUnionModeClick
       );
-      renderer.domElement.removeEventListener("mousemove", handleDrawMode);
-      cleanupPreview();
+      renderer.domElement.removeEventListener("mouseup", handleDrawMode);
+      renderer.domElement.removeEventListener("mousedown", handleResizeMode);
+      renderer.domElement.removeEventListener("mousemove", handleResizeMode);
+      renderer.domElement.removeEventListener("mouseup", handleResizeMode);
+      // cleanupPreview();
+      // cleanupResize();
     };
   }, [
     mode,
@@ -207,6 +233,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     clearSelection,
     cleanupPreview,
     handleDrawMode,
+    handleResizeMouseDown,
+    handleResizeMouseMove,
+    handleResizeMouseUp,
+    cleanupResize,
   ]);
 
   // Render simple UI controls alongside the canvas
@@ -235,6 +265,14 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               onClick={() => setMode("move")}
             >
               Move
+            </button>
+            <button
+              className={`px-3 py-1 rounded ${
+                mode === "resize" ? "bg-blue-600" : "bg-gray-600"
+              }`}
+              onClick={() => setMode("resize")}
+            >
+              Resize
             </button>
             <button
               className={`px-3 py-1 rounded ${

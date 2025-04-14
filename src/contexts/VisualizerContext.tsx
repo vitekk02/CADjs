@@ -823,6 +823,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         child.type === "AxesHelper" ||
         child.userData.isHelper ||
         child.userData.helperType === "gizmo" ||
+        child.userData.helperType === "handleType" ||
         child.userData.isGroundPlane === true ||
         child.type === "TransformControlsGizmo"
       ) {
