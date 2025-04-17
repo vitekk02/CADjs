@@ -154,16 +154,16 @@ export function extrudeThreeJsObject(
   extrudedMesh.scale.x = originalObject.scale.x;
   extrudedMesh.scale.y = originalObject.scale.y;
 
-  if (direction > 0) {
-    // When extruding in positive direction, move back to maintain position of bottom face
-    // Adjust the geometry rather than the object position
-    extrudedMesh.geometry.translate(0, 0, extrusionDepth / 2);
-  } else {
-    // When extruding in negative direction, we need to adjust after the rotation
-    // Since the mesh has been rotated 180° around X axis, we need to
-    // adjust the geometry to maintain the original face position
-    extrudedMesh.geometry.translate(0, 0, -extrusionDepth / 2);
-  }
+  // if (direction > 0) {
+  //   // When extruding in positive direction, move back to maintain position of bottom face
+  //   // Adjust the geometry rather than the object position
+  //   extrudedMesh.geometry.translate(0, 0, extrusionDepth / 2);
+  // } else {
+  //   // When extruding in negative direction, we need to adjust after the rotation
+  //   // Since the mesh has been rotated 180° around X axis, we need to
+  //   // adjust the geometry to maintain the original face position
+  //   extrudedMesh.geometry.translate(0, 0, -extrusionDepth / 2);
+  // }
 
   return extrudedMesh;
 }
@@ -189,11 +189,14 @@ export function extrudeBRep(
     return brep;
   }
 
+  // Calculate half depth to center the result
+  const halfDepth = extrusionDepth / 2;
+
+  // Offset original vertices to center them
+  const centerOffset = direction > 0 ? -halfDepth : halfDepth;
   // Create new vertices at extruded position
-  const depth = Math.abs(extrusionDepth);
-  const zOffset = direction > 0 ? depth : -depth;
   const extrudedVertices = brep.vertices.map(
-    (v) => new Vertex(v.x, v.y, v.z + zOffset)
+    (v) => new Vertex(v.x, v.y, v.z + centerOffset)
   );
 
   // Combine original and extruded vertices

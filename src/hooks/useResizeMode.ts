@@ -196,7 +196,13 @@ export function useResizeMode() {
     ]
   );
 
-  // Handle mouse move - resize if dragging a handle
+  // In the useResizeMode function, add this ref
+  const extrusionParamsRef = useRef<{
+    depth: number;
+    direction: number;
+  } | null>(null);
+
+  // Then modify handleMouseMove
   const handleMouseMove = useCallback(
     (event: MouseEvent) => {
       if (
@@ -249,70 +255,42 @@ export function useResizeMode() {
       const originalMax = objRef.userData.originalBoxMax;
       const sensitivity = 0.05;
 
-      // Calculate new scale based on drag amount
       if (activeHandle === "x") {
-        // THIS IS THE KEY FIX: Calculate proper drag amount and position adjustment
+        // X-axis scaling (unchanged)
         const rawDragAmount = delta.x;
-        const dragAmount = direction * rawDragAmount; // This flips sign for negative direction
+        const dragAmount = direction * rawDragAmount;
         const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
 
-        // Apply scale to x dimension
         objRef.scale.x = scaleFactor * objRef.userData.originalScale.x;
 
         const originalWidth = originalMax.x - originalMin.x;
         const newWidth = originalWidth * scaleFactor;
 
-        // THIS IS THE IMPORTANT CHANGE:
-        // Adjust position differently for right vs. left handle
-        if (direction > 0) {
-          // Right handle
-          // Move half the growth to the right
-          const positionOffset = (newWidth - originalWidth) / 2;
-          objRef.position.x =
-            objRef.userData.originalPosition.x + positionOffset;
-        } else {
-          // Left handle
-          // Move half the growth to the left
-          const positionOffset = (newWidth - originalWidth) / 2;
-          objRef.position.x =
-            objRef.userData.originalPosition.x - positionOffset;
-        }
+        const positionOffset = (newWidth - originalWidth) / 2;
+        objRef.position.x =
+          objRef.userData.originalPosition.x + direction * positionOffset;
       } else if (activeHandle === "y") {
-        // Similar fix for Y axis
+        // Y-axis scaling (unchanged)
         const rawDragAmount = delta.y;
-        const dragAmount = direction * rawDragAmount; // This flips sign for negative direction
+        const dragAmount = direction * rawDragAmount;
         const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
 
-        // Apply scale to y dimension
         objRef.scale.y = scaleFactor * objRef.userData.originalScale.y;
 
         const originalHeight = originalMax.y - originalMin.y;
         const newHeight = originalHeight * scaleFactor;
 
-        // Adjust position differently for top vs. bottom handle
-        if (direction > 0) {
-          // Top handle
-          // Move half the growth upward
-          const positionOffset = (newHeight - originalHeight) / 2;
-          objRef.position.y =
-            objRef.userData.originalPosition.y + positionOffset;
-        } else {
-          // Bottom handle
-          // Move half the growth downward
-          const positionOffset = (newHeight - originalHeight) / 2;
-          objRef.position.y =
-            objRef.userData.originalPosition.y - positionOffset;
-        }
+        const positionOffset = (newHeight - originalHeight) / 2;
+        objRef.position.y =
+          objRef.userData.originalPosition.y + direction * positionOffset;
       } else if (activeHandle === "z") {
         // Check if the object is essentially 2D (flat in Z dimension)
         const isFlat = Math.abs(originalMax.z - originalMin.z) < 0.11;
 
         // Calculate direct world space distance for extrusion
-        // This makes extrusion follow cursor more naturally
         const worldDelta = currentPoint.clone().sub(startPointRef.current);
 
         // Project the delta onto the extrusion direction vector
-        // Use camera's up vector to determine extrusion direction more intuitively
         const extrusionVector = new THREE.Vector3(
           0,
           0,
@@ -323,102 +301,63 @@ export function useResizeMode() {
         // Calculate extrusion depth directly from cursor movement
         const extrusionDepth = Math.max(0.1, Math.abs(dragDistance));
 
-        if (isFlat && objRef.userData.originalScale.z === 1) {
-          // EXTRUSION CASE
-          console.log(
-            `Extruding by ${extrusionDepth} in direction ${direction}`
-          );
+        // Store these parameters for mouseUp handler
 
-          // Handle THREE.js object extrusion
+        if (isFlat && objRef.userData.originalScale.z === 1) {
+          // EXTRUSION CASE - only handle THREE.js object visually
           if (objRef instanceof THREE.Mesh) {
-            // Replace with extruded version if this is our first extrusion
+            // Store extrusion parameters for mouseUp
+            extrusionParamsRef.current = {
+              depth: extrusionDepth,
+              direction,
+            };
+
             if (!objRef.userData.extruded) {
-              // Store original for cleanup
-              const originalObj = objRef.clone();
+              // First extrusion - create the extruded object
               const originalPosition = objRef.position.clone();
 
-              // Create the extruded object
               const extrudedObj = extrudeThreeJsObject(
                 objRef,
                 extrusionDepth,
                 direction
               );
 
-              // Copy important userData from original to new object
               extrudedObj.userData = { ...objRef.userData, extruded: true };
               extrudedObj.userData.nodeId = objRef.userData.nodeId;
               extrudedObj.userData.originalPosition = originalPosition.clone();
 
-              // IMPORTANT: Preserve original position - exactly as it was
+              // Important: Position correctly in space
               extrudedObj.position.copy(originalPosition);
 
-              // Remove the old object from scene
               if (objRef.parent) {
                 objRef.parent.remove(objRef);
               }
 
-              // Add new object to scene
               scene.add(extrudedObj);
-
-              // Update reference in objectsMap
-              const nodeId = element.nodeId;
-              objectsMap.set(nodeId, extrudedObj);
-
-              // Update our working reference
+              objectsMap.set(element.nodeId, extrudedObj);
               objRef = extrudedObj;
 
-              // Force a scene update
               forceSceneUpdate();
             } else {
-              // For subsequent adjustments to already extruded objects:
+              // Subsequent adjustments
               objRef.scale.z = extrusionDepth;
             }
           }
-
-          // Handle BRep extrusion
-          if (originalBrepRef.current && element) {
-            // Only extrude BRep on first extrusion operation
-            if (!(element as any).userData?.brepExtruded) {
-              // Create extruded BRep
-              const extrudedBrep = extrudeBRep(
-                originalBrepRef.current,
-                extrusionDepth,
-                direction
-              );
-
-              // Store it
-              element.brep = extrudedBrep;
-              (element as any).userData = (element as any).userData || {};
-              (element as any).userData.brepExtruded = true;
-            }
-          }
-
-          // Update position based on extrusion direction
-          // if (direction > 0) {
-          //   objRef.position.z =
-          //     objRef.userData.originalPosition.z + extrusionDepth / 2;
-          // } else {
-          //   objRef.position.z =
-          //     objRef.userData.originalPosition.z - extrusionDepth / 2;
-          // }
+          // NOTE: We no longer modify BRep here - it will be done in mouseUp
         } else {
-          // SCALING CASE - Normal scaling for already 3D objects
+          // Regular Z scaling for 3D objects
           const rawDragAmount = delta.z;
-          const dragAmount = direction * rawDragAmount; // This flips sign for negative direction
+          const dragAmount = direction * rawDragAmount;
           const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
+
           objRef.scale.z = scaleFactor * objRef.userData.originalScale.z;
+
           const originalDepth = originalMax.z - originalMin.z;
           const newDepth = originalDepth * scaleFactor;
-          // Adjust position based on which handle was dragged
-          if (direction > 0) {
-            const positionOffset = (newDepth - originalDepth) / 2;
-            objRef.position.z =
-              objRef.userData.originalPosition.z + positionOffset;
-          } else {
-            const positionOffset = (newDepth - originalDepth) / 2;
-            objRef.position.z =
-              objRef.userData.originalPosition.z - positionOffset;
-          }
+
+          const positionOffset = (newDepth - originalDepth) / 2;
+          objRef.position.z =
+            objRef.userData.originalPosition.z + direction * positionOffset;
         }
       }
 
@@ -509,37 +448,69 @@ export function useResizeMode() {
 
     if (element && obj && originalBrepRef.current) {
       try {
-        // Get the final scale that was applied
         const finalScale = obj.scale.clone();
-        console.log("Final scale applied:", finalScale);
-
-        // Important - store the CURRENT position before any transformations
         const currentPosition = obj.position.clone();
 
-        // Instead of trying to transform the original BRep with a scale matrix,
-        // we'll keep the current scale and position of the object as is
+        // Now handle BRep extrusion if we were extruding along Z
+        if (activeHandle === "z" && extrusionParamsRef.current) {
+          const { depth, direction } = extrusionParamsRef.current;
 
-        // This is the key fix: DON'T reset the scale to (1,1,1)
-        // We'll leave the visual object with its current scale
+          // Check if this was an extrusion operation
+          const bbox = new THREE.Box3().setFromObject(obj);
+          const size = new THREE.Vector3();
+          bbox.getSize(size);
+          const wasFlat =
+            Math.abs(
+              originalBrepRef.current.vertices[0].z -
+                originalBrepRef.current.vertices[1].z
+            ) < 0.11;
 
-        // Update position in the data model to ensure everything is consistent
+          if (wasFlat && obj.userData.extruded) {
+            // Get the actual world dimensions of the extruded object
+            const bbox = new THREE.Box3().setFromObject(obj);
+            const actualSize = new THREE.Vector3();
+            bbox.getSize(actualSize);
+
+            // Use the Z dimension as the extrusion height - this is the ACTUAL size
+            const actualExtrusionHeight = actualSize.z;
+            console.log(
+              "Actual extrusion height from bbox:",
+              actualExtrusionHeight
+            );
+
+            // Now perform the BRep extrusion with the correct absolute height
+            const extrudedBrep = extrudeBRep(
+              originalBrepRef.current,
+              actualExtrusionHeight,
+              direction
+            );
+
+            // Store it
+            element.brep = extrudedBrep;
+            (element as any).userData = (element as any).userData || {};
+            (element as any).userData.brepExtruded = true;
+
+            console.log(
+              "BRep extrusion completed on mouseUp with height:",
+              actualExtrusionHeight
+            );
+          }
+        }
+
+        // Update position in the data model
         updateElementPosition(selectedElement, currentPosition);
 
-        // Clean up stored values for the next resize operation
+        // Clean up stored values
         delete obj.userData.originalBoxMin;
         delete obj.userData.originalBoxMax;
         delete obj.userData.originalPosition;
         delete obj.userData.originalScale;
 
-        // Force a visual update but keep the current scale
         createResizeHandles(selectedElement);
         forceSceneUpdate();
-
-        console.log("Resize complete, current scale:", obj.scale);
       } catch (error) {
         console.error("Error finalizing resize operation:", error);
 
-        // Restore original state if there was an error
         if (originalBrepRef.current) {
           obj.scale.set(1, 1, 1);
           createResizeHandles(selectedElement);
@@ -552,12 +523,13 @@ export function useResizeMode() {
     setIsResizing(false);
     setActiveHandle(null);
     setActiveHandleDirection(null);
-
+    extrusionParamsRef.current = null;
     startPointRef.current = null;
     originalBrepRef.current = null;
   }, [
     isResizing,
     selectedElement,
+    activeHandle,
     elements,
     getObject,
     updateElementPosition,
