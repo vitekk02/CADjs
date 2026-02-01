@@ -1,58 +1,41 @@
-import { useMemo } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
-import { CompoundBrep } from "../geometry";
 
-interface UseUngroupModeResult {
-  handleUngroupModeClick: (event: MouseEvent) => void;
-  performUngroup: () => void;
-  canUngroup: boolean;
+interface UseIntersectionModeResult {
+  handleIntersectionModeClick: (event: MouseEvent) => void;
+
+  performIntersection: () => void;
+
+  canIntersect: boolean;
 }
 
-export function useUngroupMode(): UseUngroupModeResult {
+export function useIntersectionMode(): UseIntersectionModeResult {
   const {
     selectElement,
     deselectElement,
     elements,
     getObject,
     selectedElements,
-    ungroupSelectedElement,
+    intersectionSelectedElements,
   } = useCadCore();
 
   const {
     camera,
     renderer,
-    scene,
     forceSceneUpdate,
     highlightElement,
     unhighlightElement,
   } = useCadVisualizer();
 
-  const canUngroup = useMemo(() => {
-    if (selectedElements.length !== 1) return false;
+  const canIntersect = selectedElements.length >= 2;
 
-    const selectedElement = elements.find(
-      (el) => el.nodeId === selectedElements[0]
-    );
-
-    if (!selectedElement) return false;
-
-    return (
-      selectedElement.brep instanceof CompoundBrep ||
-      ("children" in selectedElement.brep &&
-        Array.isArray((selectedElement.brep as any).children) &&
-        (selectedElement.brep as any).children.length > 0)
-    );
-  }, [selectedElements, elements]);
-
-  const handleUngroupModeClick = (event: MouseEvent) => {
+  const handleIntersectionModeClick = (event: MouseEvent) => {
     if (event.button !== 0 || !renderer || !camera) return;
-
     const rect = renderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1
+      -((event.clientY - rect.top) / rect.height) * 2 + 1,
     );
 
     const raycaster = new THREE.Raycaster();
@@ -75,29 +58,29 @@ export function useUngroupMode(): UseUngroupModeResult {
           obj === pickedObject ||
           (pickedObject.parent && obj === pickedObject.parent)
         ) {
-          selectedElements.forEach((id) => {
-            deselectElement(id);
-            unhighlightElement(id);
-          });
-
-          selectElement(el.nodeId);
-          highlightElement(el.nodeId);
+          if (selectedElements.includes(el.nodeId)) {
+            deselectElement(el.nodeId);
+            unhighlightElement(el.nodeId);
+          } else {
+            selectElement(el.nodeId);
+            highlightElement(el.nodeId);
+          }
           break;
         }
       }
     }
   };
 
-  const performUngroup = () => {
-    if (canUngroup) {
-      ungroupSelectedElement();
+  const performIntersection = () => {
+    if (canIntersect) {
+      intersectionSelectedElements();
       forceSceneUpdate();
     }
   };
 
   return {
-    handleUngroupModeClick,
-    performUngroup,
-    canUngroup,
+    handleIntersectionModeClick,
+    performIntersection,
+    canIntersect,
   };
 }

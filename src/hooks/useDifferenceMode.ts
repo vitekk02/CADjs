@@ -1,52 +1,37 @@
-import { useMemo } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
-import { CompoundBrep } from "../geometry";
 
-interface UseUngroupModeResult {
-  handleUngroupModeClick: (event: MouseEvent) => void;
-  performUngroup: () => void;
-  canUngroup: boolean;
+interface UseDifferenceModeResult {
+  handleDifferenceModeClick: (event: MouseEvent) => void;
+  performDifference: () => void;
+  canDifference: boolean;
+  selectedCount: number;
 }
 
-export function useUngroupMode(): UseUngroupModeResult {
+// first selected = base, rest get subtracted
+export function useDifferenceMode(): UseDifferenceModeResult {
   const {
     selectElement,
     deselectElement,
     elements,
     getObject,
     selectedElements,
-    ungroupSelectedElement,
+    differenceSelectedElements,
   } = useCadCore();
 
   const {
     camera,
     renderer,
-    scene,
     forceSceneUpdate,
     highlightElement,
     unhighlightElement,
   } = useCadVisualizer();
 
-  const canUngroup = useMemo(() => {
-    if (selectedElements.length !== 1) return false;
+  const canDifference = selectedElements.length >= 2;
+  const selectedCount = selectedElements.length;
 
-    const selectedElement = elements.find(
-      (el) => el.nodeId === selectedElements[0]
-    );
-
-    if (!selectedElement) return false;
-
-    return (
-      selectedElement.brep instanceof CompoundBrep ||
-      ("children" in selectedElement.brep &&
-        Array.isArray((selectedElement.brep as any).children) &&
-        (selectedElement.brep as any).children.length > 0)
-    );
-  }, [selectedElements, elements]);
-
-  const handleUngroupModeClick = (event: MouseEvent) => {
+  const handleDifferenceModeClick = (event: MouseEvent) => {
     if (event.button !== 0 || !renderer || !camera) return;
 
     const rect = renderer.domElement.getBoundingClientRect();
@@ -75,29 +60,30 @@ export function useUngroupMode(): UseUngroupModeResult {
           obj === pickedObject ||
           (pickedObject.parent && obj === pickedObject.parent)
         ) {
-          selectedElements.forEach((id) => {
-            deselectElement(id);
-            unhighlightElement(id);
-          });
-
-          selectElement(el.nodeId);
-          highlightElement(el.nodeId);
+          if (selectedElements.includes(el.nodeId)) {
+            deselectElement(el.nodeId);
+            unhighlightElement(el.nodeId);
+          } else {
+            selectElement(el.nodeId);
+            highlightElement(el.nodeId);
+          }
           break;
         }
       }
     }
   };
 
-  const performUngroup = () => {
-    if (canUngroup) {
-      ungroupSelectedElement();
+  const performDifference = () => {
+    if (canDifference) {
+      differenceSelectedElements();
       forceSceneUpdate();
     }
   };
 
   return {
-    handleUngroupModeClick,
-    performUngroup,
-    canUngroup,
+    handleDifferenceModeClick,
+    performDifference,
+    canDifference,
+    selectedCount,
   };
 }

@@ -1,21 +1,13 @@
-// src/hooks/useDrawMode.ts
 import { useCallback, useRef, useState } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { ShapeType, useCadVisualizer } from "../contexts/VisualizerContext";
 
 interface UseDrawModeResult {
-  // Event handler for draw mode
   handleDrawMode: (event: MouseEvent) => void;
-
-  // Preview mesh ref
   previewMeshRef: React.MutableRefObject<THREE.Mesh | null>;
-
-  // Drawing state
   isDrawingRef: React.MutableRefObject<boolean>;
   startPointRef: React.MutableRefObject<THREE.Vector3 | null>;
-
-  // Cleanup function
   cleanupPreview: () => void;
 }
 
@@ -34,18 +26,15 @@ export function useDrawMode(): UseDrawModeResult {
     showGroundPlane,
   } = useCadVisualizer();
 
-  // Refs to track drawing state
   const isDrawingRef = useRef(false);
   const startPointRef = useRef<THREE.Vector3 | null>(null);
   const previewMeshRef = useRef<THREE.Mesh | null>(null);
-  const lastClickTimeRef = useRef<number | null>(null); // Add this line
-  // Get current shape from visualizer context
+  const lastClickTimeRef = useRef<number | null>(null);
   const { currentShape } = useCadVisualizer();
 
   const snapToGrid = useCallback(
     (point: THREE.Vector3): THREE.Vector3 => {
       if (showGroundPlane) {
-        // Snap to 0.5 unit grid
         const gridSize = 0.5;
         point.x = Math.round(point.x / gridSize) * gridSize;
         point.y = Math.round(point.y / gridSize) * gridSize;
@@ -55,9 +44,8 @@ export function useDrawMode(): UseDrawModeResult {
     [showGroundPlane]
   );
 
-  // Handle drawing operations
   const handleDrawMode = (event: MouseEvent) => {
-    if (event.button !== 0) return; // Left mouse button only
+    if (event.button !== 0) return;
 
     let point = getMouseIntersection(event);
     if (!point) return;
@@ -68,39 +56,32 @@ export function useDrawMode(): UseDrawModeResult {
 
     if (event.type === "mousedown") {
       if (currentShape === "custom") {
-        // For custom shape, toggle drawing start or add point
         if (!customShapeInProgress) {
           isDrawingRef.current = true;
           startPointRef.current = point.clone();
           handleCustomShapePoint(point);
         } else {
-          // Add another point, check for double click to complete
           const isDoubleClick =
             lastClickTimeRef.current &&
             Date.now() - lastClickTimeRef.current < 300;
 
           if (isDoubleClick) {
-            // Complete the shape on double click
             handleCustomShapePoint(point, true);
             isDrawingRef.current = false;
             startPointRef.current = null;
             cleanupPreview();
           } else {
-            // Just add the point
             handleCustomShapePoint(point);
           }
           lastClickTimeRef.current = Date.now();
         }
       } else {
-        // Normal shape drawing (rectangle, triangle, circle)
         isDrawingRef.current = true;
         startPointRef.current = point.clone();
       }
     } else if (event.type === "mousemove") {
-      // Only show preview when drawing
       if (!isDrawingRef.current || !startPointRef.current) return;
 
-      // Remove any existing preview
       if (previewMeshRef.current && scene) {
         scene.remove(previewMeshRef.current);
         previewMeshRef.current = null;
@@ -134,12 +115,8 @@ export function useDrawMode(): UseDrawModeResult {
 
         case "triangle":
           const direction = new THREE.Vector3().subVectors(point, start);
-          const perpendicular = new THREE.Vector3(
-            -direction.y,
-            direction.x,
-            0
-          ).normalize();
-          const height2 = direction.length() * 0.866; // Height for equilateral triangle
+          const perpendicular = new THREE.Vector3(-direction.y, direction.x, 0).normalize();
+          const height2 = direction.length() * 0.866;
           const thirdPoint = new THREE.Vector3().addVectors(
             start,
             new THREE.Vector3().addVectors(
@@ -173,7 +150,6 @@ export function useDrawMode(): UseDrawModeResult {
             previewMeshRef.current = null;
           }
 
-          // Create new preview mesh
           if (customShapePoints.length > 0 && scene) {
             const previewMesh = createCustomShapePreview(point);
             scene.add(previewMesh);
@@ -182,7 +158,6 @@ export function useDrawMode(): UseDrawModeResult {
           break;
 
         default:
-          // Default fallback to rectangle
           const defaultGeometry = new THREE.PlaneGeometry(1, 1);
           previewMesh = new THREE.Mesh(defaultGeometry, material);
           break;
@@ -195,30 +170,20 @@ export function useDrawMode(): UseDrawModeResult {
     } else if (event.type === "mouseup") {
       if (!isDrawingRef.current || !startPointRef.current) return;
 
-      // Clean up preview
       cleanupPreview();
 
-      // Complete the drawing operation
-      console.log("Drawing shape from", startPointRef.current, "to", point);
-
       drawShape(startPointRef.current, point);
-      console.log("Drawing complete, created element");
 
-      // Reset state
       isDrawingRef.current = false;
       startPointRef.current = null;
-
-      // Force the scene to update (might be needed)
       forceSceneUpdate();
     }
   };
 
-  // Clean up preview mesh
   const cleanupPreview = () => {
     if (previewMeshRef.current && scene) {
       scene.remove(previewMeshRef.current);
 
-      // Properly dispose of geometry and materials
       if (previewMeshRef.current.geometry) {
         previewMeshRef.current.geometry.dispose();
       }

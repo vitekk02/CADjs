@@ -1,4 +1,3 @@
-// src/contexts/CadCoreContext.tsx
 import React, {
   createContext,
   useContext,
@@ -19,6 +18,8 @@ import {
   deselectElement as deselectElementOp,
 } from "../scene-operations/selection-operations";
 import { unionSelectedElements as unionSelectedElementsOp } from "../scene-operations/union-operations";
+import { differenceSelectedElements as differenceSelectedElementsOp } from "../scene-operations/difference-operations";
+import { intersectionSelectedElements as intersectionSelectedElementsOp } from "../scene-operations/intersection-operations";
 import { SceneElement, SceneMode } from "../scene-operations/types";
 import {
   createMeshFromBrep,
@@ -27,9 +28,7 @@ import {
 } from "../scene-operations/mesh-operations";
 import { ungroupSelectedElement } from "../scene-operations/ungroup-operations";
 
-// Define the context type for core operations (no UI logic)
 export interface CadCoreContextType {
-  // State
   elements: SceneElement[];
   selectedElements: string[];
   brepGraph: BrepGraph;
@@ -37,26 +36,19 @@ export interface CadCoreContextType {
   idCounter: number;
   objectsMap: Map<string, THREE.Object3D>;
 
-  // Core operations
   setMode: (mode: SceneMode) => void;
-  addElement: (
-    brep: Brep,
-    position: THREE.Vector3,
-    object?: THREE.Object3D
-  ) => void;
+  addElement: (brep: Brep, position: THREE.Vector3, object?: THREE.Object3D) => void;
   removeElement: (nodeId: string) => void;
   updateElementPosition: (nodeId: string, position: THREE.Vector3) => void;
   selectElement: (nodeId: string) => void;
   deselectElement: (nodeId: string) => void;
   deselectAll: () => void;
   unionSelectedElements: () => void;
+  differenceSelectedElements: () => void;
+  intersectionSelectedElements: () => void;
   updateElementRotation: (nodeId: string, rotation: THREE.Euler) => void;
-
-  // Object access
   getObject: (nodeId: string) => THREE.Object3D | undefined;
   getAllObjects: () => Map<string, THREE.Object3D>;
-
-  // For creating objects
   createMeshFromBrep: (brep: Brep) => THREE.Mesh;
   ungroupSelectedElement: () => void;
 }
@@ -65,7 +57,6 @@ export const CadCoreContext = createContext<CadCoreContextType | undefined>(
   undefined
 );
 
-// Provider component without UI-specific logic
 export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   children,
 }) => {
@@ -76,7 +67,6 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   const [idCounter, setIdCounter] = useState(0);
   const [objectsMap] = useState<Map<string, THREE.Object3D>>(new Map());
 
-  // State update methods
   const handleSetMode = useCallback(
     (newMode: SceneMode) => {
       const result = handleSetModeOp(elements, newMode, objectsMap);
@@ -87,11 +77,8 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [elements, objectsMap]
   );
 
-  // Element manipulation methods
   const addElement = useCallback(
     (brep: Brep, position: THREE.Vector3, object?: THREE.Object3D) => {
-      // Add debug logging to track the issue
-
       const result = addElementOp(
         elements,
         brep,
@@ -101,7 +88,6 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         object
       );
 
-      // Set the elements and increment the ID counter
       setElements(result.updatedElements);
       setIdCounter(result.nextId);
 
@@ -171,12 +157,8 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     setSelectedElements([]);
   }, [elements, mode, objectsMap]);
 
-  // In src/contexts/CoreContext.tsx
   const unionSelectedElementsImpl = useCallback(async () => {
     if (selectedElements.length < 2) return;
-
-    // Show loading indicator
-    // setIsOperationLoading(true);
 
     try {
       const result = await unionSelectedElementsOp(
@@ -191,27 +173,60 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setSelectedElements(result.updatedSelectedElements);
       setIdCounter(result.nextIdCounter);
     } catch (error) {
-      console.error("Error in union operation:", error);
-    } finally {
-      // setIsOperationLoading(false);
+      console.error("Union error:", error);
     }
   }, [elements, selectedElements, idCounter, brepGraph, objectsMap]);
+
+  const differenceSelectedElementsImpl = useCallback(async () => {
+    if (selectedElements.length < 2) return;
+
+    try {
+      const result = await differenceSelectedElementsOp(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      setElements(result.updatedElements);
+      setSelectedElements(result.updatedSelectedElements);
+      setIdCounter(result.nextIdCounter);
+    } catch (error) {
+      console.error("Difference error:", error);
+    }
+  }, [elements, selectedElements, idCounter, brepGraph, objectsMap]);
+
+  const intersectionSelectedElementsImpl = useCallback(async () => {
+    if (selectedElements.length < 2) return;
+
+    try {
+      const result = await intersectionSelectedElementsOp(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      setElements(result.updatedElements);
+      setSelectedElements(result.updatedSelectedElements);
+      setIdCounter(result.nextIdCounter);
+    } catch (error) {
+      console.error("Intersection error:", error);
+    }
+  }, [elements, selectedElements, idCounter, brepGraph, objectsMap]);
+
   const updateElementRotation = useCallback(
     (nodeId: string, rotation: THREE.Euler) => {
       setElements((prevElements) =>
         prevElements.map((element) => {
           if (element.nodeId === nodeId) {
-            // Update the object in the scene
             const obj = getObject(objectsMap, nodeId);
             if (obj) {
               obj.rotation.copy(rotation);
             }
-
-            // Return the updated element
-            return {
-              ...element,
-              rotation: rotation,
-            };
+            return { ...element, rotation };
           }
           return element;
         })
@@ -221,7 +236,6 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   );
 
   const ungroupSelectedElementImpl = useCallback(() => {
-    // Only works with one selected element
     if (selectedElements.length !== 1) return;
 
     const nodeId = selectedElements[0];
@@ -249,15 +263,12 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   return (
     <CadCoreContext.Provider
       value={{
-        // State
         elements,
         selectedElements,
         brepGraph,
         mode,
         idCounter,
         objectsMap,
-
-        // Core operations
         setMode: handleSetMode,
         addElement,
         removeElement,
@@ -266,9 +277,9 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         deselectElement,
         deselectAll,
         unionSelectedElements: unionSelectedElementsImpl,
-
+        differenceSelectedElements: differenceSelectedElementsImpl,
+        intersectionSelectedElements: intersectionSelectedElementsImpl,
         updateElementRotation,
-        // Object access methods
         getObject: (nodeId) => getObjectImpl(nodeId),
         getAllObjects: () => getAllObjects(objectsMap),
         createMeshFromBrep,
@@ -280,7 +291,6 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   );
 };
 
-// Custom hook for using the CAD core operations
 export const useCadCore = () => {
   const context = useContext(CadCoreContext);
   if (context === undefined) {

@@ -1,4 +1,3 @@
-// src/examples/SimpleCadScene.tsx
 import React, { useRef, useEffect, useState } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../src/contexts/CoreContext";
@@ -6,6 +5,8 @@ import { SceneMode } from "../src/scene-operations";
 import { ShapeType, useCadVisualizer } from "../src/contexts/VisualizerContext";
 import useMoveMode from "../src/hooks/useMoveMode";
 import { useUnionMode } from "../src/hooks/useUnionMode";
+import { useDifferenceMode } from "../src/hooks/useDifferenceMode";
+import { useIntersectionMode } from "../src/hooks/useIntersectionMode";
 import { useDrawMode } from "../src/hooks/useDrawMode";
 import { useUngroupMode } from "../src/hooks/useUngroupMode";
 import { useResizeMode } from "../src/hooks/useResizeMode";
@@ -52,7 +53,6 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     updateCursorPosition,
   } = useCadVisualizer();
 
-  // Local state for UI components
   const [shape, setShape] = useState<ShapeType>(initialShape);
 
   const [
@@ -66,6 +66,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     },
   ] = useMoveMode();
   const { handleUnionModeClick, performUnion, canUnion } = useUnionMode();
+  const { handleDifferenceModeClick, performDifference, canDifference, selectedCount } =
+    useDifferenceMode();
+  const { handleIntersectionModeClick, performIntersection, canIntersect } =
+    useIntersectionMode();
   const { handleUngroupModeClick, performUngroup, canUngroup } =
     useUngroupMode();
 
@@ -88,59 +92,47 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     selectedObjectRef.current = selectedObject;
   }, [selectedObject]);
 
-  // Mount the renderer when component mounts
   useEffect(() => {
     if (!mountRef.current) return;
 
-    // Clean up previous renderer if any
     if (renderer) {
       unmountRenderer();
     }
 
-    // Mount the renderer to the DOM
     const cleanup = mountRenderer(mountRef.current);
-
-    // Return cleanup function
     return cleanup;
   }, []);
 
-  // Update core mode when local mode changes
   useEffect(() => {
-    // Create a function to ensure all elements have visualization helpers
     const setupElementVisualizations = () => {
       elements.forEach((element) => {
         const obj = getObject(element.nodeId);
         if (!obj) return;
 
-        // Skip if this object already has helpers
         if (obj.userData.hasHelpers) return;
 
-        // Create helpers
         const edgeHelper = createEdgeHelpers(element);
         const vertexHelper = createVertexHelpers(element);
 
-        // Add helpers to the object group
         if (edgeHelper) {
-          edgeHelper.visible = false; // Initially hidden
+          edgeHelper.visible = false;
           obj.add(edgeHelper);
         }
 
         if (vertexHelper) {
-          vertexHelper.visible = false; // Initially hidden
+          vertexHelper.visible = false;
           obj.add(vertexHelper);
         }
 
-        // Mark this object as having helpers
         obj.userData.hasHelpers = true;
       });
     };
 
-    // Call this whenever elements change
     if (scene) {
       setupElementVisualizations();
     }
   }, [elements, scene]);
-  // Update visualizer shape when local shape changes
+
   useEffect(() => {
     setCurrentShape(shape);
   }, [shape]);
@@ -157,7 +149,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.removeEventListener("mousemove", handleMouseMove);
     };
   }, [renderer, updateCursorPosition]);
-  // Set up event handlers based on current mode
+
   useEffect(() => {
     if (!renderer || !camera || !scene) return;
 
@@ -181,7 +173,6 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       }
     };
 
-    // Attach event listeners based on current mode
     if (mode === "draw") {
       renderer.domElement.addEventListener("mousedown", handleDrawMode);
       renderer.domElement.addEventListener("mouseup", handleDrawMode);
@@ -192,13 +183,16 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.addEventListener("mouseup", handleMoveMode);
     } else if (mode === "union") {
       renderer.domElement.addEventListener("mousedown", handleUnionModeClick);
+    } else if (mode === "difference") {
+      renderer.domElement.addEventListener("mousedown", handleDifferenceModeClick);
+    } else if (mode === "intersection") {
+      renderer.domElement.addEventListener("mousedown", handleIntersectionModeClick);
     } else if (mode === "resize") {
       renderer.domElement.addEventListener("mousedown", handleResizeMode);
       renderer.domElement.addEventListener("mousemove", handleResizeMode);
       renderer.domElement.addEventListener("mouseup", handleResizeMode);
     }
 
-    // Clean up event listeners
     return () => {
       renderer.domElement.removeEventListener("mousedown", handleDrawMode);
       renderer.domElement.removeEventListener("mousemove", handleDrawMode);
@@ -209,6 +203,14 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.removeEventListener(
         "mousedown",
         handleUnionModeClick
+      );
+      renderer.domElement.removeEventListener(
+        "mousedown",
+        handleDifferenceModeClick
+      );
+      renderer.domElement.removeEventListener(
+        "mousedown",
+        handleIntersectionModeClick
       );
       renderer.domElement.removeEventListener("mouseup", handleDrawMode);
       renderer.domElement.removeEventListener("mousedown", handleResizeMode);
@@ -230,6 +232,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleMouseUp,
     updateContextMenuPosition,
     handleUnionModeClick,
+    handleDifferenceModeClick,
+    handleIntersectionModeClick,
     clearSelection,
     cleanupPreview,
     handleDrawMode,
@@ -239,13 +243,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     cleanupResize,
   ]);
 
-  // Render simple UI controls alongside the canvas
   return (
     <div className="relative w-full h-screen">
-      {/* Main canvas container */}
       <div ref={mountRef} className="absolute inset-0" />
 
-      {/* Simple mode selector toolbar */}
       <div className="absolute top-0 left-0 p-4 z-10 bg-gray-800 bg-opacity-75 rounded-br-lg text-white">
         <div className="flex flex-col gap-2">
           <h2 className="font-bold">Mode:</h2>
@@ -281,6 +282,22 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               onClick={() => setMode("union")}
             >
               Union
+            </button>
+            <button
+              className={`px-3 py-1 rounded ${
+                mode === "difference" ? "bg-blue-600" : "bg-gray-600"
+              }`}
+              onClick={() => setMode("difference")}
+            >
+              Difference
+            </button>
+            <button
+              className={`px-3 py-1 rounded ${
+                mode === "intersection" ? "bg-blue-600" : "bg-gray-600"
+              }`}
+              onClick={() => setMode("intersection")}
+            >
+              Intersection
             </button>
 
             <button
@@ -344,6 +361,42 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             </button>
           )}
 
+          {mode === "difference" && (
+            <div className="mt-2">
+              <p className="text-sm text-gray-300 mb-1">
+                Select base shape first, then tool(s) to subtract
+              </p>
+              {canDifference && (
+                <button
+                  className="px-4 py-2 bg-orange-600 rounded"
+                  onClick={() => {
+                    performDifference();
+                  }}
+                >
+                  Subtract ({selectedCount - 1}) from Base
+                </button>
+              )}
+            </div>
+          )}
+
+          {mode === "intersection" && (
+            <div className="mt-2">
+              <p className="text-sm text-gray-300 mb-1">
+                Select 2+ shapes to get their common volume
+              </p>
+              {canIntersect && (
+                <button
+                  className="px-4 py-2 bg-purple-600 rounded"
+                  onClick={() => {
+                    performIntersection();
+                  }}
+                >
+                  Intersect Selected ({selectedElements.length})
+                </button>
+              )}
+            </div>
+          )}
+
           <button
             onClick={performUngroup}
             disabled={!canUngroup}
@@ -357,14 +410,12 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         </div>
       </div>
 
-      {/* Context menu for selected object */}
       {contextMenu.visible && (
         <div
           className="absolute z-20 bg-gray-900 bg-opacity-90 rounded shadow-lg p-2 min-w-[120px] text-white"
           style={{
             left: `${contextMenu.x}px`,
             top: `${contextMenu.y}px`,
-            // Remove the transform that was shifting it up by 100%
           }}
         >
           <div className="flex flex-col gap-1">
@@ -372,7 +423,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               className="px-3 py-1 text-left hover:bg-gray-700 rounded"
               onClick={() => {
                 if (contextMenu.nodeId) {
-                  // Copy functionality
+                  // TODO copy
                 }
               }}
             >
@@ -381,7 +432,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             <button
               className="px-3 py-1 text-left hover:bg-gray-700 rounded"
               onClick={() => {
-                // Existing delete functionality...
+                // TODO delete
               }}
             >
               Delete
@@ -400,7 +451,6 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         </p>
       </div>
 
-      {/* Element info panel - shows properties of selected element */}
       {selectedObjectRef.current && (
         <div className="absolute bottom-0 right-0 p-4 bg-gray-800 bg-opacity-75 rounded-tl-lg text-white">
           <h3 className="font-bold">Element Info</h3>

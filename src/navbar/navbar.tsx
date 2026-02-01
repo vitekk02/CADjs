@@ -1,4 +1,3 @@
-// src/navbar/navbar.tsx
 import React, { FC, useState } from "react";
 import { useScene, SceneMode } from "../contexts/SceneContext";
 
@@ -108,7 +107,6 @@ const Navbar: FC = () => {
           )}
         </div>
 
-        {/* Display current mode indicator */}
         <div className="ml-auto px-4 py-2 bg-gray-800 rounded">
           Mode: {mode.charAt(0).toUpperCase() + mode.slice(1)}
         </div>

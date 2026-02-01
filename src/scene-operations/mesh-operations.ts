@@ -28,6 +28,12 @@ export function createMeshFromBrep(brep: Brep): THREE.Mesh {
 export function getAllFaces(brep: Brep): Face[] {
   if ("children" in brep && Array.isArray((brep as any).children)) {
     const compoundBrep = brep as unknown as CompoundBrep;
+
+    const unifiedBrep = (compoundBrep as any)._unifiedBRep as Brep | null;
+    if (unifiedBrep && unifiedBrep.faces && unifiedBrep.faces.length > 0) {
+      return unifiedBrep.faces;
+    }
+
     const allFaces: Face[] = [];
     compoundBrep.children.forEach((child) => {
       allFaces.push(...getAllFaces(child));
@@ -41,13 +47,13 @@ export function getAllFaces(brep: Brep): Face[] {
 
 export function getObject(
   objectsMap: Map<string, THREE.Object3D>,
-  nodeId: string
+  nodeId: string,
 ): THREE.Object3D | undefined {
   return objectsMap.get(nodeId);
 }
 
 export function getAllObjects(
-  objectsMap: Map<string, THREE.Object3D>
+  objectsMap: Map<string, THREE.Object3D>,
 ): Map<string, THREE.Object3D> {
   return objectsMap;
 }

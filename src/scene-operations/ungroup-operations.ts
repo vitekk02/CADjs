@@ -1,4 +1,3 @@
-// src/scene-operations/ungroup-operations.ts
 import * as THREE from "three";
 import { SceneElement } from "./types";
 import { Brep, BrepGraph, CompoundBrep } from "../geometry";
@@ -23,7 +22,6 @@ export function ungroupSelectedElement(
     };
   }
 
-  // Find the selected element
   const element = elements.find((el) => el.nodeId === selectedElement);
 
   if (!element) {
@@ -34,14 +32,11 @@ export function ungroupSelectedElement(
     };
   }
 
-  // Check if it's a compound BRep
   if (
     !("children" in element.brep) ||
     !Array.isArray((element.brep as any).children) ||
     (element.brep as CompoundBrep).children.length === 0
   ) {
-    // Not a compound BRep or empty
-    console.log("Not a compound brep or empty children array");
     return {
       updatedElements: elements,
       updatedSelectedElements: [],
@@ -56,20 +51,16 @@ export function ungroupSelectedElement(
   const newElements: SceneElement[] = [];
   const newNodeIds: string[] = [];
 
-  // Create a new element for each BRep in the compound
   for (const brep of compound.children) {
     nextId++;
     const nodeId = `node_${nextId}`;
 
-    // Create mesh
     const mesh = createMeshFromBrep(brep);
     mesh.position.copy(compoundPosition);
     mesh.userData = { nodeId };
 
-    // Add to object map
     objectsMap.set(nodeId, mesh);
 
-    // Create element
     const newElement = {
       brep,
       nodeId,
@@ -80,7 +71,6 @@ export function ungroupSelectedElement(
     newElements.push(newElement);
     newNodeIds.push(nodeId);
 
-    // Add to graph
     brepGraph.addNode({
       id: nodeId,
       brep,
@@ -88,17 +78,14 @@ export function ungroupSelectedElement(
       connections: [],
     });
 
-    // Connect to original in graph
     brepGraph.addConnection(selectedElement, {
       targetId: nodeId,
       connectionType: "ungroup",
     });
   }
 
-  // Remove the original compound from objectsMap
   objectsMap.delete(selectedElement);
 
-  // Return updated state
   return {
     updatedElements: [
       ...elements.filter((el) => el.nodeId !== selectedElement),

@@ -1,4 +1,3 @@
-// src/services/OpenCascadeService.ts
 import type {
   gp_Pnt_3,
   OpenCascadeInstance,
@@ -23,37 +22,12 @@ const initOpenCascade = async () => {
   }
 };
 
-function findConstructors(oc: any, className: string) {
-  return Object.keys(oc)
-    .filter((key) => key.startsWith(className))
-    .map((key) => {
-      // Get parameter count if available (shown in function toString)
-      let paramInfo = "unknown params";
-      try {
-        const funcStr = oc[key].toString();
-        const paramMatch = funcStr.match(/function\s*\(([^)]*)\)/);
-        if (paramMatch) {
-          paramInfo = paramMatch[1]
-            ? paramMatch[1].split(",").length + " params"
-            : "no params";
-        }
-      } catch (e) {}
-
-      return {
-        name: key,
-        paramInfo,
-      };
-    });
-}
-
 export class OpenCascadeService {
   private static instance: OpenCascadeService;
   private oc: OpenCascadeInstance | null = null;
   private initPromise: Promise<OpenCascadeInstance> | null = null;
 
-  private constructor() {
-    // Private constructor for singleton
-  }
+  private constructor() {}
 
   static getInstance(): OpenCascadeService {
     if (!OpenCascadeService.instance) {
@@ -68,41 +42,11 @@ export class OpenCascadeService {
     }
 
     if (!this.initPromise) {
-      console.log("Initializing OpenCascade.js...");
       this.initPromise = initOpenCascade();
     }
 
     try {
       this.oc = await this.initPromise;
-      console.log("Vectors available:", findConstructors(this.oc, "gp_Vec"));
-      console.log("Points available:", findConstructors(this.oc, "gp_Pnt"));
-      console.log(
-        "Shapes available:",
-        findConstructors(this.oc, "TopoDS_Shape")
-      );
-      console.log(
-        "Edges available:",
-        findConstructors(this.oc, "BRepBuilderAPI_MakeEdge")
-      );
-      console.log(
-        "Faces available:",
-        findConstructors(this.oc, "BRepBuilderAPI_MakeFace")
-      );
-      console.log(
-        "Wires available:",
-        findConstructors(this.oc, "BRepBuilderAPI_MakeWire")
-      );
-      console.log(
-        "Boolean operations available:",
-        findConstructors(this.oc, "BRepAlgoAPI_Fuse")
-      );
-      console.log("Trsf constructors:", findConstructors(this.oc, "gp_Trsf"));
-      console.log(
-        "Sphere constructors:",
-        findConstructors(this.oc, "BRepPrimAPI_MakeSphere")
-      );
-
-      console.log("OpenCascade.js initialized successfully");
       return this.oc;
     } catch (error) {
       console.error("Error initializing OpenCascade.js:", error);
@@ -118,7 +62,6 @@ export class OpenCascadeService {
     minZ: number;
     maxZ: number;
   } {
-    // Initialize with extreme values
     const bounds = {
       minX: Infinity,
       maxX: -Infinity,
@@ -128,7 +71,6 @@ export class OpenCascadeService {
       maxZ: -Infinity,
     };
 
-    // Process compound BReps recursively
     if ("children" in brep && Array.isArray((brep as any).children)) {
       const compound = brep as CompoundBrep;
       compound.children.forEach((child) => {
@@ -143,7 +85,6 @@ export class OpenCascadeService {
       return bounds;
     }
 
-    // For regular BReps, iterate through all vertices
     if (brep.vertices && brep.vertices.length > 0) {
       brep.vertices.forEach((vertex) => {
         bounds.minX = Math.min(bounds.minX, vertex.x);
@@ -158,102 +99,163 @@ export class OpenCascadeService {
     return bounds;
   }
 
-  // Convert our Brep to OpenCascade shape
-  // Convert our Brep to OpenCascade shape
   async brepToOCShape(
     brep: Brep,
-    position?: THREE.Vector3
+    position?: THREE.Vector3,
   ): Promise<TopoDS_Shape> {
     const oc = await this.getOC();
 
     let workingBrep = brep;
 
-    // Only transform if position is provided
     if (position) {
-      // Calculate actual center of the BRep
       const bounds = this.calculateBrepBounds(brep);
       const actualCenter = new THREE.Vector3(
         (bounds.minX + bounds.maxX) / 2,
         (bounds.minY + bounds.maxY) / 2,
-        (bounds.minZ + bounds.maxZ) / 2
+        (bounds.minZ + bounds.maxZ) / 2,
       );
 
-      // Only transform if the actual center differs from desired position
       if (!actualCenter.equals(position)) {
-        console.log(
-          "Transforming BRep from actual center",
-          actualCenter,
-          "to position",
-          position
-        );
-        // Transform from actual center to desired position
         workingBrep = transformBrepVertices(brep, actualCenter, position);
       }
     }
-    console.log("Converting BRep to OpenCascade shape:", workingBrep);
-    console.log({ position });
-    // Create a new shape builder
-    const builder = new oc.BRep_Builder();
-    const compound = new oc.TopoDS_Compound();
-    builder.MakeCompound(compound);
 
     try {
-      // For each face in our BRep, create an OC face and add to compound
-      for (const face of workingBrep.faces) {
+      const zValues = workingBrep.vertices.map((v) => v.z);
+      const minZ = Math.min(...zValues);
+      const maxZ = Math.max(...zValues);
+      const is3D = Math.abs(maxZ - minZ) > 0.01;
+
+      if (is3D) {
+        return await this.createSolidFromBrep(oc, workingBrep);
+      } else {
+        return await this.createShellFromBrep(oc, workingBrep);
+      }
+    } catch (error) {
+      console.error("Error converting BRep to OpenCascade shape:", error);
+      throw error;
+    }
+  }
+
+  private async createSolidFromBrep(
+    oc: OpenCascadeInstance,
+    brep: Brep,
+  ): Promise<TopoDS_Shape> {
+    const sewing = new oc.BRepBuilderAPI_Sewing(1e-6, true, true, true, false);
+
+    try {
+      for (const face of brep.faces) {
         const vertices = face.vertices;
         if (vertices.length < 3) continue;
 
-        // Create array of OC points
         const ocPoints: gp_Pnt_3[] = [];
         for (const v of vertices) {
           ocPoints.push(new oc.gp_Pnt_3(v.x, v.y, v.z));
         }
 
-        // Create a polygon from points
+        const polygonWire = this.createPolygonWire(oc, ocPoints);
+        const faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(
+          polygonWire,
+          true,
+        );
+
+        if (faceBuilder.IsDone()) {
+          const ocFace = faceBuilder.Face();
+          sewing.Add(ocFace);
+        } else {
+          console.warn("Failed to create face from wire");
+        }
+
+        ocPoints.forEach((p) => p.delete());
+      }
+
+      const progressRange = new oc.Message_ProgressRange_1();
+      sewing.Perform(progressRange);
+      const sewnShape = sewing.SewedShape();
+
+      try {
+        const solidMaker = new oc.BRepBuilderAPI_MakeSolid_1();
+        const shellExplorer = new oc.TopExp_Explorer_2(
+          sewnShape,
+          oc.TopAbs_ShapeEnum.TopAbs_SHELL,
+          oc.TopAbs_ShapeEnum.TopAbs_SHAPE,
+        );
+
+        if (shellExplorer.More()) {
+          const shell = oc.TopoDS.Shell_1(shellExplorer.Current());
+          solidMaker.Add(shell);
+
+          const solid = solidMaker.Solid();
+
+          try {
+            oc.BRepLib.OrientClosedSolid(solid);
+          } catch (e) {
+            // not orientable
+          }
+
+          return solid;
+        }
+      } catch (solidError) {
+        console.warn("Could not create solid from shell:", solidError);
+      }
+
+      return sewnShape;
+    } catch (error) {
+      console.error("Error in createSolidFromBrep:", error);
+      throw error;
+    }
+  }
+
+  private async createShellFromBrep(
+    oc: OpenCascadeInstance,
+    brep: Brep,
+  ): Promise<TopoDS_Shape> {
+    const builder = new oc.BRep_Builder();
+    const compound = new oc.TopoDS_Compound();
+    builder.MakeCompound(compound);
+
+    try {
+      for (const face of brep.faces) {
+        const vertices = face.vertices;
+        if (vertices.length < 3) continue;
+
+        const ocPoints: gp_Pnt_3[] = [];
+        for (const v of vertices) {
+          ocPoints.push(new oc.gp_Pnt_3(v.x, v.y, v.z));
+        }
+
         const polygonWire = this.createPolygonWire(oc, ocPoints);
 
-        // Create a plane using the first 3 points of the face
-        // This helps ensure the face is created in the correct plane
         const p1 = ocPoints[0];
         const p2 = ocPoints[1];
         const p3 = ocPoints[2];
 
-        // Create vectors for plane definition
         const v1 = new oc.gp_Vec_4(
           p2.X() - p1.X(),
           p2.Y() - p1.Y(),
-          p2.Z() - p1.Z()
+          p2.Z() - p1.Z(),
         );
 
         const v2 = new oc.gp_Vec_4(
           p3.X() - p1.X(),
           p3.Y() - p1.Y(),
-          p3.Z() - p1.Z()
+          p3.Z() - p1.Z(),
         );
 
-        // Calculate normal vector using cross product
         const normalVec = new oc.gp_Vec_1();
         normalVec.DotCross(v1, v2);
 
-        // If normal length is too small, use XY plane as fallback
         let pln;
         if (normalVec.Magnitude() < 1e-7) {
-          pln = new oc.gp_Pln_1(); // Default XY plane
+          pln = new oc.gp_Pln_1();
         } else {
-          // Create a direction from the normal vector
-          const dir = new oc.gp_Dir_4(
-            normalVec.X(),
-            normalVec.Y(),
-            normalVec.Z()
-          );
-          // Create a plane using a point and the normal direction
+          const dir = new oc.gp_Dir_4(normalVec.X(), normalVec.Y(), normalVec.Z());
           pln = new oc.gp_Pln_3(p1, dir);
         }
 
-        // Now create the face from the plane and wire
         const faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(
           polygonWire,
-          true
+          true,
         );
 
         if (faceBuilder.IsDone()) {
@@ -263,7 +265,6 @@ export class OpenCascadeService {
           console.warn("Failed to create face from wire and plane");
         }
 
-        // Clean up
         ocPoints.forEach((p) => p.delete());
         v1.delete();
         v2.delete();
@@ -273,12 +274,11 @@ export class OpenCascadeService {
 
       return compound;
     } catch (error) {
-      console.error("Error converting BRep to OpenCascade shape:", error);
+      console.error("Error in createShellFromBrep:", error);
       throw error;
     }
   }
 
-  // Helper to create a polygonal wire from points
   private createPolygonWire(oc: OpenCascadeInstance, points: gp_Pnt_3[]) {
     if (points.length < 2) {
       throw new Error("Need at least two points for a wire");
@@ -300,7 +300,6 @@ export class OpenCascadeService {
       }
 
       if (wireBuilder.IsDone()) {
-        // Cast the Shape to a Wire explicitly
         return oc.TopoDS.Wire_1(wireBuilder.Wire());
       } else {
         throw new Error("Failed to create wire");
@@ -311,16 +310,14 @@ export class OpenCascadeService {
     }
   }
 
-  // Wait for an OpenCascade operation to complete
   async runOperation(operation: any): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       try {
-        // Create a progress range for the Build operation
         const oc = this.oc;
         if (!oc) throw new Error("OpenCascade not initialized");
 
         const progressRange = new oc.Message_ProgressRange_1();
-        operation.Build(progressRange); // Pass the progress range
+        operation.Build(progressRange);
         resolve();
       } catch (error) {
         reject(error);
@@ -328,14 +325,10 @@ export class OpenCascadeService {
     });
   }
 
-  // Convert OpenCascade shape back to our BRep
-  async ocShapeToBRep(
-    shape: TopoDS_Shape,
-    position?: THREE.Vector3
-  ): Promise<Brep> {
+  // converts OC shape back to brep, centers at origin
+  async ocShapeToBRep(shape: TopoDS_Shape): Promise<Brep> {
     const oc = await this.getOC();
 
-    // Create maps to store vertices and edges for deduplication
     const vertexMap = new Map<string, Vertex>();
     const edgeMap = new Map<string, Edge>();
     const faces: Face[] = [];
@@ -343,32 +336,36 @@ export class OpenCascadeService {
     const allEdges: Edge[] = [];
 
     try {
-      // Process edges first to extract vertices
+      try {
+        oc.BRepTools.Clean(shape, true);
+      } catch (e) {
+        // clean failed, continue anyway
+      }
+
+      const mesher = new oc.BRepMesh_IncrementalMesh_2(shape, 0.01, false, 0.1, true);
+
       const edgeExplorer = new oc.TopExp_Explorer_2(
         shape,
         oc.TopAbs_ShapeEnum.TopAbs_EDGE,
-        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE,
       );
 
       while (edgeExplorer.More()) {
         const edge = oc.TopoDS.Edge_1(edgeExplorer.Current());
         const curve = new oc.BRepAdaptor_Curve_2(edge);
 
-        // Sample points along the edge
         const first = curve.FirstParameter();
         const last = curve.LastParameter();
 
-        // Get the start and end points
         const startPnt = curve.Value(first);
         const endPnt = curve.Value(last);
 
-        // Create vertices
         const v1 = this.getOrCreateVertex(
           vertexMap,
           startPnt.X(),
           startPnt.Y(),
           startPnt.Z(),
-          allVertices
+          allVertices,
         );
 
         const v2 = this.getOrCreateVertex(
@@ -376,10 +373,9 @@ export class OpenCascadeService {
           endPnt.X(),
           endPnt.Y(),
           endPnt.Z(),
-          allVertices
+          allVertices,
         );
 
-        // Create edge
         const edgeKey = this.createEdgeKey(v1, v2);
         if (!edgeMap.has(edgeKey)) {
           const newEdge = new Edge(v1, v2);
@@ -390,100 +386,97 @@ export class OpenCascadeService {
         edgeExplorer.Next();
       }
 
-      // Process faces
       const faceExplorer = new oc.TopExp_Explorer_2(
         shape,
         oc.TopAbs_ShapeEnum.TopAbs_FACE,
-        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE,
       );
 
       while (faceExplorer.More()) {
         const face = oc.TopoDS.Face_1(faceExplorer.Current());
+        const location = new oc.TopLoc_Location_1();
+        const triangulation = oc.BRep_Tool.Triangulation(face, location, 0);
 
-        // Get the wireframe of the face
-        const wireExplorer = new oc.TopExp_Explorer_2(
-          face,
-          oc.TopAbs_ShapeEnum.TopAbs_WIRE,
-          oc.TopAbs_ShapeEnum.TopAbs_SHAPE
-        );
+        if (!triangulation.IsNull()) {
+          const transformation = location.Transformation();
+          const nbTriangles = triangulation.get().NbTriangles();
+          const isReversed =
+            face.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED;
 
-        if (wireExplorer.More()) {
-          const wire = oc.TopoDS.Wire_1(wireExplorer.Current());
-          const faceVertices: Vertex[] = [];
+          for (let i = 1; i <= nbTriangles; i++) {
+            const triangle = triangulation.get().Triangle(i);
 
-          // Get all vertices from the wire
-          const vertexExplorer = new oc.TopExp_Explorer_2(
-            wire,
-            oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
-            oc.TopAbs_ShapeEnum.TopAbs_SHAPE
-          );
+            const n1 = triangle.Value(1);
+            const n2 = triangle.Value(2);
+            const n3 = triangle.Value(3);
 
-          while (vertexExplorer.More()) {
-            const vertex = oc.TopoDS.Vertex_1(vertexExplorer.Current());
-            const point = oc.BRep_Tool.Pnt(vertex);
+            const node1 = triangulation.get().Node(n1);
+            const node2 = triangulation.get().Node(n2);
+            const node3 = triangulation.get().Node(n3);
 
-            const v = this.getOrCreateVertex(
+            const p1 = node1.Transformed(transformation);
+            const p2 = node2.Transformed(transformation);
+            const p3 = node3.Transformed(transformation);
+
+            const v1 = this.getOrCreateVertex(
               vertexMap,
-              point.X(),
-              point.Y(),
-              point.Z(),
-              allVertices
+              p1.X(),
+              p1.Y(),
+              p1.Z(),
+              allVertices,
+            );
+            const v2 = this.getOrCreateVertex(
+              vertexMap,
+              p2.X(),
+              p2.Y(),
+              p2.Z(),
+              allVertices,
+            );
+            const v3 = this.getOrCreateVertex(
+              vertexMap,
+              p3.X(),
+              p3.Y(),
+              p3.Z(),
+              allVertices,
             );
 
-            if (!faceVertices.includes(v)) {
-              faceVertices.push(v);
+            if (isReversed) {
+              faces.push(new Face([v1, v3, v2]));
+            } else {
+              faces.push(new Face([v1, v2, v3]));
             }
-
-            vertexExplorer.Next();
-          }
-
-          // Create a face if we have enough vertices
-          if (faceVertices.length >= 3) {
-            faces.push(new Face(faceVertices));
           }
         }
 
         faceExplorer.Next();
       }
 
-      console.log("Vertices:", allVertices);
-      console.log("Edges:", allEdges);
-      console.log("Faces:", faces);
-
       const resultBrep = new Brep(allVertices, allEdges, faces);
+      const bounds = this.calculateBrepBounds(resultBrep);
+      const center = new THREE.Vector3(
+        (bounds.minX + bounds.maxX) / 2,
+        (bounds.minY + bounds.maxY) / 2,
+        (bounds.minZ + bounds.maxZ) / 2,
+      );
 
-      // If position is specified, transform the BRep to be centered at that position
-      if (position) {
-        // Calculate the geometric center of the created BRep
-        const bounds = this.calculateBrepBounds(resultBrep);
-        const center = new THREE.Vector3(
-          (bounds.minX + bounds.maxX) / 2,
-          (bounds.minY + bounds.maxY) / 2,
-          (bounds.minZ + bounds.maxZ) / 2
-        );
+      // recenter to origin
+      const origin = new THREE.Vector3(0, 0, 0);
+      const centeredBrep = transformBrepVertices(resultBrep, center, origin);
 
-        // Only transform if centers differ
-        if (!center.equals(position)) {
-          return transformBrepVertices(resultBrep, center, position);
-        }
-      }
-
-      return resultBrep;
+      return centeredBrep;
     } catch (error) {
       console.error("Error converting OpenCascade shape to BRep:", error);
       throw error;
     }
   }
 
-  // Helper method to get or create a vertex
   private getOrCreateVertex(
     vertexMap: Map<string, Vertex>,
     x: number,
     y: number,
     z: number,
-    allVertices: Vertex[]
+    allVertices: Vertex[],
   ): Vertex {
-    // Increase precision to 7 decimal places for better vertex matching
     const key = `${x.toFixed(7)},${y.toFixed(7)},${z.toFixed(7)}`;
     if (vertexMap.has(key)) {
       return vertexMap.get(key)!;
@@ -498,9 +491,8 @@ export class OpenCascadeService {
     const oc = await this.getOC();
 
     try {
-      // Fix potentially problematic shapes with better precision
       const fixer1 = new oc.ShapeFix_Shape_2(shape1);
-      fixer1.SetPrecision(1e-9); // Use higher precision
+      fixer1.SetPrecision(1e-9);
       const progressRange2 = new oc.Message_ProgressRange_1();
       fixer1.Perform(progressRange2);
       const fixedShape1 = fixer1.Shape();
@@ -510,50 +502,231 @@ export class OpenCascadeService {
       fixer2.Perform(progressRange2);
       const fixedShape2 = fixer2.Shape();
 
-      // Create boolean operation
       const booleanOperation = new oc.BRepAlgoAPI_Fuse_3(
         fixedShape1,
         fixedShape2,
-        progressRange2
+        progressRange2,
       );
 
-      // Configure with optimal parameters for clean unions
-      booleanOperation.SetFuzzyValue(0); // Less aggressive fuzzy tolerance
-      booleanOperation.SetNonDestructive(true); // Preserve input shapes characteristics
-      booleanOperation.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueShift); // Better handling of coincident shapes
-      booleanOperation.SetCheckInverted(true); // Check for inverted solids
+      booleanOperation.SetFuzzyValue(0);
+      booleanOperation.SetNonDestructive(true);
+      booleanOperation.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueShift);
+      booleanOperation.SetCheckInverted(true);
 
-      // Run the operation
       await this.runOperation(booleanOperation);
 
       if (booleanOperation.IsDone()) {
         const resultShape = booleanOperation.Shape();
 
-        // Apply additional healing to result shape
         const finalFixer = new oc.ShapeFix_Shape_2(resultShape);
         finalFixer.SetPrecision(1e-9);
         finalFixer.Perform(progressRange2);
 
-        // Orient faces correctly
         try {
           oc.BRepLib.OrientClosedSolid(resultShape);
         } catch (e) {
-          console.log("Not a closed solid, orientation fix skipped");
+          // not a closed solid
         }
 
         return { shape: finalFixer.Shape() };
       } else {
-        throw new Error("Boolean union operation failed");
+        throw new Error("Boolean union failed");
       }
     } catch (error) {
-      console.error("Error during boolean operation:", error);
+      console.error("Boolean union failed:", error);
       throw error;
     }
   }
 
-  // Helper method to create a unique key for an edge
+  async shapeToThreeGeometry(
+    shape: TopoDS_Shape,
+    linearDeflection: number = 0.1,
+    angularDeflection: number = 0.5,
+  ): Promise<THREE.BufferGeometry> {
+    const oc = await this.getOC();
+
+    new oc.BRepMesh_IncrementalMesh_2(
+      shape,
+      linearDeflection,
+      false,
+      angularDeflection,
+      false,
+    );
+
+    const vertices: number[] = [];
+    const indices: number[] = [];
+    let indexOffset = 0;
+
+    const faceExplorer = new oc.TopExp_Explorer_2(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_FACE,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE,
+    );
+
+    while (faceExplorer.More()) {
+      const face = oc.TopoDS.Face_1(faceExplorer.Current());
+      const location = new oc.TopLoc_Location_1();
+      const triangulation = oc.BRep_Tool.Triangulation(face, location, 0);
+
+      if (!triangulation.IsNull()) {
+        const transformation = location.Transformation();
+        const nbNodes = triangulation.get().NbNodes();
+        const nbTriangles = triangulation.get().NbTriangles();
+
+        const isReversed =
+          face.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED;
+
+        for (let i = 1; i <= nbNodes; i++) {
+          const node = triangulation.get().Node(i);
+          const transformedNode = node.Transformed(transformation);
+          vertices.push(
+            transformedNode.X(),
+            transformedNode.Y(),
+            transformedNode.Z(),
+          );
+        }
+
+        for (let i = 1; i <= nbTriangles; i++) {
+          const triangle = triangulation.get().Triangle(i);
+          let n1 = triangle.Value(1) - 1 + indexOffset;
+          let n2 = triangle.Value(2) - 1 + indexOffset;
+          let n3 = triangle.Value(3) - 1 + indexOffset;
+
+          if (isReversed) {
+            indices.push(n1, n3, n2);
+          } else {
+            indices.push(n1, n2, n3);
+          }
+        }
+
+        indexOffset += nbNodes;
+      }
+
+      faceExplorer.Next();
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(vertices, 3),
+    );
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    return geometry;
+  }
+
+  async booleanDifference(
+    baseShape: TopoDS_Shape,
+    toolShape: TopoDS_Shape,
+  ): Promise<{ shape: TopoDS_Shape }> {
+    const oc = await this.getOC();
+
+    try {
+      const fixer1 = new oc.ShapeFix_Shape_2(baseShape);
+      fixer1.SetPrecision(1e-9);
+      const progressRange = new oc.Message_ProgressRange_1();
+      fixer1.Perform(progressRange);
+      const fixedBaseShape = fixer1.Shape();
+
+      const fixer2 = new oc.ShapeFix_Shape_2(toolShape);
+      fixer2.SetPrecision(1e-9);
+      fixer2.Perform(progressRange);
+      const fixedToolShape = fixer2.Shape();
+
+      const booleanOperation = new oc.BRepAlgoAPI_Cut_3(
+        fixedBaseShape,
+        fixedToolShape,
+        progressRange,
+      );
+
+      booleanOperation.SetFuzzyValue(1e-7);
+      booleanOperation.SetNonDestructive(true);
+      booleanOperation.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueOff);
+      booleanOperation.SetCheckInverted(true);
+
+      await this.runOperation(booleanOperation);
+
+      if (booleanOperation.IsDone()) {
+        const resultShape = booleanOperation.Shape();
+
+        const finalFixer = new oc.ShapeFix_Shape_2(resultShape);
+        finalFixer.SetPrecision(1e-9);
+        finalFixer.Perform(progressRange);
+
+        try {
+          oc.BRepLib.OrientClosedSolid(resultShape);
+        } catch (e) {
+          // not a closed solid
+        }
+
+        return { shape: finalFixer.Shape() };
+      } else {
+        throw new Error("Boolean difference operation failed");
+      }
+    } catch (error) {
+      console.error("Boolean difference failed:", error);
+      throw error;
+    }
+  }
+
+  async booleanIntersection(
+    shape1: TopoDS_Shape,
+    shape2: TopoDS_Shape,
+  ): Promise<{ shape: TopoDS_Shape }> {
+    const oc = await this.getOC();
+
+    try {
+      const fixer1 = new oc.ShapeFix_Shape_2(shape1);
+      fixer1.SetPrecision(1e-9);
+      const progressRange = new oc.Message_ProgressRange_1();
+      fixer1.Perform(progressRange);
+      const fixedShape1 = fixer1.Shape();
+
+      const fixer2 = new oc.ShapeFix_Shape_2(shape2);
+      fixer2.SetPrecision(1e-9);
+      fixer2.Perform(progressRange);
+      const fixedShape2 = fixer2.Shape();
+
+      const booleanOperation = new oc.BRepAlgoAPI_Common_3(
+        fixedShape1,
+        fixedShape2,
+        progressRange,
+      );
+
+      booleanOperation.SetFuzzyValue(1e-7);
+      booleanOperation.SetNonDestructive(true);
+      booleanOperation.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueOff);
+      booleanOperation.SetCheckInverted(true);
+
+      await this.runOperation(booleanOperation);
+
+      if (booleanOperation.IsDone()) {
+        const resultShape = booleanOperation.Shape();
+
+        const finalFixer = new oc.ShapeFix_Shape_2(resultShape);
+        finalFixer.SetPrecision(1e-9);
+        finalFixer.Perform(progressRange);
+
+        try {
+          oc.BRepLib.OrientClosedSolid(resultShape);
+        } catch (e) {
+          // not a closed solid
+        }
+
+        return { shape: finalFixer.Shape() };
+      } else {
+        throw new Error("Boolean intersection operation failed");
+      }
+    } catch (error) {
+      console.error("Boolean intersection failed:", error);
+      throw error;
+    }
+  }
+
   private createEdgeKey(v1: Vertex, v2: Vertex): string {
-    // Ensure consistent ordering of vertices
     if (
       v1.x < v2.x ||
       (v1.x === v2.x && v1.y < v2.y) ||

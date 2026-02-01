@@ -25,7 +25,6 @@ export class Edge {
     public end: Vertex
   ) {}
 
-  // Get a vector representing the edge direction.
   get direction(): Vertex {
     return new Vertex(
       this.end.x - this.start.x,
@@ -34,7 +33,6 @@ export class Edge {
     );
   }
 
-  // Example: Compute the length of the edge.
   get length(): number {
     const dx = this.end.x - this.start.x;
     const dy = this.end.y - this.start.y;
@@ -50,7 +48,7 @@ export class Face {
     }
   }
 
-  // Compute the normal vector of the face assuming it is planar.
+  // normal via cross product
   get normal(): Vertex {
     const v0 = this.vertices[0];
     const v1 = this.vertices[1];
@@ -83,12 +81,11 @@ export class CompoundBrep extends Brep {
     this.children = children;
   }
 
-  // Setter for the unified BRep
   setUnifiedBrep(brep: Brep) {
     this._unifiedBRep = brep;
   }
 
-  // Lazy-load the unified BRep when needed
+  // lazy load - computes unified brep only when needed
   async getUnifiedBRep(): Promise<Brep> {
     if (this._unifiedBRep) {
       return this._unifiedBRep;
@@ -103,17 +100,16 @@ export class CompoundBrep extends Brep {
     }
 
     try {
-      // Use OpenCascade for unification
       const ocService = OpenCascadeService.getInstance();
       const oc = await ocService.getOC();
 
-      // Convert first child to OC shape
       let resultShape = await ocService.brepToOCShape(this.children[0]);
+      const progressRange = new oc.Message_ProgressRange_1();
 
-      // Union with each subsequent shape
+      // fuse all children together
       for (let i = 1; i < this.children.length; i++) {
         const nextShape = await ocService.brepToOCShape(this.children[i]);
-        const fusionOp = new oc.BRepAlgoAPI_Fuse(resultShape, nextShape);
+        const fusionOp = new oc.BRepAlgoAPI_Fuse_3(resultShape, nextShape, progressRange);
         await ocService.runOperation(fusionOp);
 
         if (fusionOp.IsDone()) {
@@ -123,26 +119,23 @@ export class CompoundBrep extends Brep {
         }
       }
 
-      // Convert the final shape back to our BRep format
       this._unifiedBRep = await ocService.ocShapeToBRep(resultShape);
 
       return this._unifiedBRep;
     } catch (error) {
       console.error("Error in OpenCascade union operation:", error);
-      // Fallback: return first child
       return this.children[0];
     }
   }
 }
 export interface BrepConnection {
   targetId: string;
-  connectionType: "union" | "assembly" | "ungroup";
+  connectionType: "union" | "difference" | "intersection" | "assembly" | "ungroup";
 }
 
 export interface BrepNode {
   id: string;
   brep: Brep;
-  // Reference to the mesh in the scene.
   mesh: any;
   connections: BrepConnection[];
 }
@@ -161,7 +154,7 @@ export class BrepGraph {
     }
   }
 }
-// Helper function to compute the cross product of two vectors.
+
 function crossProduct(a: Vertex, b: Vertex): Vertex {
   return new Vertex(
     a.y * b.z - a.z * b.y,

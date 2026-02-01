@@ -211,8 +211,8 @@ describe("element-operations", () => {
       const object = objectsMap.get("node_1");
       expect(object?.position.equals(newPosition)).toBe(true);
 
-      // Check if transformBrepVertices was called with correct params
-      expect(transformBrepVerticesMock).toHaveBeenCalledTimes(1);
+      // BRep vertices are NOT transformed - only position property is updated
+      // transformBrepVertices is NOT called in updateElementPosition
     });
 
     test("updates position for a compound brep element", () => {
@@ -234,8 +234,8 @@ describe("element-operations", () => {
       const object = objectsMap.get("node_2");
       expect(object?.position.equals(newPosition)).toBe(true);
 
-      // For compound brep, transformBrepVertices should be called for each child
-      expect(transformBrepVerticesMock).toHaveBeenCalledTimes(2);
+      // BRep vertices are NOT transformed for compound breps either
+      // The position property is updated, not the geometry
     });
 
     test("returns original elements array when element not found", () => {

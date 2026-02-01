@@ -1,4 +1,3 @@
-// examples/skicScene.tsx
 import React, { useRef, useEffect, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
@@ -8,11 +7,10 @@ import { createTriangleBRep } from "../src/models/2d/triangle";
 import { createCircleBRep } from "../src/models/2d/circle";
 
 const SkicScene: React.FC = () => {
-  // Since we now get state fields directly from context, not nested under "state"
   const {
-    elements, // Was state.elements
-    selectedElements, // Was state.selectedElements
-    mode, // Was state.mode
+    elements,
+    selectedElements,
+    mode,
     addElement,
     updateElementPosition,
     selectElement,
@@ -25,37 +23,30 @@ const SkicScene: React.FC = () => {
 
   const mountRef = useRef<HTMLDivElement>(null);
 
-  // --- Three.js Core Objects ---
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
 
-  // --- Drawing State ---
   const isDrawingRef = useRef(false);
   const startPointRef = useRef<THREE.Vector3 | null>(null);
   const previewShapeRef = useRef<THREE.Mesh | null>(null);
 
-  // --- Move Mode State ---
   const moveOffsetRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const initialMousePosRef = useRef<{ x: number; y: number } | null>(null);
   const isDraggingRef = useRef(false);
   const selectedMoveNodeIdRef = useRef<string | null>(null);
 
-  // For forcing updates to the scene
   const [forceUpdate, setForceUpdate] = useState(0);
 
-  // Add functions for creating these shapes
   const createTriangle = (start: THREE.Vector3, end: THREE.Vector3) => {
-    // Create a triangle using the start and end points
-    // The third point will be calculated to form an isosceles triangle
     const direction = new THREE.Vector3().subVectors(end, start);
     const perpendicular = new THREE.Vector3(
       -direction.y,
       direction.x,
       0
     ).normalize();
-    const height = direction.length() * 0.866; // Height for equilateral triangle
+    const height = direction.length() * 0.866;
     const thirdPoint = new THREE.Vector3().addVectors(
       start,
       new THREE.Vector3().addVectors(
@@ -66,14 +57,12 @@ const SkicScene: React.FC = () => {
 
     const brep = createTriangleBRep(start, end, thirdPoint);
 
-    // Calculate center position
     const center = new THREE.Vector3()
       .add(start)
       .add(end)
       .add(thirdPoint)
       .divideScalar(3);
 
-    // Create a visual mesh for the triangle
     const vertices = [
       new THREE.Vector3(start.x, start.y, start.z),
       new THREE.Vector3(end.x, end.y, end.z),
@@ -93,14 +82,12 @@ const SkicScene: React.FC = () => {
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.copy(new THREE.Vector3(0, 0, 0));
 
-    // Add the element to the scene
     addElement(brep, center, mesh);
   };
 
   const createCircle = (center: THREE.Vector3, radius: number) => {
     const brep = createCircleBRep(center, radius);
 
-    // Create a visual mesh for the circle
     const geometry = new THREE.CircleGeometry(radius, 32);
     const material = new THREE.MeshStandardMaterial({
       color: 0x0000ff,
@@ -110,11 +97,9 @@ const SkicScene: React.FC = () => {
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.copy(center);
 
-    // Add the element to the scene
     addElement(brep, center, mesh);
   };
 
-  // --- Initialization (Scene, Camera, Renderer, OrbitControls) ---
   useEffect(() => {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x808080);
@@ -145,7 +130,6 @@ const SkicScene: React.FC = () => {
     cameraRef.current = camera;
     rendererRef.current = renderer;
 
-    // Add ambient and directional lights
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
     scene.add(ambientLight);
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
@@ -191,7 +175,6 @@ const SkicScene: React.FC = () => {
     };
   }, []);
 
-  // --- Draw Mode ---
   useEffect(() => {
     if (mode !== "draw") return;
     const renderer = rendererRef.current;
@@ -229,7 +212,6 @@ const SkicScene: React.FC = () => {
       if (!currentPoint) return;
       const start = startPointRef.current;
 
-      // Remove any existing preview mesh
       if (previewShapeRef.current) {
         scene.remove(previewShapeRef.current);
         previewShapeRef.current = null;
@@ -245,7 +227,6 @@ const SkicScene: React.FC = () => {
 
       switch (currentShape) {
         case "rectangle":
-          // Create rectangle preview
           const width = currentPoint.x - start.x;
           const height = currentPoint.y - start.y;
           const rectGeometry = new THREE.PlaneGeometry(
@@ -261,14 +242,13 @@ const SkicScene: React.FC = () => {
           break;
 
         case "triangle":
-          // Create triangle preview
           const direction = new THREE.Vector3().subVectors(currentPoint, start);
           const perpendicular = new THREE.Vector3(
             -direction.y,
             direction.x,
             0
           ).normalize();
-          const height2 = direction.length() * 0.866; // Height for equilateral triangle
+          const height2 = direction.length() * 0.866;
           const thirdPoint = new THREE.Vector3().addVectors(
             start,
             new THREE.Vector3().addVectors(
@@ -277,7 +257,6 @@ const SkicScene: React.FC = () => {
             )
           );
 
-          // Create triangle geometry
           const triangleGeometry = new THREE.BufferGeometry();
           triangleGeometry.setFromPoints([
             new THREE.Vector3(start.x, start.y, start.z),
@@ -291,7 +270,6 @@ const SkicScene: React.FC = () => {
           break;
 
         case "circle":
-          // Create circle preview
           const radius = new THREE.Vector3()
             .subVectors(currentPoint, start)
             .length();
@@ -301,7 +279,6 @@ const SkicScene: React.FC = () => {
           break;
 
         default:
-          // Fallback to simple rectangle
           const defaultGeometry = new THREE.PlaneGeometry(1, 1);
           previewMesh = new THREE.Mesh(defaultGeometry, previewMaterial);
           previewMesh.position.copy(start);
@@ -311,14 +288,12 @@ const SkicScene: React.FC = () => {
       scene.add(previewMesh);
     };
 
-    // Also update onMouseUp to use previewShapeRef instead of previewRectRef
     const onMouseUp = (event: MouseEvent) => {
       if (!isDrawingRef.current || !startPointRef.current) return;
       const endPoint = getMouseIntersection(event);
       if (!endPoint) return;
       isDrawingRef.current = false;
 
-      // Remove the preview mesh from the scene
       if (previewShapeRef.current) {
         scene.remove(previewShapeRef.current);
         previewShapeRef.current = null;
@@ -326,16 +301,13 @@ const SkicScene: React.FC = () => {
       const start = startPointRef.current;
       const end = endPoint;
 
-      // Handle different shape types
       switch (currentShape) {
         case "rectangle":
-          // Existing rectangle creation code
           const minX = Math.min(start.x, end.x);
           const maxX = Math.max(start.x, end.x);
           const minY = Math.min(start.y, end.y);
           const maxY = Math.max(start.y, end.y);
 
-          // Create the B-rep
           const v1 = new Vertex(minX, minY, 0);
           const v2 = new Vertex(maxX, minY, 0);
           const v3 = new Vertex(maxX, maxY, 0);
@@ -347,14 +319,12 @@ const SkicScene: React.FC = () => {
           const face = new Face([v1, v2, v3, v4]);
           const brep = new Brep([v1, v2, v3, v4], [e1, e2, e3, e4], [face]);
 
-          // Calculate the center position
           const position = new THREE.Vector3(
             (minX + maxX) / 2,
             (minY + maxY) / 2,
             0
           );
 
-          // Create the actual plane
           const width = maxX - minX;
           const height = maxY - minY;
           const geometry = new THREE.PlaneGeometry(width, height);
@@ -392,7 +362,6 @@ const SkicScene: React.FC = () => {
     };
   }, [mode, addElement, currentShape]);
 
-  // --- Move Mode ---
   useEffect(() => {
     if (mode !== "move") return;
     const renderer = rendererRef.current;
@@ -424,7 +393,6 @@ const SkicScene: React.FC = () => {
       );
       raycaster.setFromCamera(mouse, camera);
 
-      // Create an array of objects to check for intersection
       const objects: THREE.Object3D[] = [];
       elements.forEach((el) => {
         const obj = getObject(el.nodeId);
@@ -436,7 +404,6 @@ const SkicScene: React.FC = () => {
       if (intersects.length > 0) {
         const pickedObject = intersects[0].object;
 
-        // Find the element this object belongs to
         for (const el of elements) {
           const obj = getObject(el.nodeId);
           if (
@@ -511,7 +478,6 @@ const SkicScene: React.FC = () => {
       );
       raycaster.setFromCamera(mouse, camera);
 
-      // Create an array of objects to check for intersection
       const objects: THREE.Object3D[] = [];
       elements.forEach((el) => {
         const obj = getObject(el.nodeId);
@@ -523,14 +489,12 @@ const SkicScene: React.FC = () => {
       if (intersects.length > 0) {
         const pickedObject = intersects[0].object;
 
-        // Find the element this object belongs to
         for (const el of elements) {
           const obj = getObject(el.nodeId);
           if (
             obj === pickedObject ||
             (pickedObject.parent && obj === pickedObject.parent)
           ) {
-            // Toggle selection
             if (selectedElements.includes(el.nodeId)) {
               deselectElement(el.nodeId);
             } else {
@@ -556,18 +520,7 @@ const SkicScene: React.FC = () => {
     getObject,
   ]);
 
-  // Add this debug function above your component
-  const debugObject = (obj: THREE.Object3D) => {
-    return obj
-      ? {
-          type: obj.type,
-          id: obj.id,
-          userData: obj.userData,
-        }
-      : null;
-  };
-
-  // Add event listener for forced updates
+  // listen for forced updates
   useEffect(() => {
     const handleSceneUpdate = () => {
       // This will force the scene sync effect to run
@@ -585,18 +538,12 @@ const SkicScene: React.FC = () => {
     const scene = sceneRef.current;
     if (!scene) return;
 
-    console.log("Scene sync running, elements:", elements.length);
-
-    // Key step: ensure all elements have corresponding objects in the scene
     elements.forEach((element) => {
       const obj = getObject(element.nodeId);
       if (obj) {
         if (!scene.children.includes(obj)) {
-          console.log("Adding missing object to scene:", element.nodeId);
           scene.add(obj);
         }
-      } else {
-        console.error("Missing object for element:", element.nodeId);
       }
     });
 
@@ -614,17 +561,9 @@ const SkicScene: React.FC = () => {
         !Array.from(validNodeIds).some((id) => getObject(id) === child)
     );
 
-    // Remove objects that are no longer in the state
-    if (objectsToRemove.length > 0) {
-      console.log("Removing objects:", objectsToRemove.length);
-      objectsToRemove.forEach((child) => {
-        scene.remove(child);
-      });
-    }
-
-    // Debug output - after sync
-    console.log("Scene children after sync:", scene.children.length);
-    console.log("Valid scene objects:", validNodeIds.size);
+    objectsToRemove.forEach((child) => {
+      scene.remove(child);
+    });
   }, [elements, getObject, forceUpdate]);
 
   return (

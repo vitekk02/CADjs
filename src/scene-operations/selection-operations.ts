@@ -1,4 +1,3 @@
-// src/scene-operations/selection-operations.ts
 import * as THREE from "three";
 import { CompoundBrep } from "../geometry";
 import { SceneElement, SceneMode } from "./types";
@@ -75,7 +74,6 @@ export function selectElement(
 
   nodesToSelect = Array.from(new Set(nodesToSelect));
 
-  // Update visual state
   nodesToSelect.forEach((id) => {
     const object = objectsMap.get(id);
     if (object instanceof THREE.Mesh) {
@@ -89,7 +87,6 @@ export function selectElement(
     }
   });
 
-  // Update elements selection state
   const updatedElements = elements.map((el) => {
     if (nodesToSelect.includes(el.nodeId)) {
       return { ...el, selected: true };
@@ -97,7 +94,6 @@ export function selectElement(
     return el;
   });
 
-  // Update selected elements list
   const updatedSelectedElements = [...selectedElements];
   nodesToSelect.forEach((id) => {
     if (!updatedSelectedElements.includes(id)) {
@@ -123,12 +119,10 @@ export function deselectElement(
 
   let nodesToDeselect: string[] = [nodeId];
 
-  // If it's a CompoundBrep, we need to deselect the whole group
   if (
     "children" in element.brep &&
     Array.isArray((element.brep as any).children)
   ) {
-    // This is a compound - find and add all its related elements
     elements.forEach((el) => {
       if (el.brep === element.brep) {
         nodesToDeselect.push(el.nodeId);

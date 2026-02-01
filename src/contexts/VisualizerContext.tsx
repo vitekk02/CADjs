@@ -1,4 +1,3 @@
-// src/contexts/CadVisualizerContext.tsx
 import React, {
   createContext,
   useContext,
@@ -11,50 +10,38 @@ import React, {
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
 import { Brep, CompoundBrep, Edge, Face, Vertex } from "../geometry";
-import { createTriangleBRep } from "../models/2d/triangle";
-import { createCircleBRep } from "../models/2d/circle";
 import { SceneElement } from "../scene-operations/types";
 import { useCadCore } from "./CoreContext";
 
-// Define types for shape creation
 export type ShapeType = "rectangle" | "triangle" | "circle" | "custom";
 
-// Define the visualizer context type (UI helpers and visualization-specific functionality)
 interface CadVisualizerContextType {
-  // References to Three.js objects
   scene: THREE.Scene | null;
   camera: THREE.PerspectiveCamera | null;
   renderer: THREE.WebGLRenderer | null;
   controls: OrbitControls | null;
 
-  // Drawing-specific state
   currentShape: ShapeType;
   setCurrentShape: (shape: ShapeType) => void;
 
-  // High-level drawing operations
   drawShape: (start: THREE.Vector3, end: THREE.Vector3) => void;
 
-  // Helper visualization methods
   createEdgeHelpers: (element: SceneElement) => THREE.LineSegments | null;
   createVertexHelpers: (element: SceneElement) => THREE.Object3D | null;
-  // Mouse interaction helpers
   getMouseIntersection: (event: MouseEvent) => THREE.Vector3 | null;
 
-  // DOM management
   mountRenderer: (container: HTMLDivElement) => void;
   unmountRenderer: () => void;
 
-  // Visualization effects
   highlightElement: (nodeId: string) => void;
   unhighlightElement: (nodeId: string) => void;
 
-  // Force scene update
   forceSceneUpdate: () => void;
 
   customShapePoints: THREE.Vector3[];
   handleCustomShapePoint: (
     point: THREE.Vector3,
-    isComplete?: boolean
+    isComplete?: boolean,
   ) => THREE.Mesh | null;
   createCustomShapePreview: (currentPoint: THREE.Vector3) => THREE.Mesh;
   resetCustomShape: () => void;
@@ -76,57 +63,45 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 }) => {
   const { addElement, elements, getObject } = useCadCore();
 
-  // Three.js object references
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // For custom shape drawing
   const [customShapePoints, setCustomShapePoints] = useState<THREE.Vector3[]>(
-    []
+    [],
   );
   const customShapeInProgressRef = useRef<boolean>(false);
-  // Drawing state
   const [currentShape, setCurrentShape] = useState<ShapeType>("rectangle");
-
-  // For forcing updates to the scene
   const [forceUpdate, setForceUpdate] = useState(0);
   const [showGroundPlane, setShowGroundPlane] = useState<boolean>(true);
   const groundPlaneRef = useRef<THREE.Group | null>(null);
 
-  // Toggle ground plane visibility
   const toggleGroundPlane = useCallback(() => {
     setShowGroundPlane((prev) => !prev);
   }, []);
 
-  // Initialize scene, camera, renderer
   const initSceneObjects = useCallback(() => {
-    // Setup scene
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x808080);
 
-    // Setup camera
     const camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
       0.1,
-      1000
+      1000,
     );
     camera.position.set(0, 0, 10);
 
-    // Setup renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
 
-    // Add lighting
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
     scene.add(ambientLight);
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
     directionalLight.position.set(10, 10, 10);
     scene.add(directionalLight);
 
-    // Store refs
     sceneRef.current = scene;
     cameraRef.current = camera;
     rendererRef.current = renderer;
@@ -134,17 +109,14 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     return { scene, camera, renderer };
   }, []);
 
-  // Mount the renderer to a DOM element
   const mountRenderer = useCallback(
     (container: HTMLDivElement) => {
       containerRef.current = container;
 
       const { scene, camera, renderer } = initSceneObjects();
 
-      // Add to DOM
       container.appendChild(renderer.domElement);
 
-      // Setup controls
       const controls = new OrbitControls(camera, renderer.domElement);
       controls.mouseButtons = {
         LEFT: null, // reserve left-click
@@ -156,7 +128,6 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       controls.enablePan = true;
       controlsRef.current = controls;
 
-      // Animation loop
       const animate = () => {
         requestAnimationFrame(animate);
         controls.update();
@@ -164,7 +135,6 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       };
       animate();
 
-      // Handle window resizing
       const handleResize = () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
@@ -172,23 +142,20 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       };
       window.addEventListener("resize", handleResize);
 
-      // Return cleanup function
       return () => {
         window.removeEventListener("resize", handleResize);
         controls.dispose();
       };
     },
-    [initSceneObjects]
+    [initSceneObjects],
   );
 
-  // Unmount the renderer
   const unmountRenderer = useCallback(() => {
     if (containerRef.current && rendererRef.current) {
       containerRef.current.removeChild(rendererRef.current.domElement);
     }
   }, []);
 
-  // Helper to get mouse intersection with drawing plane
   const getMouseIntersection = useCallback(
     (event: MouseEvent): THREE.Vector3 | null => {
       const renderer = rendererRef.current;
@@ -201,29 +168,28 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       const rect = renderer.domElement.getBoundingClientRect();
       const mouse = new THREE.Vector2(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,
-        -((event.clientY - rect.top) / rect.height) * 2 + 1
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
       );
       raycaster.setFromCamera(mouse, camera);
       const intersection = new THREE.Vector3();
       const result = raycaster.ray.intersectPlane(drawingPlane, intersection);
       return result ? intersection : null;
     },
-    []
+    [],
   );
 
   const [cursorPosition, setCursorPosition] = useState<THREE.Vector3 | null>(
-    null
+    null,
   );
 
-  // Add this function
   const updateCursorPosition = useCallback(
     (event: MouseEvent) => {
       const intersection = getMouseIntersection(event);
       setCursorPosition(intersection);
     },
-    [getMouseIntersection]
+    [getMouseIntersection],
   );
-  // Create and visualize a custom shape
+
   const createCustomShape = useCallback(
     (points: THREE.Vector3[]) => {
       if (points.length < 3) {
@@ -231,14 +197,18 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         return;
       }
 
-      // Calculate center position
       const center = new THREE.Vector3();
       points.forEach((point) => center.add(point));
       center.divideScalar(points.length);
 
-      // Create B-rep vertices, edges, and face
+      // local space vertices
       const vertices: Vertex[] = points.map(
-        (point) => new Vertex(point.x, point.y, point.z)
+        (point) =>
+          new Vertex(
+            point.x - center.x,
+            point.y - center.y,
+            point.z - center.z,
+          ),
       );
 
       const edges: Edge[] = [];
@@ -250,11 +220,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       const face = new Face(vertices);
       const brep = new Brep(vertices, edges, [face]);
 
-      // Create visual mesh
       const shape = new THREE.Shape();
-      shape.moveTo(points[0].x - center.x, points[0].y - center.y);
-      for (let i = 1; i < points.length; i++) {
-        shape.lineTo(points[i].x - center.x, points[i].y - center.y);
+      shape.moveTo(vertices[0].x, vertices[0].y);
+      for (let i = 1; i < vertices.length; i++) {
+        shape.lineTo(vertices[i].x, vertices[i].y);
       }
       shape.closePath();
 
@@ -267,12 +236,11 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.copy(center);
 
-      // Add to scene via core context
       addElement(brep, center, mesh);
 
       return mesh;
     },
-    [addElement]
+    [addElement],
   );
 
   // Start, add points to, and complete a custom shape
@@ -305,7 +273,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
       return null; // No shape created yet
     },
-    [customShapePoints, createCustomShape]
+    [customShapePoints, createCustomShape],
   );
 
   // Generate preview mesh for custom shape in progress
@@ -318,12 +286,12 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       if (previewPoints.length < 3) {
         // For 2 points, just show a line
         const lineGeometry = new THREE.BufferGeometry().setFromPoints(
-          previewPoints
+          previewPoints,
         );
         const lineMaterial = new THREE.LineBasicMaterial({ color: 0x0088ff });
         return new THREE.Line(
           lineGeometry,
-          lineMaterial
+          lineMaterial,
         ) as unknown as THREE.Mesh;
       }
 
@@ -345,7 +313,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
       return new THREE.Mesh(geometry, material);
     },
-    [customShapePoints]
+    [customShapePoints],
   );
   const resetCustomShape = useCallback(() => {
     setCustomShapePoints([]);
@@ -359,11 +327,24 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       const minY = Math.min(start.y, end.y);
       const maxY = Math.max(start.y, end.y);
 
-      // Create B-rep vertices, edges, and face
-      const v1 = new Vertex(minX, minY, 0);
-      const v2 = new Vertex(maxX, minY, 0);
-      const v3 = new Vertex(maxX, maxY, 0);
-      const v4 = new Vertex(minX, maxY, 0);
+      // Calculate center position
+      const position = new THREE.Vector3(
+        (minX + maxX) / 2,
+        (minY + maxY) / 2,
+        0,
+      );
+
+      // Calculate dimensions
+      const width = maxX - minX;
+      const height = maxY - minY;
+      const halfWidth = width / 2;
+      const halfHeight = height / 2;
+
+      // Create B-rep vertices in LOCAL space (centered at origin)
+      const v1 = new Vertex(-halfWidth, -halfHeight, 0);
+      const v2 = new Vertex(halfWidth, -halfHeight, 0);
+      const v3 = new Vertex(halfWidth, halfHeight, 0);
+      const v4 = new Vertex(-halfWidth, halfHeight, 0);
       const e1 = new Edge(v1, v2);
       const e2 = new Edge(v2, v3);
       const e3 = new Edge(v3, v4);
@@ -371,16 +352,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       const face = new Face([v1, v2, v3, v4]);
       const brep = new Brep([v1, v2, v3, v4], [e1, e2, e3, e4], [face]);
 
-      // Calculate center position
-      const position = new THREE.Vector3(
-        (minX + maxX) / 2,
-        (minY + maxY) / 2,
-        0
-      );
-
-      // Create visual mesh
-      const width = maxX - minX;
-      const height = maxY - minY;
+      // Create visual mesh (PlaneGeometry is already centered at origin)
       const geometry = new THREE.PlaneGeometry(width, height);
       const material = new THREE.MeshStandardMaterial({
         color: 0x0000ff,
@@ -392,7 +364,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       // Add to scene via core context
       addElement(brep, position, mesh);
     },
-    [addElement]
+    [addElement],
   );
 
   // Create and visualize a triangle
@@ -402,19 +374,16 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       const perpendicular = new THREE.Vector3(
         -direction.y,
         direction.x,
-        0
+        0,
       ).normalize();
       const height = direction.length() * 0.866; // Height for equilateral triangle
       const thirdPoint = new THREE.Vector3().addVectors(
         start,
         new THREE.Vector3().addVectors(
           new THREE.Vector3().copy(direction).multiplyScalar(0.5),
-          new THREE.Vector3().copy(perpendicular).multiplyScalar(height)
-        )
+          new THREE.Vector3().copy(perpendicular).multiplyScalar(height),
+        ),
       );
-
-      // Create B-rep
-      const brep = createTriangleBRep(start, end, thirdPoint);
 
       // Calculate center
       const center = new THREE.Vector3()
@@ -423,12 +392,23 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         .add(thirdPoint)
         .divideScalar(3);
 
-      // Create visual mesh
-      const vertices = [
-        new THREE.Vector3(start.x, start.y, start.z),
-        new THREE.Vector3(end.x, end.y, end.z),
-        new THREE.Vector3(thirdPoint.x, thirdPoint.y, thirdPoint.z),
-      ];
+      // Convert world coordinates to LOCAL space (relative to center)
+      const localStart = new THREE.Vector3().subVectors(start, center);
+      const localEnd = new THREE.Vector3().subVectors(end, center);
+      const localThird = new THREE.Vector3().subVectors(thirdPoint, center);
+
+      // Create B-rep in LOCAL space
+      const v1 = new Vertex(localStart.x, localStart.y, localStart.z);
+      const v2 = new Vertex(localEnd.x, localEnd.y, localEnd.z);
+      const v3 = new Vertex(localThird.x, localThird.y, localThird.z);
+      const e1 = new Edge(v1, v2);
+      const e2 = new Edge(v2, v3);
+      const e3 = new Edge(v3, v1);
+      const face = new Face([v1, v2, v3]);
+      const brep = new Brep([v1, v2, v3], [e1, e2, e3], [face]);
+
+      // Create visual mesh in LOCAL space
+      const vertices = [localStart, localEnd, localThird];
 
       const geometry = new THREE.BufferGeometry();
       geometry.setFromPoints(vertices);
@@ -441,21 +421,38 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       });
 
       const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.copy(center);
 
-      // Add to scene via core context
       addElement(brep, center, mesh);
     },
-    [addElement]
+    [addElement],
   );
 
   // Create and visualize a circle
   const createCircle = useCallback(
     (center: THREE.Vector3, radius: number) => {
-      // Create B-rep
-      const brep = createCircleBRep(center, radius);
+      // Create B-rep in LOCAL space (centered at origin)
+      const segments = 32;
+      const vertices: Vertex[] = [];
+      const edges: Edge[] = [];
 
-      // Create visual mesh
-      const geometry = new THREE.CircleGeometry(radius, 32);
+      for (let i = 0; i < segments; i++) {
+        const angle = (i / segments) * Math.PI * 2;
+        const x = radius * Math.cos(angle);
+        const y = radius * Math.sin(angle);
+        vertices.push(new Vertex(x, y, 0));
+      }
+
+      for (let i = 0; i < segments; i++) {
+        const nextIdx = (i + 1) % segments;
+        edges.push(new Edge(vertices[i], vertices[nextIdx]));
+      }
+
+      const face = new Face(vertices);
+      const brep = new Brep(vertices, edges, [face]);
+
+      // Create visual mesh (CircleGeometry is already centered at origin)
+      const geometry = new THREE.CircleGeometry(radius, segments);
       const material = new THREE.MeshStandardMaterial({
         color: 0x0000ff,
         side: THREE.DoubleSide,
@@ -464,10 +461,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.copy(center);
 
-      // Add to scene via core context
       addElement(brep, center, mesh);
     },
-    [addElement]
+    [addElement],
   );
 
   // Generic shape drawing function based on current shape type
@@ -498,94 +494,61 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       createRectangle,
       createTriangle,
       handleCustomShapePoint,
-    ]
+    ],
   );
 
   // In the VisualizerContext provider
 
   const createEdgeHelpers = (
-    element: SceneElement
+    element: SceneElement,
   ): THREE.LineSegments | null => {
     if (!element || !element.brep) return null;
 
     let edgePositions: number[] = [];
+    let brepToVisualize: Brep;
 
-    // Handle compound BReps (created by union) differently
+    // For compound BReps, use the unified BRep if it's already cached
     if (
       element.brep instanceof CompoundBrep ||
       ("children" in element.brep &&
         Array.isArray((element.brep as any).children))
     ) {
       const compoundBrep = element.brep as CompoundBrep;
-
-      // Create a map to track edges and how many times they appear
-      const edgeMap = new Map<string, { edge: Edge; count: number }>();
-
-      // Process all children's edges
-      compoundBrep.children.forEach((childBrep) => {
-        if (!childBrep.edges) return;
-
-        childBrep.edges.forEach((edge) => {
-          // Create a key for the edge (normalize direction by always sorting vertices)
-          const vertexA = edge.start;
-          const vertexB = edge.end;
-          let key: string;
-
-          // Sort vertices to ensure consistent key regardless of edge direction
-          if (
-            vertexA.x < vertexB.x ||
-            (vertexA.x === vertexB.x && vertexA.y < vertexB.y) ||
-            (vertexA.x === vertexB.x &&
-              vertexA.y === vertexB.y &&
-              vertexA.z < vertexB.z)
-          ) {
-            key = `${vertexA.x},${vertexA.y},${vertexA.z}-${vertexB.x},${vertexB.y},${vertexB.z}`;
-          } else {
-            key = `${vertexB.x},${vertexB.y},${vertexB.z}-${vertexA.x},${vertexA.y},${vertexA.z}`;
-          }
-
-          // Count occurrence of this edge
-          if (edgeMap.has(key)) {
-            const item = edgeMap.get(key);
-            if (item) item.count += 1;
-          } else {
-            edgeMap.set(key, { edge, count: 1 });
-          }
-        });
-      });
-
-      // Only keep edges that appear exactly once (these are boundary edges)
-      // Edges that appear twice or more are interior edges
-      for (const [_, item] of edgeMap) {
-        if (item.count === 1) {
-          // This is a boundary edge - add it to positions
-          const edge = item.edge;
-          edgePositions.push(
-            edge.start.x - element.position.x,
-            edge.start.y - element.position.y,
-            edge.start.z - element.position.z,
-            edge.end.x - element.position.x,
-            edge.end.y - element.position.y,
-            edge.end.z - element.position.z
-          );
+      // Access the cached unified BRep directly (should be set after union operation)
+      const unifiedBrep = (compoundBrep as any)._unifiedBRep as
+        | Brep
+        | undefined;
+      if (unifiedBrep) {
+        brepToVisualize = unifiedBrep;
+      } else {
+        // If no unified BRep yet, just use first child for now
+        // (this shouldn't happen in practice after union completes)
+        console.warn("CompoundBrep has no unified BRep cached yet");
+        if (compoundBrep.children.length > 0) {
+          brepToVisualize = compoundBrep.children[0];
+        } else {
+          return null;
         }
       }
     } else {
-      // Original code for normal BReps
-      if (!element.brep.edges || element.brep.edges.length === 0) return null;
-
-      element.brep.edges.forEach((edge) => {
-        // Store positions relative to element position
-        edgePositions.push(
-          edge.start.x - element.position.x,
-          edge.start.y - element.position.y,
-          edge.start.z - element.position.z,
-          edge.end.x - element.position.x,
-          edge.end.y - element.position.y,
-          edge.end.z - element.position.z
-        );
-      });
+      brepToVisualize = element.brep;
     }
+
+    // All BReps are stored in local space, so we just use their vertices directly
+    if (!brepToVisualize.edges || brepToVisualize.edges.length === 0)
+      return null;
+
+    brepToVisualize.edges.forEach((edge) => {
+      // Vertices are already in local space (centered at origin)
+      edgePositions.push(
+        edge.start.x,
+        edge.start.y,
+        edge.start.z,
+        edge.end.x,
+        edge.end.y,
+        edge.end.z,
+      );
+    });
 
     // If no edges to show, return null
     if (edgePositions.length === 0) return null;
@@ -593,7 +556,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     const edgeGeometry = new THREE.BufferGeometry();
     edgeGeometry.setAttribute(
       "position",
-      new THREE.Float32BufferAttribute(edgePositions, 3)
+      new THREE.Float32BufferAttribute(edgePositions, 3),
     );
 
     const edgeMaterial = new THREE.LineBasicMaterial({
@@ -614,89 +577,46 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   };
 
   const createVertexHelpers = (
-    element: SceneElement
+    element: SceneElement,
   ): THREE.Object3D | null => {
     if (!element || !element.brep) return null;
 
-    // Set to track unique vertices to avoid duplicates
-    const uniqueVertices = new Set<string>();
-    const vertices: Vertex[] = [];
+    let brepToVisualize: Brep;
 
+    // For compound BReps, use the unified BRep if it's already cached
     if (
       element.brep instanceof CompoundBrep ||
       ("children" in element.brep &&
         Array.isArray((element.brep as any).children))
     ) {
       const compoundBrep = element.brep as CompoundBrep;
-
-      // First, gather all boundary edges (similar to edge logic above)
-      const edgeMap = new Map<string, { edge: Edge; count: number }>();
-
-      // Process all children's edges
-      compoundBrep.children.forEach((childBrep) => {
-        if (!childBrep.edges) return;
-
-        childBrep.edges.forEach((edge) => {
-          // Same key generation as in createEdgeHelpers
-          const vertexA = edge.start;
-          const vertexB = edge.end;
-          let key: string;
-
-          if (
-            vertexA.x < vertexB.x ||
-            (vertexA.x === vertexB.x && vertexA.y < vertexB.y) ||
-            (vertexA.x === vertexB.x &&
-              vertexA.y === vertexB.y &&
-              vertexA.z < vertexB.z)
-          ) {
-            key = `${vertexA.x},${vertexA.y},${vertexA.z}-${vertexB.x},${vertexB.y},${vertexB.z}`;
-          } else {
-            key = `${vertexB.x},${vertexB.y},${vertexB.z}-${vertexA.x},${vertexA.y},${vertexA.z}`;
-          }
-
-          if (edgeMap.has(key)) {
-            const item = edgeMap.get(key);
-            if (item) item.count += 1;
-          } else {
-            edgeMap.set(key, { edge, count: 1 });
-          }
-        });
-      });
-
-      // Now collect vertices from boundary edges
-      for (const [_, item] of edgeMap) {
-        if (item.count === 1) {
-          // Boundary edge - add its vertices if not already added
-          const edge = item.edge;
-          const startKey = `${edge.start.x},${edge.start.y},${edge.start.z}`;
-          const endKey = `${edge.end.x},${edge.end.y},${edge.end.z}`;
-
-          if (!uniqueVertices.has(startKey)) {
-            uniqueVertices.add(startKey);
-            vertices.push(edge.start);
-          }
-
-          if (!uniqueVertices.has(endKey)) {
-            uniqueVertices.add(endKey);
-            vertices.push(edge.end);
-          }
+      // Access the cached unified BRep directly (should be set after union operation)
+      const unifiedBrep = (compoundBrep as any)._unifiedBRep as
+        | Brep
+        | undefined;
+      if (unifiedBrep) {
+        brepToVisualize = unifiedBrep;
+      } else {
+        // If no unified BRep yet, just use first child for now
+        console.warn("CompoundBrep has no unified BRep cached yet");
+        if (compoundBrep.children.length > 0) {
+          brepToVisualize = compoundBrep.children[0];
+        } else {
+          return null;
         }
       }
     } else {
-      // Original code for normal BReps
-      if (!element.brep.vertices || element.brep.vertices.length === 0) {
-        return null;
-      }
-
-      vertices.push(...element.brep.vertices);
+      brepToVisualize = element.brep;
     }
 
-    // If no vertices to show, return null
-    if (vertices.length === 0) return null;
+    // All BReps are stored in local space
+    if (!brepToVisualize.vertices || brepToVisualize.vertices.length === 0) {
+      return null;
+    }
 
     const vertexGroup = new THREE.Group();
 
-    vertices.forEach((vertex) => {
+    brepToVisualize.vertices.forEach((vertex) => {
       const sphereGeometry = new THREE.SphereGeometry(0.05, 16, 16);
       const sphereMaterial = new THREE.MeshBasicMaterial({
         color: 0xff0000,
@@ -705,12 +625,8 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       });
 
       const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-      // Position relative to element position
-      sphere.position.set(
-        vertex.x - element.position.x,
-        vertex.y - element.position.y,
-        vertex.z - element.position.z
-      );
+      // Vertices are already in local space, use them directly
+      sphere.position.set(vertex.x, vertex.y, vertex.z);
       sphere.renderOrder = 1000;
       vertexGroup.add(sphere);
     });
@@ -733,7 +649,6 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       (obj.material as THREE.MeshStandardMaterial).needsUpdate = true;
     }
 
-    // Show helpers
     obj.traverse((child) => {
       if (
         child.userData.helperType === "edge" ||
@@ -789,7 +704,6 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         if (!scene.children.includes(obj)) {
           scene.add(obj);
         }
-      } else {
       }
     });
 
@@ -824,7 +738,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       // Check by nodeId in userData
       if (child.userData && child.userData.nodeId) {
         const matchingElement = elements.find(
-          (el) => el.nodeId === child.userData.nodeId
+          (el) => el.nodeId === child.userData.nodeId,
         );
         if (matchingElement) return false;
       }
@@ -839,7 +753,6 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       });
     }
   }, [elements, getObject]);
-  console.log({ elements });
 
   useEffect(() => {
     const scene = sceneRef.current;
@@ -863,7 +776,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         gridSize,
         gridDivisions,
         0x888888,
-        0x444444
+        0x444444,
       );
       gridHelper.rotation.x = Math.PI / 2; // Rotate to XY plane
       gridHelper.position.z = -0.02; // Slightly below objects
@@ -948,7 +861,7 @@ export const useCadVisualizer = () => {
   const context = useContext(CadVisualizerContext);
   if (context === undefined) {
     throw new Error(
-      "useCadVisualizer must be used within a CadVisualizerProvider"
+      "useCadVisualizer must be used within a CadVisualizerProvider",
     );
   }
   return context;

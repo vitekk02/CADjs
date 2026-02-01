@@ -1,4 +1,3 @@
-// src/contexts/SceneContext.tsx
 import React, {
   createContext,
   useContext,
@@ -29,19 +28,15 @@ import {
 import { unionSelectedElements as unionSelectedElementsOp } from "../scene-operations/union-operations";
 import { SceneElement, SceneMode } from "../scene-operations/types";
 
-// Define the context type
 interface SceneContextType {
-  // State
   elements: SceneElement[];
   selectedElements: string[];
   brepGraph: BrepGraph;
   mode: SceneMode;
   idCounter: number;
 
-  // State update methods
   setMode: (mode: SceneMode) => void;
 
-  // Element manipulation methods
   addElement: (
     brep: Brep,
     position: THREE.Vector3,
@@ -54,7 +49,6 @@ interface SceneContextType {
   deselectAll: () => void;
   unionSelectedElements: () => void;
 
-  // Object access methods
   getObject: (nodeId: string) => THREE.Object3D | undefined;
   getAllObjects: () => Map<string, THREE.Object3D>;
 
@@ -64,11 +58,9 @@ interface SceneContextType {
 
 const SceneContext = createContext<SceneContextType | undefined>(undefined);
 
-// Provider component
 export const SceneProvider: React.FC<{ children: ReactNode }> = ({
   children,
 }) => {
-  // State hooks
   const [elements, setElements] = useState<SceneElement[]>([]);
   const [selectedElements, setSelectedElements] = useState<string[]>([]);
   const [brepGraph] = useState<BrepGraph>(new BrepGraph());
@@ -78,10 +70,8 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
     "rectangle" | "triangle" | "circle"
   >("rectangle");
 
-  // Ref to store Three.js objects
   const objectsRef = useRef<Map<string, THREE.Object3D>>(new Map());
 
-  // Update mode and deselect all elements
   const handleSetMode = (newMode: SceneMode) => {
     const result = handleSetModeOp(elements, newMode, objectsRef.current);
 
@@ -90,7 +80,6 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
     setSelectedElements([]);
   };
 
-  // Method to add a new element
   const addElement = (
     brep: Brep,
     position: THREE.Vector3,
@@ -109,7 +98,6 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
     setIdCounter(result.nextId);
   };
 
-  // Method to remove an element
   const removeElement = (nodeId: string) => {
     const result = removeElementOp(
       elements,
@@ -122,7 +110,6 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
     setSelectedElements(result.updatedSelectedElements);
   };
 
-  // Method to update element position
   const updateElementPosition = (nodeId: string, position: THREE.Vector3) => {
     const updatedElements = updateElementPositionOp(
       elements,
@@ -159,8 +146,6 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
   };
 
   const deselectAll = () => {
-    // Use the handleSetMode operation which already deselects all elements
-    // but keep the current mode
     const result = handleSetModeOp(elements, mode, objectsRef.current);
 
     setElements(result.updatedElements);
@@ -182,7 +167,6 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
     setSelectedElements(result.updatedSelectedElements);
     setIdCounter(result.nextIdCounter);
 
-    // Force scene update
     setTimeout(() => {
       window.dispatchEvent(new Event("sceneUpdate"));
     }, 0);
@@ -191,17 +175,14 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
   return (
     <SceneContext.Provider
       value={{
-        // State
         elements,
         selectedElements,
         brepGraph,
         mode,
         idCounter,
 
-        // State setter methods
         setMode: handleSetMode,
 
-        // Element manipulation methods
         addElement,
         removeElement,
         updateElementPosition,
@@ -210,7 +191,6 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
         deselectAll,
         unionSelectedElements,
 
-        // Object access methods
         getObject: (nodeId) => getObject(objectsRef.current, nodeId),
         getAllObjects: () => getAllObjects(objectsRef.current),
         currentShape,
@@ -222,7 +202,6 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
   );
 };
 
-// Custom hook for using the scene context
 export const useScene = () => {
   const context = useContext(SceneContext);
   if (context === undefined) {
@@ -231,5 +210,4 @@ export const useScene = () => {
   return context;
 };
 
-// Re-export the types from scene-operations for convenience
 export type { SceneElement, SceneMode };

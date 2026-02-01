@@ -1,4 +1,3 @@
-// src/scene-operations/element-operations.ts
 import * as THREE from "three";
 import { Brep, CompoundBrep } from "../geometry";
 import { SceneElement } from "./types";
@@ -11,7 +10,7 @@ export function addElement(
   position: THREE.Vector3,
   idCounter: number,
   objectsMap: Map<string, THREE.Object3D>,
-  object?: THREE.Object3D
+  object?: THREE.Object3D,
 ): { updatedElements: SceneElement[]; nextId: number; nodeId: string } {
   const nextId = idCounter + 1;
   const nodeId = `node_${nextId}`;
@@ -41,7 +40,7 @@ export function removeElement(
   elements: SceneElement[],
   selectedElements: string[],
   nodeId: string,
-  objectsMap: Map<string, THREE.Object3D>
+  objectsMap: Map<string, THREE.Object3D>,
 ): { updatedElements: SceneElement[]; updatedSelectedElements: string[] } {
   objectsMap.delete(nodeId);
 
@@ -55,25 +54,19 @@ export function updateElementPosition(
   elements: SceneElement[],
   nodeId: string,
   position: THREE.Vector3,
-  objectsMap: Map<string, THREE.Object3D>
+  objectsMap: Map<string, THREE.Object3D>,
 ): SceneElement[] {
   const elementIndex = elements.findIndex((el) => el.nodeId === nodeId);
   if (elementIndex === -1) return elements;
 
-  // Just update the 3D object position
   const object = objectsMap.get(nodeId);
   if (object) {
     object.position.copy(position);
   }
 
-  // Don't transform the BRep vertices - just update the position attribute
   return elements.map((el, idx) => {
     if (idx === elementIndex) {
-      return {
-        ...el,
-        position, // Only update the position property
-        // Keep the original BRep data unchanged
-      };
+      return { ...el, position };
     }
     return el;
   });

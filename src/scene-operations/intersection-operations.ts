@@ -4,7 +4,8 @@ import { SceneElement } from "./types";
 import { createMeshFromBrep } from "./mesh-operations";
 import { OpenCascadeService } from "../services/OpenCascadeService";
 
-export async function unionSelectedElements(
+// boolean intersection - returns common volume of all shapes
+export async function intersectionSelectedElements(
   elements: SceneElement[],
   selectedElements: string[],
   idCounter: number,
@@ -28,53 +29,51 @@ export async function unionSelectedElements(
   );
   const selectedNodeIds = [...selectedElements];
 
-  const brepsToUnion: { brep: Brep; position: THREE.Vector3 }[] = [];
+  const brepsToIntersect: { brep: Brep; position: THREE.Vector3 }[] = [];
 
-  selectedElementsData.forEach((element) => {
+  for (const element of selectedElementsData) {
     if (
       "children" in element.brep &&
-      Array.isArray((element.brep as any).children)
+      Array.isArray((element.brep as CompoundBrep).children)
     ) {
       const compound = element.brep as CompoundBrep;
-      compound.children.forEach((childBrep) => {
-        brepsToUnion.push({
-          brep: childBrep,
-          position: element.position.clone(),
-        });
+      const unifiedBrep = await compound.getUnifiedBRep();
+      brepsToIntersect.push({
+        brep: unifiedBrep,
+        position: element.position.clone(),
       });
     } else {
-      brepsToUnion.push({
+      brepsToIntersect.push({
         brep: element.brep,
         position: element.position.clone(),
       });
     }
-  });
+  }
 
   try {
     const ocService = OpenCascadeService.getInstance();
     const oc = await ocService.getOC();
 
-    let resultShape;
+    let resultShape = await ocService.brepToOCShape(
+      brepsToIntersect[0].brep,
+      brepsToIntersect[0].position,
+    );
 
-    if (brepsToUnion.length >= 1) {
-      resultShape = await ocService.brepToOCShape(
-        brepsToUnion[0].brep,
-        brepsToUnion[0].position,
+    for (let i = 1; i < brepsToIntersect.length; i++) {
+      const nextShape = await ocService.brepToOCShape(
+        brepsToIntersect[i].brep,
+        brepsToIntersect[i].position,
       );
 
-      for (let i = 1; i < brepsToUnion.length; i++) {
-        const nextShape = await ocService.brepToOCShape(
-          brepsToUnion[i].brep,
-          brepsToUnion[i].position,
-        );
-        const result = await ocService.booleanUnion(resultShape, nextShape);
-
-        resultShape = result.shape;
-      }
+      const result = await ocService.booleanIntersection(
+        resultShape,
+        nextShape,
+      );
+      resultShape = result.shape;
     }
 
     if (!resultShape) {
-      throw new Error("Union operation failed - no result shape");
+      throw new Error("Intersection operation failed - no result shape");
     }
 
     const bBox = new oc.Bnd_Box_1();
@@ -93,12 +92,11 @@ export async function unionSelectedElements(
       (zMin + zMax) / 2,
     );
 
-    const unifiedBrep = await ocService.ocShapeToBRep(resultShape);
+    const resultBrep = await ocService.ocShapeToBRep(resultShape);
 
-    // keep originals for potential ungroup
-    const originalBreps = brepsToUnion.map((item) => item.brep);
+    const originalBreps = brepsToIntersect.map((item) => item.brep);
     const compound = new CompoundBrep(originalBreps);
-    compound.setUnifiedBrep(unifiedBrep);
+    compound.setUnifiedBrep(resultBrep);
 
     const nextId = idCounter + 1;
     const nodeId = `node_${nextId}`;
@@ -113,26 +111,26 @@ export async function unionSelectedElements(
     selectedElementsData.forEach((element) => {
       brepGraph.addConnection(element.nodeId, {
         targetId: nodeId,
-        connectionType: "union",
+        connectionType: "intersection",
       });
     });
 
-    const unionMesh = createMeshFromBrep(unifiedBrep);
-    unionMesh.position.set(0, 0, 0);
+    const resultMesh = createMeshFromBrep(resultBrep);
+    resultMesh.position.set(0, 0, 0);
 
-    const unionGroup = new THREE.Group();
-    unionGroup.userData = { nodeId };
-    unionGroup.add(unionMesh);
-    unionGroup.position.copy(worldCenter);
+    const resultGroup = new THREE.Group();
+    resultGroup.userData = { nodeId };
+    resultGroup.add(resultMesh);
+    resultGroup.position.copy(worldCenter);
 
-    const newElement = {
+    const newElement: SceneElement = {
       brep: compound,
       nodeId,
       position: worldCenter,
       selected: false,
     };
 
-    objectsMap.set(nodeId, unionGroup);
+    objectsMap.set(nodeId, resultGroup);
     selectedNodeIds.forEach((id) => {
       objectsMap.delete(id);
     });
@@ -148,7 +146,7 @@ export async function unionSelectedElements(
       nextIdCounter: nextId,
     };
   } catch (error) {
-    console.error("Error during union operation:", error);
+    console.error("Error during intersection operation:", error);
     return null;
   }
 }

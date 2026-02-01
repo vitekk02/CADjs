@@ -7,12 +7,7 @@ import { useCadVisualizer } from "../contexts/VisualizerContext";
 
 interface MoveModeState {
   selectedObject: string | null;
-  contextMenu: {
-    visible: boolean;
-    x: number;
-    y: number;
-    nodeId: string | null;
-  };
+  contextMenu: { visible: boolean; x: number; y: number; nodeId: string | null };
   isRotating: boolean;
 }
 
@@ -25,7 +20,6 @@ interface MoveModeActions {
 }
 
 const useMoveMode = (): [MoveModeState, MoveModeActions] => {
-  // Get required context
   const { elements, getObject, updateElementPosition, updateElementRotation } =
     useCadCore();
 
@@ -40,7 +34,6 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
 
   const showGroundPlaneRef = useRef(showGroundPlane);
 
-  // State for selected object and context menu
   const [selectedObject, setSelectedObject] = useState<string | null>(null);
   const selectedObjectRef = useRef<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
@@ -88,12 +81,10 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     [showGroundPlane, shiftKeyPressed]
   );
 
-  // Add this function to snap rotations to increments
   const snapRotationToIncrement = useCallback(
     (rotation: THREE.Euler): THREE.Euler => {
       if (showGroundPlane && !shiftKeyPressed) {
-        // Snap to 15-degree increments (in radians)
-        const angleIncrement = Math.PI / 12; // 15 degrees
+        const angleIncrement = Math.PI / 12;
         const newRotation = rotation.clone();
         newRotation.x =
           Math.round(newRotation.x / angleIncrement) * angleIncrement;
@@ -108,20 +99,15 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     [showGroundPlane, shiftKeyPressed]
   );
 
-  // Ref for transform controls (gizmo)
   const transformControlsRef = useRef<TransformControls | null>(null);
 
-  // Initialize transform controls when scene is available
-  // Initialize transform controls when scene is available
   useEffect(() => {
     if (!scene || !camera || !renderer) {
       console.error("Scene, camera, or renderer not available");
       return;
     }
 
-    console.log("Scene, camera, and renderer are available");
 
-    // Store event listeners for cleanup
     const onDraggingChanged = (event) => {
       if (orbitControls) {
         orbitControls.enabled = !event.value;
@@ -129,35 +115,28 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     };
 
     const onObjectChange = () => {
-      console.log("Object changed in transform controls");
       if (selectedObjectRef.current && transformControlsRef.current?.object) {
-        // Get the current position
         const position = new THREE.Vector3();
         transformControlsRef.current.object.getWorldPosition(position);
 
-        // Apply grid snapping to position if enabled
         if (
           showGroundPlaneRef.current &&
           transformControlsRef.current.mode === "translate"
         ) {
           const snappedPosition = snapPositionToGrid(position);
 
-          // Only update if actually changed (prevents loops)
           if (!position.equals(snappedPosition)) {
             transformControlsRef.current.object.position.copy(snappedPosition);
           }
 
-          // Update position in the data model
           updateElementPositionRef.current(
             selectedObjectRef.current,
             snappedPosition
           );
         } else {
-          // Normal update without snapping
           updateElementPositionRef.current(selectedObjectRef.current, position);
         }
 
-        // Handle rotation if we're in rotation mode
         if (isRotating && transformControlsRef.current.object) {
           const rotation = new THREE.Euler();
           rotation.setFromRotationMatrix(
@@ -166,7 +145,6 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
             )
           );
 
-          // Apply rotation snapping if enabled
           if (showGroundPlaneRef.current) {
             const snappedRotation = snapRotationToIncrement(rotation);
             if (!rotation.equals(snappedRotation)) {
@@ -188,9 +166,7 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
       }
     };
 
-    // Thorough cleanup of existing controls
     if (transformControlsRef.current) {
-      // Remove event listeners
       transformControlsRef.current.removeEventListener(
         "dragging-changed",
         onDraggingChanged
@@ -200,61 +176,48 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
         onObjectChange
       );
 
-      // Detach from any object
       transformControlsRef.current.detach();
 
-      // Make sure it's removed from the scene (need to get helper for removal)
       try {
         const gizmo = transformControlsRef.current.getHelper();
         if (scene && gizmo) {
-          console.log("Removing previous transform control gizmo");
           scene.remove(gizmo);
         }
       } catch (e) {
-        console.error("Error removing transform controls:", e);
+        // ignore cleanup errors
       }
 
-      // Dispose and nullify
       transformControlsRef.current.dispose();
       transformControlsRef.current = null;
     }
 
-    // Create fresh transform controls
     try {
       const transformControls = new TransformControls(
         camera,
         renderer.domElement
       );
 
-      // Basic setup
       transformControls.setMode("translate");
       transformControls.setSpace("world");
       transformControls.setSize(1.25);
       transformControls.enabled = true;
 
-      // Add event listeners
       transformControls.addEventListener("dragging-changed", onDraggingChanged);
       transformControls.addEventListener("objectChange", onObjectChange);
 
-      // Add to scene
       const gizmo = transformControls.getHelper();
       gizmo.userData.helperType = "gizmo";
       scene.add(gizmo);
 
-      // Store reference
       transformControlsRef.current = transformControls;
-      console.log("Transform controls created and added to scene");
 
-      // Force update to see the controls
       forceSceneUpdate();
     } catch (error) {
-      console.error("Error creating transform controls:", error);
+      // transform controls init failed
     }
 
-    // Clean up on unmount or when effect re-runs
     return () => {
       if (transformControlsRef.current) {
-        // Remove event listeners
         transformControlsRef.current.removeEventListener(
           "dragging-changed",
           onDraggingChanged
@@ -264,10 +227,8 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
           onObjectChange
         );
 
-        // Detach from any object
         transformControlsRef.current.detach();
 
-        // Remove gizmo from scene
         try {
           const gizmo = transformControlsRef.current.getHelper();
           if (scene && gizmo) {
@@ -277,7 +238,6 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
           console.error("Error cleaning up transform controls:", e);
         }
 
-        // Dispose and nullify
         transformControlsRef.current.dispose();
         transformControlsRef.current = null;
       }
@@ -301,13 +261,10 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
         }
       }
       if (event.key === "Shift") {
-        console.log("Shift key down");
         setShiftKeyPressed(true);
-        // Directly update transform controls
         if (transformControlsRef.current) {
           transformControlsRef.current.setTranslationSnap(null);
           transformControlsRef.current.setRotationSnap(null);
-          console.log("Snapping disabled directly from keydown handler");
           forceSceneUpdate();
         }
       }
@@ -321,13 +278,10 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
         }
       }
       if (event.key === "Shift") {
-        console.log("Shift key up");
         setShiftKeyPressed(false);
-        // Directly update transform controls
         if (transformControlsRef.current && showGroundPlane) {
           transformControlsRef.current.setTranslationSnap(0.5);
           transformControlsRef.current.setRotationSnap(Math.PI / 12);
-          console.log("Snapping re-enabled directly from keyup handler");
           forceSceneUpdate();
         }
       }
@@ -341,49 +295,26 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
       document.removeEventListener("keyup", handleKeyUp);
     };
   }, [showGroundPlane, isRotating]);
-  // Attach/detach transform controls when selected object changes
+
   useEffect(() => {
     const transformControls = transformControlsRef.current;
-    if (!transformControls) {
-      console.log("No transform controls available for attaching object");
-      return;
-    }
-    if (!scene) {
-      console.log("No scene available for attaching object");
-      return;
-    }
+    if (!transformControls) return;
+    if (!scene) return;
 
     try {
       if (selectedObject) {
         const obj = getObject(selectedObject);
-        console.log("Object to attach:", obj, "for nodeId:", selectedObject);
+        if (!obj) return;
+        if (!(obj instanceof THREE.Object3D)) return;
 
-        if (!obj) {
-          console.error("Object not found for ID:", selectedObject);
-          return;
-        }
-
-        if (!(obj instanceof THREE.Object3D)) {
-          console.error("Object is not an instance of THREE.Object3D:", obj);
-          return;
-        }
-
-        console.log("Attaching object to transform controls:", obj);
         transformControls.attach(obj);
-        console.log(transformControls);
-        console.log(scene.children);
         transformControls.visible = true;
         forceSceneUpdate();
-        console.log(
-          "Object attached successfully, controls visible:",
-          transformControls.visible
-        );
       } else {
         transformControls.detach();
-        console.log("Transform controls detached (no selection)");
       }
     } catch (error) {
-      console.error("Error attaching object to TransformControls:", error);
+      // attach failed
     }
   }, [selectedObject, scene, getObject]);
 

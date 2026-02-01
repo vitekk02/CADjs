@@ -1,4 +1,3 @@
-// src/hooks/useResizeMode.ts
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
@@ -26,12 +25,9 @@ export function useResizeMode() {
   const originalBrepRef = useRef<Brep | null>(null);
   const resizeHandlesRef = useRef<THREE.Object3D[]>([]);
 
-  // Create resize handles for the selected element
   const createResizeHandles = useCallback(
     (nodeId: string) => {
       if (!scene) return;
-
-      // Clean up previous handles
       cleanupHandles();
 
       const element = elements.find((el) => el.nodeId === nodeId);
@@ -40,15 +36,13 @@ export function useResizeMode() {
       const obj = getObject(nodeId);
       if (!obj) return;
 
-      // Calculate the element's bounding box
       const bbox = new THREE.Box3().setFromObject(obj);
       const size = new THREE.Vector3();
       bbox.getSize(size);
       const center = new THREE.Vector3();
       bbox.getCenter(center);
 
-      // Create handles for each axis
-      const handleSize = 0.2; // Use fixed size instead of scaling with object
+      const handleSize = 0.2;
       const handleGeometry = new THREE.BoxGeometry(
         handleSize,
         handleSize,
@@ -56,7 +50,6 @@ export function useResizeMode() {
       );
       const handleMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
 
-      // Create 6 handles (one for each face: +x, -x, +y, -y, +z, -z)
       const handlePositions = [
         {
           position: new THREE.Vector3(bbox.max.x, center.y, center.z),
@@ -101,7 +94,6 @@ export function useResizeMode() {
         resizeHandlesRef.current.push(handle);
       });
 
-      // Store the original BRep for reference
       originalBrepRef.current = element.brep;
 
       forceSceneUpdate();
@@ -115,7 +107,6 @@ export function useResizeMode() {
     }
   }, [selectedElement, createResizeHandles]);
 
-  // Clean up all resize handles
   const cleanupHandles = useCallback(() => {
     if (scene) {
       resizeHandlesRef.current.forEach((handle) => {
@@ -125,12 +116,10 @@ export function useResizeMode() {
     }
   }, [scene]);
 
-  // Handle mouse down - select element or handle
   const handleMouseDown = useCallback(
     (event: MouseEvent) => {
       if (!camera || !renderer || event.button !== 0) return;
 
-      // Create raycaster for object selection
       const raycaster = new THREE.Raycaster();
       const rect = renderer.domElement.getBoundingClientRect();
       const mouse = new THREE.Vector2(
@@ -139,7 +128,6 @@ export function useResizeMode() {
       );
       raycaster.setFromCamera(mouse, camera);
 
-      // First check if we hit a resize handle
       const handleIntersects = raycaster.intersectObjects(
         resizeHandlesRef.current
       );
@@ -152,7 +140,6 @@ export function useResizeMode() {
         return;
       }
 
-      // If not a handle, try to select an element
       const objects: THREE.Object3D[] = [];
       elements.forEach((el) => {
         const obj = getObject(el.nodeId);
@@ -163,24 +150,20 @@ export function useResizeMode() {
       if (intersects.length > 0) {
         const pickedObject = intersects[0].object;
 
-        // Find which element was clicked
         for (const el of elements) {
           const obj = getObject(el.nodeId);
           if (
             obj === pickedObject ||
             (pickedObject.parent && obj === pickedObject.parent)
           ) {
-            // Only update if selection changed (prevents unnecessary rerenders)
             if (selectedElement !== el.nodeId) {
               setSelectedElement(el.nodeId);
-              // Remove the direct call to createResizeHandles here
             }
             event.stopPropagation(); // Prevent event bubbling
             break;
           }
         }
       } else {
-        // Clicked empty space, clear selection
         setSelectedElement(null);
         cleanupHandles();
       }
@@ -196,13 +179,11 @@ export function useResizeMode() {
     ]
   );
 
-  // In the useResizeMode function, add this ref
   const extrusionParamsRef = useRef<{
     depth: number;
     direction: number;
   } | null>(null);
 
-  // Then modify handleMouseMove
   const handleMouseMove = useCallback(
     (event: MouseEvent) => {
       if (
@@ -222,7 +203,6 @@ export function useResizeMode() {
       const element = elements.find((el) => el.nodeId === selectedElement);
       if (!element || !originalBrepRef.current) return;
 
-      // Change from const to let so we can reassign it later
       let objRef = getObject(selectedElement);
       if (!objRef) return;
 
@@ -240,9 +220,8 @@ export function useResizeMode() {
 
       if (!activeHandleObj) return;
 
-      const direction = activeHandleObj.userData.direction; // 1 or -1
+      const direction = activeHandleObj.userData.direction;
 
-      // Store current state to avoid recalculation
       if (!objRef.userData.originalBoxMin || !objRef.userData.originalBoxMax) {
         const bbox = new THREE.Box3().setFromObject(objRef);
         objRef.userData.originalBoxMin = bbox.min.clone();
@@ -256,7 +235,6 @@ export function useResizeMode() {
       const sensitivity = 0.05;
 
       if (activeHandle === "x") {
-        // X-axis scaling (unchanged)
         const rawDragAmount = delta.x;
         const dragAmount = direction * rawDragAmount;
         const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
@@ -270,7 +248,6 @@ export function useResizeMode() {
         objRef.position.x =
           objRef.userData.originalPosition.x + direction * positionOffset;
       } else if (activeHandle === "y") {
-        // Y-axis scaling (unchanged)
         const rawDragAmount = delta.y;
         const dragAmount = direction * rawDragAmount;
         const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
@@ -284,36 +261,27 @@ export function useResizeMode() {
         objRef.position.y =
           objRef.userData.originalPosition.y + direction * positionOffset;
       } else if (activeHandle === "z") {
-        // Check if the object is essentially 2D (flat in Z dimension)
+        // check if flat (2D shape)
         const isFlat = Math.abs(originalMax.z - originalMin.z) < 0.11;
 
-        // Calculate direct world space distance for extrusion
         const worldDelta = currentPoint.clone().sub(startPointRef.current);
-
-        // Project the delta onto the extrusion direction vector
         const extrusionVector = new THREE.Vector3(
           0,
           0,
           direction
         ).applyQuaternion(camera.quaternion);
         const dragDistance = worldDelta.dot(extrusionVector);
-
-        // Calculate extrusion depth directly from cursor movement
         const extrusionDepth = Math.max(0.1, Math.abs(dragDistance));
 
-        // Store these parameters for mouseUp handler
-
         if (isFlat && objRef.userData.originalScale.z === 1) {
-          // EXTRUSION CASE - only handle THREE.js object visually
+          // extrusion for flat shapes
           if (objRef instanceof THREE.Mesh) {
-            // Store extrusion parameters for mouseUp
             extrusionParamsRef.current = {
               depth: extrusionDepth,
               direction,
             };
 
             if (!objRef.userData.extruded) {
-              // First extrusion - create the extruded object
               const originalPosition = objRef.position.clone();
 
               const extrudedObj = extrudeThreeJsObject(
@@ -325,8 +293,6 @@ export function useResizeMode() {
               extrudedObj.userData = { ...objRef.userData, extruded: true };
               extrudedObj.userData.nodeId = objRef.userData.nodeId;
               extrudedObj.userData.originalPosition = originalPosition.clone();
-
-              // Important: Position correctly in space
               extrudedObj.position.copy(originalPosition);
 
               if (objRef.parent) {
@@ -339,13 +305,11 @@ export function useResizeMode() {
 
               forceSceneUpdate();
             } else {
-              // Subsequent adjustments
               objRef.scale.z = extrusionDepth;
             }
           }
-          // NOTE: We no longer modify BRep here - it will be done in mouseUp
         } else {
-          // Regular Z scaling for 3D objects
+          // regular z scaling for 3d objects
           const rawDragAmount = delta.z;
           const dragAmount = direction * rawDragAmount;
           const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
@@ -383,19 +347,16 @@ export function useResizeMode() {
     const center = new THREE.Vector3();
     bbox.getCenter(center);
 
-    // Calculate new handle size based on object dimensions
     const size = new THREE.Vector3();
     bbox.getSize(size);
-    const handleSize = Math.min(size.x, size.y, size.z) * 0.2; // Reduced multiplier from 2.2 to 0.2
+    const handleSize = Math.min(size.x, size.y, size.z) * 0.2;
 
-    // Create geometry only once and reuse
     let newHandleGeometry: THREE.BoxGeometry | null = null;
 
     resizeHandlesRef.current.forEach((handle) => {
       const axis = handle.userData.axis;
       const dir = handle.userData.direction;
 
-      // Update handle positions
       if (axis === "x") {
         handle.position.x = dir > 0 ? bbox.max.x : bbox.min.x;
         handle.position.y = center.y;
@@ -407,12 +368,10 @@ export function useResizeMode() {
       } else if (axis === "z") {
         const isFlat = Math.abs(bbox.max.z - bbox.min.z) < 0.01;
         if (isFlat) {
-          // Make Z handles stand out more for flat objects
+          // pink for flat objects
           (handle as THREE.Mesh).material = new THREE.MeshBasicMaterial({
             color: 0xff00ff,
           });
-
-          // Position them slightly offset from the object to be visible
           handle.position.z = dir > 0 ? bbox.max.z + 0.1 : bbox.min.z - 0.1;
         } else {
           (handle as THREE.Mesh).material = new THREE.MeshBasicMaterial({
@@ -422,9 +381,7 @@ export function useResizeMode() {
         }
       }
 
-      // Update handle size
       if (handle instanceof THREE.Mesh) {
-        // Create new geometry only once
         if (!newHandleGeometry) {
           newHandleGeometry = new THREE.BoxGeometry(
             handleSize,
@@ -433,13 +390,12 @@ export function useResizeMode() {
           );
         }
 
-        // Replace the geometry with the new sized one
-        handle.geometry.dispose(); // Clean up old geometry
+        handle.geometry.dispose();
         handle.geometry = newHandleGeometry;
       }
     });
   }, []);
-  // Handle mouse up - complete resize operation
+
   const handleMouseUp = useCallback(() => {
     if (!isResizing || !selectedElement) return;
 
@@ -451,11 +407,9 @@ export function useResizeMode() {
         const finalScale = obj.scale.clone();
         const currentPosition = obj.position.clone();
 
-        // Now handle BRep extrusion if we were extruding along Z
         if (activeHandle === "z" && extrusionParamsRef.current) {
           const { depth, direction } = extrusionParamsRef.current;
 
-          // Check if this was an extrusion operation
           const bbox = new THREE.Box3().setFromObject(obj);
           const size = new THREE.Vector3();
           bbox.getSize(size);
@@ -466,41 +420,26 @@ export function useResizeMode() {
             ) < 0.11;
 
           if (wasFlat && obj.userData.extruded) {
-            // Get the actual world dimensions of the extruded object
             const bbox = new THREE.Box3().setFromObject(obj);
             const actualSize = new THREE.Vector3();
             bbox.getSize(actualSize);
 
-            // Use the Z dimension as the extrusion height - this is the ACTUAL size
             const actualExtrusionHeight = actualSize.z;
-            console.log(
-              "Actual extrusion height from bbox:",
-              actualExtrusionHeight
-            );
 
-            // Now perform the BRep extrusion with the correct absolute height
             const extrudedBrep = extrudeBRep(
               originalBrepRef.current,
               actualExtrusionHeight,
               direction
             );
 
-            // Store it
             element.brep = extrudedBrep;
             (element as any).userData = (element as any).userData || {};
             (element as any).userData.brepExtruded = true;
-
-            console.log(
-              "BRep extrusion completed on mouseUp with height:",
-              actualExtrusionHeight
-            );
           }
         }
 
-        // Update position in the data model
         updateElementPosition(selectedElement, currentPosition);
 
-        // Clean up stored values
         delete obj.userData.originalBoxMin;
         delete obj.userData.originalBoxMax;
         delete obj.userData.originalPosition;
@@ -509,7 +448,7 @@ export function useResizeMode() {
         createResizeHandles(selectedElement);
         forceSceneUpdate();
       } catch (error) {
-        console.error("Error finalizing resize operation:", error);
+        console.error("resize error:", error);
 
         if (originalBrepRef.current) {
           obj.scale.set(1, 1, 1);
@@ -519,7 +458,6 @@ export function useResizeMode() {
       }
     }
 
-    // Reset state
     setIsResizing(false);
     setActiveHandle(null);
     setActiveHandleDirection(null);

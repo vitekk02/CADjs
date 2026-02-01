@@ -13,9 +13,17 @@ export default defineConfig({
       // Allow serving files from one level up to the project root
       allow: [".."],
     },
+    headers: {
+      // Proper MIME type for WASM files
+      "Cross-Origin-Embedder-Policy": "require-corp",
+      "Cross-Origin-Opener-Policy": "same-origin",
+    },
   },
   optimizeDeps: {
-    exclude: ["opencascade.js"],
+    exclude: ["opencascade.js", "manifold-3d"],
+    esbuildOptions: {
+      target: "esnext",
+    },
   },
   build: {
     target: "esnext",

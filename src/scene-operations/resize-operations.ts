@@ -6,15 +6,12 @@ export function extrudeThreeJsObject(
   extrusionDepth: number,
   direction: number
 ): THREE.Mesh {
-  // Get original geometry and material
   const originalGeometry = originalObject.geometry;
   const originalMaterial = originalObject.material;
   let newGeometry: THREE.BufferGeometry;
   const originalPosition = originalObject.position.clone();
 
-  // Handle specific geometry types
   if (originalGeometry instanceof THREE.PlaneGeometry) {
-    // For planes, create a box with the same width/height
     const params = originalGeometry.parameters;
     newGeometry = new THREE.BoxGeometry(
       params.width,
@@ -22,7 +19,6 @@ export function extrudeThreeJsObject(
       Math.abs(extrusionDepth)
     );
   } else if (originalGeometry instanceof THREE.CircleGeometry) {
-    // For circles, create a cylinder
     const params = originalGeometry.parameters;
     newGeometry = new THREE.CylinderGeometry(
       params.radius,
@@ -31,20 +27,12 @@ export function extrudeThreeJsObject(
       params.segments
     );
 
-    // Rotate to match circle orientation
     newGeometry.rotateX(Math.PI / 2);
   } else if (originalGeometry instanceof THREE.ShapeGeometry) {
-    // For ShapeGeometry (used for custom 2D shapes), use ExtrudeGeometry
-
-    // Extract the shape from the original geometry
-    // This is the key part - we need to recreate the original 2D shape
     const shape = new THREE.Shape();
-
-    // Get vertices from the original geometry
     const positions = originalGeometry.attributes.position;
     const uniquePoints = new Map<string, THREE.Vector2>();
 
-    // Extract unique points from the vertices (in local coordinates)
     for (let i = 0; i < positions.count; i++) {
       const x = positions.getX(i);
       const y = positions.getY(i);
@@ -52,44 +40,33 @@ export function extrudeThreeJsObject(
       uniquePoints.set(key, new THREE.Vector2(x, y));
     }
 
-    // Convert to array and sort points clockwise around center
     const points = Array.from(uniquePoints.values());
     const center = new THREE.Vector2();
     points.forEach((p) => center.add(p));
     center.divideScalar(points.length);
 
-    // Sort clockwise
     points.sort((a, b) => {
       const angleA = Math.atan2(a.y - center.y, a.x - center.x);
       const angleB = Math.atan2(b.y - center.y, b.x - center.x);
       return angleA - angleB;
     });
 
-    // Create the shape path
     shape.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length; i++) {
       shape.lineTo(points[i].x, points[i].y);
     }
     shape.closePath();
 
-    // Create extruded geometry
     newGeometry = new THREE.ExtrudeGeometry(shape, {
       depth: Math.abs(extrusionDepth),
       bevelEnabled: false,
     });
   } else {
-    // Fallback for other geometry types - use THREE.ExtrudeGeometry
-    console.warn(
-      "Using fallback extrusion for geometry type:",
-      originalGeometry.type
-    );
+    // fallback for other geometry types
+    console.warn("fallback extrusion:", originalGeometry.type);
 
-    // Try to extract a shape from the geometry
-    // This is a simplified approach and may not work for all geometries
     const positions = originalGeometry.attributes.position;
     const shape = new THREE.Shape();
-
-    // Find points on the XY plane (assuming Z is near zero for 2D shapes)
     const xyPoints: THREE.Vector2[] = [];
     for (let i = 0; i < positions.count; i++) {
       const x = positions.getX(i);
@@ -97,58 +74,46 @@ export function extrudeThreeJsObject(
       const z = positions.getZ(i);
 
       if (Math.abs(z) < 0.01) {
-        // Only consider points near the XY plane
         xyPoints.push(new THREE.Vector2(x, y));
       }
     }
 
-    // Remove duplicate points
     const uniquePoints = new Map<string, THREE.Vector2>();
     xyPoints.forEach((p) => {
       const key = `${p.x.toFixed(4)},${p.y.toFixed(4)}`;
       uniquePoints.set(key, p);
     });
 
-    // Convert to array
     const points = Array.from(uniquePoints.values());
 
-    // Need at least 3 points
     if (points.length >= 3) {
-      // Sort points to form a valid shape (convex hull or similar)
-      // For simplicity, sort by angle around the center
       const center = new THREE.Vector2();
       points.forEach((p) => center.add(p));
       center.divideScalar(points.length);
 
-      // Sort clockwise
       points.sort((a, b) => {
         const angleA = Math.atan2(a.y - center.y, a.x - center.x);
         const angleB = Math.atan2(b.y - center.y, b.x - center.x);
         return angleA - angleB;
       });
 
-      // Create shape
       shape.moveTo(points[0].x, points[0].y);
       for (let i = 1; i < points.length; i++) {
         shape.lineTo(points[i].x, points[i].y);
       }
       shape.closePath();
 
-      // Create extruded geometry
       newGeometry = new THREE.ExtrudeGeometry(shape, {
         depth: Math.abs(extrusionDepth),
         bevelEnabled: false,
       });
     } else {
-      // Fallback to a simple box if we can't extract a shape
       newGeometry = new THREE.BoxGeometry(1, 1, Math.abs(extrusionDepth));
     }
   }
 
-  // Create new mesh with the extruded geometry
   const extrudedMesh = new THREE.Mesh(newGeometry, originalMaterial);
 
-  // Copy transform properties
   extrudedMesh.position.copy(originalPosition);
   extrudedMesh.rotation.copy(originalObject.rotation);
   extrudedMesh.scale.x = originalObject.scale.x;
@@ -192,25 +157,44 @@ export function extrudeBRep(
   // Calculate half depth to center the result
   const halfDepth = extrusionDepth / 2;
 
-  // Offset original vertices to center them
-  const centerOffset = direction > 0 ? -halfDepth : halfDepth;
-  // Create new vertices at extruded position
-  const extrudedVertices = brep.vertices.map(
-    (v) => new Vertex(v.x, v.y, v.z + centerOffset)
+  // To center the extruded shape, we need to offset both top and bottom faces
+  // For positive direction: original face moves to +halfDepth, extruded face to -halfDepth
+  // For negative direction: original face moves to -halfDepth, extruded face to +halfDepth
+  const originalOffset = direction > 0 ? halfDepth : -halfDepth;
+  const extrudedOffset = direction > 0 ? -halfDepth : halfDepth;
+
+  // Offset original vertices
+  const offsetOriginalVertices = brep.vertices.map(
+    (v) => new Vertex(v.x, v.y, v.z + originalOffset)
   );
 
-  // Combine original and extruded vertices
-  const allVertices = [...brep.vertices, ...extrudedVertices];
+  // Create new vertices at extruded position
+  const extrudedVertices = brep.vertices.map(
+    (v) => new Vertex(v.x, v.y, v.z + extrudedOffset)
+  );
 
-  // Create edges along extrusion direction
-  const extrusionEdges = brep.vertices.map(
+  // Combine all vertices (offset originals + extruded)
+  const allVertices = [...offsetOriginalVertices, ...extrudedVertices];
+
+  // Create edges for the offset original face (top face)
+  const offsetOriginalEdges = brep.edges.map((edge) => {
+    const startIndex = brep.vertices.findIndex(
+      (v) => v.x === edge.start.x && v.y === edge.start.y && v.z === edge.start.z
+    );
+    const endIndex = brep.vertices.findIndex(
+      (v) => v.x === edge.end.x && v.y === edge.end.y && v.z === edge.end.z
+    );
+    return new Edge(offsetOriginalVertices[startIndex], offsetOriginalVertices[endIndex]);
+  });
+
+  // Create edges along extrusion direction (connecting top and bottom)
+  const extrusionEdges = offsetOriginalVertices.map(
     (v, i) => new Edge(v, extrudedVertices[i])
   );
 
-  // Create edges for the extruded face
+  // Create edges for the extruded face (bottom face)
   const extrudedFaceEdges = brep.edges
-    .map((edge, i) => {
-      // Find the indices of the original vertices
+    .map((edge) => {
       const startIndex = brep.vertices.findIndex(
         (v) =>
           v.x === edge.start.x && v.y === edge.start.y && v.z === edge.start.z
@@ -224,20 +208,18 @@ export function extrudeBRep(
         return null;
       }
 
-      // Create an edge between the corresponding extruded vertices
       return new Edge(extrudedVertices[startIndex], extrudedVertices[endIndex]);
     })
     .filter((edge): edge is Edge => edge !== null);
 
   // All edges
-  const allEdges = [...brep.edges, ...extrusionEdges, ...extrudedFaceEdges];
+  const allEdges = [...offsetOriginalEdges, ...extrusionEdges, ...extrudedFaceEdges];
 
   // Create faces for the sides
   const sideFaces: Face[] = [];
 
   // For each edge in the original face, create a side face
-  brep.edges.forEach((edge, i) => {
-    // Find corresponding indices
+  brep.edges.forEach((edge) => {
     const startIndex = brep.vertices.findIndex(
       (v) =>
         v.x === edge.start.x && v.y === edge.start.y && v.z === edge.start.z
@@ -250,49 +232,52 @@ export function extrudeBRep(
       return;
     }
 
-    // Create a quad face for this side
-    // Order vertices correctly based on direction
+    // Create a quad face for this side using offset original and extruded vertices
     const sideVertices =
       direction > 0
         ? [
-            edge.start,
-            edge.end,
+            offsetOriginalVertices[startIndex],
+            offsetOriginalVertices[endIndex],
             extrudedVertices[endIndex],
             extrudedVertices[startIndex],
           ]
         : [
-            edge.start,
+            offsetOriginalVertices[startIndex],
             extrudedVertices[startIndex],
             extrudedVertices[endIndex],
-            edge.end,
+            offsetOriginalVertices[endIndex],
           ];
 
     sideFaces.push(new Face(sideVertices));
   });
 
-  // Create the extruded face (with vertices in reverse order if needed)
+  // Create the top face (offset original face)
   const originalFaceVertices = brep.faces[0].vertices;
-  const extrudedFaceVertices = originalFaceVertices.map(
-    (_, i) =>
-      extrudedVertices[
-        brep.vertices.findIndex(
-          (v) =>
-            v.x === originalFaceVertices[i].x &&
-            v.y === originalFaceVertices[i].y &&
-            v.z === originalFaceVertices[i].z
-        )
-      ]
-  );
+  const topFaceVertices = originalFaceVertices.map((v) => {
+    const index = brep.vertices.findIndex(
+      (bv) => bv.x === v.x && bv.y === v.y && bv.z === v.z
+    );
+    return offsetOriginalVertices[index];
+  });
+  const topFace = new Face(topFaceVertices);
+
+  // Create the bottom face (extruded face with reversed winding)
+  const bottomFaceVertices = originalFaceVertices.map((v) => {
+    const index = brep.vertices.findIndex(
+      (bv) => bv.x === v.x && bv.y === v.y && bv.z === v.z
+    );
+    return extrudedVertices[index];
+  });
 
   // Reverse the order for correct orientation based on direction
-  if (direction < 0) {
-    extrudedFaceVertices.reverse();
+  if (direction > 0) {
+    bottomFaceVertices.reverse();
   }
 
-  const extrudedFace = new Face(extrudedFaceVertices);
+  const bottomFace = new Face(bottomFaceVertices);
 
-  // All faces
-  const allFaces = [...brep.faces, ...sideFaces, extrudedFace];
+  // All faces: top, bottom, and sides
+  const allFaces = [topFace, bottomFace, ...sideFaces];
 
   return new Brep(allVertices, allEdges, allFaces);
 }
