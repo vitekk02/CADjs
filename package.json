@@ -37,6 +37,7 @@
     "vite-plugin-wasm": "^3.4.1"
   },
   "dependencies": {
+    "@salusoft89/planegcs": "^1.1.7",
     "@tailwindcss/vite": "^4.0.9",
     "manifold-3d": "^3.3.2",
     "opencascade.js": "^2.0.0-beta.b5ff984",

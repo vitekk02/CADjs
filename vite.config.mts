@@ -20,7 +20,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ["opencascade.js", "manifold-3d"],
+    exclude: ["opencascade.js", "manifold-3d", "@salusoft89/planegcs"],
     esbuildOptions: {
       target: "esnext",
     },

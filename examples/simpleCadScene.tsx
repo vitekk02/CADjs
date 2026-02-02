@@ -10,6 +10,8 @@ import { useIntersectionMode } from "../src/hooks/useIntersectionMode";
 import { useDrawMode } from "../src/hooks/useDrawMode";
 import { useUngroupMode } from "../src/hooks/useUngroupMode";
 import { useResizeMode } from "../src/hooks/useResizeMode";
+import { useSketchMode } from "../src/hooks/useSketchMode";
+import SketchToolbar from "../src/navbar/SketchToolbar";
 
 interface SimpleCadSceneProps {
   initialMode?: SceneMode;
@@ -32,6 +34,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     setMode,
     unionSelectedElements,
     updateElementPosition,
+    activeSketch,
+    finishSketch,
+    cancelSketch,
+    solveSketch,
   } = useCadCore();
   const {
     createEdgeHelpers,
@@ -86,6 +92,16 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleMouseUp: handleResizeMouseUp,
     cleanup: cleanupResize,
   } = useResizeMode();
+
+  const {
+    sketchSubMode,
+    setSketchSubMode,
+    handleSketchMode,
+    cleanupSketchPreview,
+    startNewSketch,
+    selectedPrimitives,
+    applyConstraint,
+  } = useSketchMode();
 
   const selectedObjectRef = useRef<string | null>(null);
   useEffect(() => {
@@ -191,6 +207,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.addEventListener("mousedown", handleResizeMode);
       renderer.domElement.addEventListener("mousemove", handleResizeMode);
       renderer.domElement.addEventListener("mouseup", handleResizeMode);
+    } else if (mode === "sketch") {
+      renderer.domElement.addEventListener("mousedown", handleSketchMode);
+      renderer.domElement.addEventListener("mousemove", handleSketchMode);
+      renderer.domElement.addEventListener("mouseup", handleSketchMode);
     }
 
     return () => {
@@ -216,6 +236,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.removeEventListener("mousedown", handleResizeMode);
       renderer.domElement.removeEventListener("mousemove", handleResizeMode);
       renderer.domElement.removeEventListener("mouseup", handleResizeMode);
+      renderer.domElement.removeEventListener("mousedown", handleSketchMode);
+      renderer.domElement.removeEventListener("mousemove", handleSketchMode);
+      renderer.domElement.removeEventListener("mouseup", handleSketchMode);
       // cleanupPreview();
       // cleanupResize();
     };
@@ -241,6 +264,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleResizeMouseMove,
     handleResizeMouseUp,
     cleanupResize,
+    handleSketchMode,
   ]);
 
   return (
@@ -298,6 +322,18 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               onClick={() => setMode("intersection")}
             >
               Intersection
+            </button>
+            <button
+              className={`px-3 py-1 rounded ${
+                mode === "sketch" ? "bg-blue-600" : "bg-gray-600"
+              }`}
+              onClick={() => {
+                if (mode !== "sketch") {
+                  startNewSketch();
+                }
+              }}
+            >
+              Sketch
             </button>
 
             <button
@@ -407,6 +443,19 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
           >
             Ungroup
           </button>
+
+          {mode === "sketch" && (
+            <SketchToolbar
+              activeSketch={activeSketch}
+              sketchSubMode={sketchSubMode}
+              onSubModeChange={setSketchSubMode}
+              onFinishSketch={finishSketch}
+              onCancelSketch={cancelSketch}
+              onSolveSketch={solveSketch}
+              selectedPrimitives={selectedPrimitives}
+              onApplyConstraint={applyConstraint}
+            />
+          )}
         </div>
       </div>
 

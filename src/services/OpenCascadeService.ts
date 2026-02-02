@@ -2,12 +2,26 @@ import type {
   gp_Pnt_3,
   OpenCascadeInstance,
   TopoDS_Shape,
+  TopoDS_Wire,
+  TopoDS_Edge,
 } from "opencascade.js";
 import { Brep, CompoundBrep, Edge, Face, Vertex } from "../geometry";
 import * as THREE from "three";
 import opencascade from "opencascade.js/dist/opencascade.full.js";
 import opencascadeWasm from "opencascade.js/dist/opencascade.full.wasm?url";
 import { transformBrepVertices } from "../convertBRepToGeometry";
+import {
+  Sketch,
+  SketchPrimitive,
+  SketchPoint,
+  SketchLine,
+  SketchCircle,
+  SketchArc,
+  isSketchPoint,
+  isSketchLine,
+  isSketchCircle,
+  isSketchArc,
+} from "../types/sketch-types";
 
 const initOpenCascade = async () => {
   try {
@@ -736,5 +750,198 @@ export class OpenCascadeService {
     } else {
       return `${v2.x.toFixed(5)},${v2.y.toFixed(5)},${v2.z.toFixed(5)}-${v1.x.toFixed(5)},${v1.y.toFixed(5)},${v1.z.toFixed(5)}`;
     }
+  }
+
+  /**
+   * Convert a sketch to a BRep wire (for open profiles) or face (for closed profiles)
+   */
+  async sketchToBrep(sketch: Sketch): Promise<Brep> {
+    const oc = await this.getOC();
+
+    // Build a map of point IDs to their positions
+    const pointMap = new Map<string, { x: number; y: number }>();
+    for (const prim of sketch.primitives) {
+      if (isSketchPoint(prim)) {
+        pointMap.set(prim.id, { x: prim.x, y: prim.y });
+      }
+    }
+
+    // Collect all edges from the sketch
+    const ocEdges: TopoDS_Edge[] = [];
+
+    for (const prim of sketch.primitives) {
+      if (isSketchLine(prim)) {
+        const p1 = pointMap.get(prim.p1Id);
+        const p2 = pointMap.get(prim.p2Id);
+        if (p1 && p2) {
+          const edge = this.createLineEdge(oc, p1.x, p1.y, p2.x, p2.y);
+          if (edge) ocEdges.push(edge);
+        }
+      } else if (isSketchCircle(prim)) {
+        const center = pointMap.get(prim.centerId);
+        if (center) {
+          const edge = this.createCircleEdge(oc, center.x, center.y, prim.radius);
+          if (edge) ocEdges.push(edge);
+        }
+      } else if (isSketchArc(prim)) {
+        const center = pointMap.get(prim.centerId);
+        const start = pointMap.get(prim.startId);
+        const end = pointMap.get(prim.endId);
+        if (center && start && end) {
+          const edge = this.createArcEdge(
+            oc,
+            center.x, center.y,
+            start.x, start.y,
+            end.x, end.y,
+            prim.radius
+          );
+          if (edge) ocEdges.push(edge);
+        }
+      }
+    }
+
+    if (ocEdges.length === 0) {
+      console.warn("No edges created from sketch");
+      // Return empty brep
+      return new Brep([], [], []);
+    }
+
+    // Try to build a wire from the edges
+    const wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
+    for (const edge of ocEdges) {
+      wireBuilder.Add_1(edge);
+    }
+
+    if (!wireBuilder.IsDone()) {
+      console.warn("Could not create wire from sketch edges");
+      // Return just the edges as a compound
+      return this.edgesToBrep(oc, ocEdges);
+    }
+
+    const wire = wireBuilder.Wire();
+
+    // Check if wire is closed
+    const isClosed = wire.Closed_1();
+    console.log("Sketch wire is closed:", isClosed);
+
+    if (isClosed) {
+      // Create a face from the closed wire
+      const faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
+      if (faceBuilder.IsDone()) {
+        const face = faceBuilder.Face();
+        // Convert face to Brep
+        return await this.ocShapeToBRep(face);
+      } else {
+        console.warn("Could not create face from closed wire");
+      }
+    }
+
+    // Wire is not closed or face creation failed - return wire as Brep
+    return await this.ocShapeToBRep(wire);
+  }
+
+  private createLineEdge(
+    oc: OpenCascadeInstance,
+    x1: number, y1: number,
+    x2: number, y2: number
+  ): TopoDS_Edge | null {
+    try {
+      const p1 = new oc.gp_Pnt_3(x1, y1, 0);
+      const p2 = new oc.gp_Pnt_3(x2, y2, 0);
+      const edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_3(p1, p2);
+      if (edgeBuilder.IsDone()) {
+        return edgeBuilder.Edge();
+      }
+      p1.delete();
+      p2.delete();
+    } catch (e) {
+      console.warn("Failed to create line edge:", e);
+    }
+    return null;
+  }
+
+  private createCircleEdge(
+    oc: OpenCascadeInstance,
+    cx: number, cy: number,
+    radius: number
+  ): TopoDS_Edge | null {
+    try {
+      const center = new oc.gp_Pnt_3(cx, cy, 0);
+      const dir = new oc.gp_Dir_4(0, 0, 1); // Z-axis normal
+      const axis = new oc.gp_Ax2_3(center, dir);
+      const circle = new oc.gp_Circ_2(axis, radius);
+      const edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_8(circle);
+      if (edgeBuilder.IsDone()) {
+        return edgeBuilder.Edge();
+      }
+      center.delete();
+      dir.delete();
+    } catch (e) {
+      console.warn("Failed to create circle edge:", e);
+    }
+    return null;
+  }
+
+  private createArcEdge(
+    oc: OpenCascadeInstance,
+    cx: number, cy: number,
+    startX: number, startY: number,
+    endX: number, endY: number,
+    radius: number
+  ): TopoDS_Edge | null {
+    try {
+      const center = new oc.gp_Pnt_3(cx, cy, 0);
+      const dir = new oc.gp_Dir_4(0, 0, 1);
+      const axis = new oc.gp_Ax2_3(center, dir);
+      const circle = new oc.gp_Circ_2(axis, radius);
+
+      // Calculate angles
+      const startAngle = Math.atan2(startY - cy, startX - cx);
+      const endAngle = Math.atan2(endY - cy, endX - cx);
+
+      // Create arc using angles
+      const edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_9(
+        circle,
+        startAngle,
+        endAngle
+      );
+
+      if (edgeBuilder.IsDone()) {
+        return edgeBuilder.Edge();
+      }
+
+      center.delete();
+      dir.delete();
+    } catch (e) {
+      console.warn("Failed to create arc edge:", e);
+    }
+    return null;
+  }
+
+  private edgesToBrep(oc: OpenCascadeInstance, edges: TopoDS_Edge[]): Brep {
+    // Simple conversion: just extract vertices from edges
+    const vertices: Vertex[] = [];
+    const brepEdges: Edge[] = [];
+
+    for (const edge of edges) {
+      try {
+        const curve = new oc.BRepAdaptor_Curve_2(edge);
+        const first = curve.FirstParameter();
+        const last = curve.LastParameter();
+
+        const startPnt = curve.Value(first);
+        const endPnt = curve.Value(last);
+
+        const v1 = new Vertex(startPnt.X(), startPnt.Y(), startPnt.Z());
+        const v2 = new Vertex(endPnt.X(), endPnt.Y(), endPnt.Z());
+
+        vertices.push(v1, v2);
+        brepEdges.push(new Edge(v1, v2));
+      } catch (e) {
+        console.warn("Failed to extract edge points:", e);
+      }
+    }
+
+    return new Brep(vertices, brepEdges, []);
   }
 }

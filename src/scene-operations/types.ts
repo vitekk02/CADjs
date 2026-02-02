@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { Brep, BrepGraph } from "../geometry";
 
-export type SceneMode = "draw" | "move" | "union" | "difference" | "intersection" | "resize";
+export type SceneMode = "draw" | "move" | "union" | "difference" | "intersection" | "resize" | "sketch";
 
 export interface SceneElement {
   brep: Brep;

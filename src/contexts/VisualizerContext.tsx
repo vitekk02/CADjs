@@ -52,6 +52,7 @@ interface CadVisualizerContextType {
 
   cursorPosition: THREE.Vector3 | null;
   updateCursorPosition: (event: MouseEvent) => void;
+  sceneReady: boolean;
 }
 
 export const CadVisualizerContext = createContext<
@@ -76,6 +77,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   const [forceUpdate, setForceUpdate] = useState(0);
   const [showGroundPlane, setShowGroundPlane] = useState<boolean>(true);
   const groundPlaneRef = useRef<THREE.Group | null>(null);
+  const [sceneReady, setSceneReady] = useState(false); // Track when scene is initialized
 
   const toggleGroundPlane = useCallback(() => {
     setShowGroundPlane((prev) => !prev);
@@ -134,6 +136,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         renderer.render(scene, camera);
       };
       animate();
+
+      // Signal that scene is ready - triggers re-render to update context value
+      setSceneReady(true);
 
       const handleResize = () => {
         camera.aspect = window.innerWidth / window.innerHeight;
@@ -721,7 +726,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         child.userData.helperType === "gizmo" ||
         child.userData.helperType === "handleType" ||
         child.userData.isGroundPlane === true ||
-        child.type === "TransformControlsGizmo"
+        child.type === "TransformControlsGizmo" ||
+        child.userData.isSketchPrimitive === true ||
+        child.userData.primitiveId !== undefined
       ) {
         return false;
       }
@@ -849,6 +856,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         toggleGroundPlane,
         cursorPosition,
         updateCursorPosition,
+        sceneReady,
       }}
     >
       {children}
