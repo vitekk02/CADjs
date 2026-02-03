@@ -7,16 +7,7 @@ import {
 } from "../../src/scene-operations/mesh-operations";
 import { Brep, CompoundBrep, Face, Vertex } from "../../src/geometry";
 
-// Mock createGeometryFromBRep since it has complex THREE.js dependencies
-jest.mock("../../src/convertBRepToGeometry", () => ({
-  createGeometryFromBRep: jest.fn(() => new THREE.BufferGeometry()),
-}));
-
 describe("mesh-operations", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
   describe("createMeshFromBrep", () => {
     test("creates mesh from valid brep with faces", () => {
       // Create a simple Brep with one face

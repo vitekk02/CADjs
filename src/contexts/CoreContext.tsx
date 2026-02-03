@@ -2,6 +2,7 @@ import React, {
   createContext,
   useContext,
   useState,
+  useRef,
   ReactNode,
   useCallback,
 } from "react";
@@ -101,6 +102,9 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   const [activeSketch, setActiveSketch] = useState<Sketch | null>(null);
   const [sketches, setSketches] = useState<Sketch[]>([]);
   const [previousMode, setPreviousMode] = useState<SceneMode>("draw");
+
+  // Ref to track solve operation version to prevent race conditions
+  const solveVersionRef = useRef(0);
 
   const handleSetMode = useCallback(
     (newMode: SceneMode) => {
@@ -361,8 +365,12 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
   // Batch update primitives and solve in one atomic operation
   // This ensures the solver sees all position updates before solving
+  // Uses version tracking to prevent race conditions from concurrent updates
   const updatePrimitivesAndSolve = useCallback(
     async (updates: Map<string, { x: number; y: number }>) => {
+      // Increment version to track this operation
+      const currentVersion = ++solveVersionRef.current;
+
       // Use a promise to get the updated sketch from inside the functional update
       const sketchPromise = new Promise<Sketch | null>((resolve) => {
         setActiveSketch((currentSketch) => {
@@ -393,10 +401,20 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       const sketchToSolve = await sketchPromise;
       if (!sketchToSolve) return;
 
+      // Check if a newer operation started - if so, skip this solve
+      if (solveVersionRef.current !== currentVersion) {
+        return;
+      }
+
       // Now solve with the updated sketch
       try {
         const solver = SketchSolverService.getInstance();
         const result = await solver.solve(sketchToSolve);
+
+        // Check version again after async solve completes
+        if (solveVersionRef.current !== currentVersion) {
+          return;
+        }
 
         if (result.success) {
           setActiveSketch(result.sketch);
@@ -448,6 +466,9 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
       const { sketch: sketchToSolve, nextId } = result;
 
+      // Update counter first to prevent ID collision if exception occurs
+      setIdCounter(nextId);
+
       // Now solve asynchronously
       try {
         const solver = SketchSolverService.getInstance();
@@ -460,10 +481,8 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         } else {
           console.warn("Sketch solve failed, keeping constraint anyway");
         }
-        setIdCounter(nextId);
       } catch (error) {
         console.error("Sketch solve error:", error);
-        setIdCounter(nextId);
       }
     },
     [idCounter]

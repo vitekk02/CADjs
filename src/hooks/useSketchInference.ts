@@ -414,10 +414,12 @@ function getParameterOnLine(
 ): number {
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
+  const EPSILON = 1e-10;
 
-  if (Math.abs(dx) > Math.abs(dy)) {
+  // Check both values against epsilon to prevent division by near-zero
+  if (Math.abs(dx) > EPSILON && Math.abs(dx) >= Math.abs(dy)) {
     return (point.x - p1.x) / dx;
-  } else if (Math.abs(dy) > 1e-10) {
+  } else if (Math.abs(dy) > EPSILON) {
     return (point.y - p1.y) / dy;
   }
   return 0;

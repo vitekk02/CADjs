@@ -74,21 +74,44 @@ interface UseSketchModeResult {
   handlePlaneSelectionClick: (event: MouseEvent) => void;
 }
 
-const SNAP_DISTANCE = 0.3;
-const POINT_SIZE = 0.15; // Increased for visibility
-const MAX_SELECTION = 2; // Maximum primitives that can be selected
+/**
+ * Configuration constants for sketch mode behavior.
+ * All distance values are in world units.
+ */
+const SKETCH_CONFIG = {
+  /** Distance in world units to snap to existing points when drawing */
+  SNAP_DISTANCE: 0.3,
+  /** Visual size of point primitives in world units */
+  POINT_SIZE: 0.15,
+  /** Maximum number of primitives that can be selected at once */
+  MAX_SELECTION: 2,
+  /** Distance in world units to snap to inference points (endpoints, midpoints, etc.) */
+  INFERENCE_SNAP_DISTANCE: 0.4,
+  /** Tolerance in radians for detecting horizontal/vertical alignment (~8.6 degrees) */
+  ALIGNMENT_TOLERANCE: 0.15,
+  /** Time threshold in milliseconds for detecting double-click */
+  DOUBLE_CLICK_THRESHOLD: 300,
+} as const;
 
-// Colors for sketch visualization
+/** Colors for sketch visualization (hex values) */
 const COLORS = {
+  /** Under-constrained geometry (needs more constraints) */
   underconstrained: 0x00ff00, // Green
+  /** Fully constrained geometry */
   constrained: 0x000000, // Black
+  /** Over-constrained geometry (conflicting constraints) */
   overconstrained: 0xff0000, // Red
-  preview: 0x0088ff, // Blue preview
-  point: 0xff6600, // Orange points (more visible)
-  selected: 0xff9900, // Orange selected
-  selectedLine: 0xff6600, // Orange for selected lines
-  selectedPoint: 0xffcc00, // Yellow for selected points
-};
+  /** Preview while drawing */
+  preview: 0x0088ff, // Blue
+  /** Point primitives */
+  point: 0xff6600, // Orange
+  /** Selected elements */
+  selected: 0xff9900, // Orange
+  /** Selected line primitives */
+  selectedLine: 0xff6600, // Orange
+  /** Selected point primitives */
+  selectedPoint: 0xffcc00, // Yellow
+} as const;
 
 export function useSketchMode(): UseSketchModeResult {
   const {
@@ -138,12 +161,29 @@ export function useSketchMode(): UseSketchModeResult {
   const centerPointRef = useRef<THREE.Vector3 | null>(null); // For circle/arc
   const idCounterRef = useRef(0);
 
+  // Shared raycaster to avoid creating new one on every mouse event
+  const raycasterRef = useRef(new THREE.Raycaster());
+
+  // Shared utility for raycasting to reduce code duplication
+  const raycastToObjects = useCallback(
+    (event: MouseEvent, objects: THREE.Object3D[], recursive: boolean = false): THREE.Intersection[] => {
+      if (!renderer || !camera) return [];
+      const rect = renderer.domElement.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      raycasterRef.current.setFromCamera(mouse, camera);
+      return raycasterRef.current.intersectObjects(objects, recursive);
+    },
+    [renderer, camera]
+  );
+
   // Click-to-click line chaining state
   const [isChaining, setIsChaining] = useState(false);
   const chainStartPointRef = useRef<THREE.Vector3 | null>(null);
   const chainStartPointIdRef = useRef<string | null>(null);
   const lastClickTimeRef = useRef<number>(0);
-  const DOUBLE_CLICK_THRESHOLD = 300; // ms
 
   // Pending line dimension (for showing dimension input after line creation)
   const [pendingLineDimension, setPendingLineDimension] = useState<PendingLineDimension | null>(null);
@@ -168,9 +208,16 @@ export function useSketchMode(): UseSketchModeResult {
   const draggedPrimitiveIdsRef = useRef<string[]>([]);
   const dragOriginalPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
 
-  // Inference constants
-  const INFERENCE_SNAP_DISTANCE = 0.4;
-  const ALIGNMENT_TOLERANCE = 0.15;
+  // Ref to prevent stale closure issues with activeSketch during drag
+  const activeSketchRef = useRef(activeSketch);
+
+  // Use config constants
+  const { INFERENCE_SNAP_DISTANCE, ALIGNMENT_TOLERANCE, DOUBLE_CLICK_THRESHOLD, SNAP_DISTANCE } = SKETCH_CONFIG;
+
+  // Keep activeSketchRef in sync with activeSketch to avoid stale closures
+  useEffect(() => {
+    activeSketchRef.current = activeSketch;
+  }, [activeSketch]);
 
   // Generate unique IDs for primitives
   const generateId = useCallback((prefix: string) => {
@@ -540,7 +587,7 @@ export function useSketchMode(): UseSketchModeResult {
 
   // Handle line drawing - Fusion 360 style click-to-click with chaining
   const handleLineDraw = useCallback(
-    (event: MouseEvent, point: THREE.Vector3) => {
+    async (event: MouseEvent, point: THREE.Vector3) => {
       const now = Date.now();
 
       if (event.type === "mousedown") {
@@ -582,9 +629,9 @@ export function useSketchMode(): UseSketchModeResult {
             addPrimitive(line);
 
             // Auto-apply H/V constraint if nearly aligned
-            autoApplyHVConstraint(lineId, startPoint, point);
+            await autoApplyHVConstraint(lineId, startPoint, point);
 
-            solveSketch();
+            await solveSketch();
 
             // Set pending line dimension for dimension input
             const lineLength = startPoint.distanceTo(point);
@@ -632,7 +679,7 @@ export function useSketchMode(): UseSketchModeResult {
 
   // Handle circle drawing
   const handleCircleDraw = useCallback(
-    (event: MouseEvent, point: THREE.Vector3) => {
+    async (event: MouseEvent, point: THREE.Vector3) => {
       if (event.type === "mousedown") {
         isDrawingRef.current = true;
         centerPointRef.current = point.clone();
@@ -664,7 +711,7 @@ export function useSketchMode(): UseSketchModeResult {
           };
           addPrimitive(circle);
 
-          solveSketch();
+          await solveSketch();
         }
 
         isDrawingRef.current = false;
@@ -769,7 +816,7 @@ export function useSketchMode(): UseSketchModeResult {
   );
 
   const handleArcDraw = useCallback(
-    (event: MouseEvent, point: THREE.Vector3) => {
+    async (event: MouseEvent, point: THREE.Vector3) => {
       if (event.type === "mousedown") {
         if (arcStepRef.current === 0) {
           // First click: start point
@@ -805,7 +852,7 @@ export function useSketchMode(): UseSketchModeResult {
                 radius,
               };
               addPrimitive(arc);
-              solveSketch();
+              await solveSketch();
             }
           }
 
@@ -849,7 +896,7 @@ export function useSketchMode(): UseSketchModeResult {
 
   // Handle point creation
   const handlePointDraw = useCallback(
-    (event: MouseEvent, point: THREE.Vector3) => {
+    async (event: MouseEvent, point: THREE.Vector3) => {
       if (event.type === "mousedown") {
         const newPoint: SketchPoint = {
           id: generateId("pt"),
@@ -859,7 +906,7 @@ export function useSketchMode(): UseSketchModeResult {
           fixed: false,
         };
         addPrimitive(newPoint);
-        solveSketch();
+        await solveSketch();
       }
     },
     [addPrimitive, solveSketch, generateId]
@@ -994,9 +1041,15 @@ export function useSketchMode(): UseSketchModeResult {
   const createSelectionPlanes = useCallback(() => {
     if (!scene) return;
 
-    // Remove existing selection planes
+    // Remove existing selection planes with proper disposal
     if (selectionPlanesRef.current) {
       scene.remove(selectionPlanesRef.current);
+      // Dispose tracked resources first
+      const trackedMaterials = selectionPlanesRef.current.userData.materials as THREE.Material[] | undefined;
+      const trackedGeometries = selectionPlanesRef.current.userData.geometries as THREE.BufferGeometry[] | undefined;
+      trackedMaterials?.forEach((m) => m.dispose());
+      trackedGeometries?.forEach((g) => g.dispose());
+      // Also traverse for any missed resources
       selectionPlanesRef.current.traverse((obj) => {
         if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
           obj.geometry?.dispose();
@@ -1010,6 +1063,9 @@ export function useSketchMode(): UseSketchModeResult {
     }
 
     const planesGroup = new THREE.Group();
+    // Track all materials and geometries for proper disposal
+    const materials: THREE.Material[] = [];
+    const geometries: THREE.BufferGeometry[] = [];
     planesGroup.userData.isSelectionPlanes = true;
     const planeSize = 4;
     const halfSize = planeSize / 2;
@@ -1017,6 +1073,7 @@ export function useSketchMode(): UseSketchModeResult {
     // Create cube corner visualization - planes positioned to form a corner
     // XY plane (Blue - Front face) - positioned at positive Z
     const xyGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
+    geometries.push(xyGeometry);
     const xyMaterial = new THREE.MeshBasicMaterial({
       color: 0x4488ff,
       transparent: true,
@@ -1024,6 +1081,7 @@ export function useSketchMode(): UseSketchModeResult {
       side: THREE.DoubleSide,
       depthWrite: false,
     });
+    materials.push(xyMaterial);
     const xyPlane = new THREE.Mesh(xyGeometry, xyMaterial);
     xyPlane.position.set(halfSize, halfSize, 0); // Position to form corner
     xyPlane.userData.planeType = "XY";
@@ -1033,6 +1091,7 @@ export function useSketchMode(): UseSketchModeResult {
 
     // XZ plane (Green - Top face) - positioned at positive Y
     const xzGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
+    geometries.push(xzGeometry);
     const xzMaterial = new THREE.MeshBasicMaterial({
       color: 0x44ff88,
       transparent: true,
@@ -1040,6 +1099,7 @@ export function useSketchMode(): UseSketchModeResult {
       side: THREE.DoubleSide,
       depthWrite: false,
     });
+    materials.push(xzMaterial);
     const xzPlane = new THREE.Mesh(xzGeometry, xzMaterial);
     xzPlane.rotation.x = -Math.PI / 2;
     xzPlane.position.set(halfSize, 0, halfSize); // Position to form corner
@@ -1050,6 +1110,7 @@ export function useSketchMode(): UseSketchModeResult {
 
     // YZ plane (Red - Right face) - positioned at positive X
     const yzGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
+    geometries.push(yzGeometry);
     const yzMaterial = new THREE.MeshBasicMaterial({
       color: 0xff6644,
       transparent: true,
@@ -1057,6 +1118,7 @@ export function useSketchMode(): UseSketchModeResult {
       side: THREE.DoubleSide,
       depthWrite: false,
     });
+    materials.push(yzMaterial);
     const yzPlane = new THREE.Mesh(yzGeometry, yzMaterial);
     yzPlane.rotation.y = Math.PI / 2;
     yzPlane.position.set(0, halfSize, halfSize); // Position to form corner
@@ -1067,13 +1129,17 @@ export function useSketchMode(): UseSketchModeResult {
 
     // Add wireframe edges to make it look more like a cube
     const edgeMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+    materials.push(edgeMaterial);
 
     // Edge along X axis (from origin)
     const xEdgeGeometry = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(0, 0, 0),
       new THREE.Vector3(planeSize, 0, 0),
     ]);
-    const xEdge = new THREE.Line(xEdgeGeometry, new THREE.LineBasicMaterial({ color: 0xff4444 }));
+    geometries.push(xEdgeGeometry);
+    const xEdgeMaterial = new THREE.LineBasicMaterial({ color: 0xff4444 });
+    materials.push(xEdgeMaterial);
+    const xEdge = new THREE.Line(xEdgeGeometry, xEdgeMaterial);
     planesGroup.add(xEdge);
 
     // Edge along Y axis (from origin)
@@ -1081,7 +1147,10 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(0, 0, 0),
       new THREE.Vector3(0, planeSize, 0),
     ]);
-    const yEdge = new THREE.Line(yEdgeGeometry, new THREE.LineBasicMaterial({ color: 0x44ff44 }));
+    geometries.push(yEdgeGeometry);
+    const yEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x44ff44 });
+    materials.push(yEdgeMaterial);
+    const yEdge = new THREE.Line(yEdgeGeometry, yEdgeMaterial);
     planesGroup.add(yEdge);
 
     // Edge along Z axis (from origin)
@@ -1089,7 +1158,10 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(0, 0, 0),
       new THREE.Vector3(0, 0, planeSize),
     ]);
-    const zEdge = new THREE.Line(zEdgeGeometry, new THREE.LineBasicMaterial({ color: 0x4488ff }));
+    geometries.push(zEdgeGeometry);
+    const zEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x4488ff });
+    materials.push(zEdgeMaterial);
+    const zEdge = new THREE.Line(zEdgeGeometry, zEdgeMaterial);
     planesGroup.add(zEdge);
 
     // Edges at the top of the cube corner
@@ -1097,6 +1169,7 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(0, planeSize, 0),
       new THREE.Vector3(planeSize, planeSize, 0),
     ]);
+    geometries.push(topEdge1Geometry);
     const topEdge1 = new THREE.Line(topEdge1Geometry, edgeMaterial);
     planesGroup.add(topEdge1);
 
@@ -1104,6 +1177,7 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(0, planeSize, 0),
       new THREE.Vector3(0, planeSize, planeSize),
     ]);
+    geometries.push(topEdge2Geometry);
     const topEdge2 = new THREE.Line(topEdge2Geometry, edgeMaterial);
     planesGroup.add(topEdge2);
 
@@ -1112,6 +1186,7 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(planeSize, 0, 0),
       new THREE.Vector3(planeSize, planeSize, 0),
     ]);
+    geometries.push(rightEdge1Geometry);
     const rightEdge1 = new THREE.Line(rightEdge1Geometry, edgeMaterial);
     planesGroup.add(rightEdge1);
 
@@ -1120,6 +1195,7 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(0, 0, planeSize),
       new THREE.Vector3(planeSize, 0, planeSize),
     ]);
+    geometries.push(frontEdge1Geometry);
     const frontEdge1 = new THREE.Line(frontEdge1Geometry, edgeMaterial);
     planesGroup.add(frontEdge1);
 
@@ -1127,14 +1203,21 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(0, 0, planeSize),
       new THREE.Vector3(0, planeSize, planeSize),
     ]);
+    geometries.push(frontEdge2Geometry);
     const frontEdge2 = new THREE.Line(frontEdge2Geometry, edgeMaterial);
     planesGroup.add(frontEdge2);
 
     // Add origin sphere
     const originGeometry = new THREE.SphereGeometry(0.15, 16, 16);
+    geometries.push(originGeometry);
     const originMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    materials.push(originMaterial);
     const originSphere = new THREE.Mesh(originGeometry, originMaterial);
     planesGroup.add(originSphere);
+
+    // Store tracked resources for proper disposal
+    planesGroup.userData.materials = materials;
+    planesGroup.userData.geometries = geometries;
 
     scene.add(planesGroup);
     selectionPlanesRef.current = planesGroup;
@@ -1262,23 +1345,14 @@ export function useSketchMode(): UseSketchModeResult {
   // Handle mouse move during plane selection (for hover effects)
   const handlePlaneSelectionMouseMove = useCallback(
     (event: MouseEvent) => {
-      if (!isSelectingPlane || !renderer || !camera || !selectionPlanesRef.current) return;
-
-      const rect = renderer.domElement.getBoundingClientRect();
-      const mouse = new THREE.Vector2(
-        ((event.clientX - rect.left) / rect.width) * 2 - 1,
-        -((event.clientY - rect.top) / rect.height) * 2 + 1
-      );
-
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(mouse, camera);
+      if (!isSelectingPlane || !selectionPlanesRef.current) return;
 
       // Get plane meshes
       const planes = selectionPlanesRef.current.children.filter(
         (child) => child instanceof THREE.Mesh && child.userData.planeType
       ) as THREE.Mesh[];
 
-      const intersects = raycaster.intersectObjects(planes, false);
+      const intersects = raycastToObjects(event, planes, false);
 
       // Reset all planes to base color and opacity
       planes.forEach((plane) => {
@@ -1297,29 +1371,20 @@ export function useSketchMode(): UseSketchModeResult {
         setHoveredPlane(null);
       }
     },
-    [isSelectingPlane, renderer, camera]
+    [isSelectingPlane, raycastToObjects]
   );
 
   // Handle click during plane selection
   const handlePlaneSelectionClick = useCallback(
     (event: MouseEvent) => {
-      if (!isSelectingPlane || !renderer || !camera || !selectionPlanesRef.current) return;
-
-      const rect = renderer.domElement.getBoundingClientRect();
-      const mouse = new THREE.Vector2(
-        ((event.clientX - rect.left) / rect.width) * 2 - 1,
-        -((event.clientY - rect.top) / rect.height) * 2 + 1
-      );
-
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(mouse, camera);
+      if (!isSelectingPlane || !selectionPlanesRef.current) return;
 
       // Get plane meshes
       const planes = selectionPlanesRef.current.children.filter(
         (child) => child instanceof THREE.Mesh && child.userData.planeType
       ) as THREE.Mesh[];
 
-      const intersects = raycaster.intersectObjects(planes, false);
+      const intersects = raycastToObjects(event, planes, false);
 
       if (intersects.length > 0) {
         const hitPlane = intersects[0].object as THREE.Mesh;
@@ -1327,7 +1392,7 @@ export function useSketchMode(): UseSketchModeResult {
         selectPlaneAndStartSketch(planeType);
       }
     },
-    [isSelectingPlane, renderer, camera]
+    [isSelectingPlane, raycastToObjects]
   );
 
   // Enter plane selection mode
@@ -1798,7 +1863,9 @@ export function useSketchMode(): UseSketchModeResult {
   // Handle dragging primitives in select mode
   const handleDragMove = useCallback(
     (event: MouseEvent) => {
-      if (!isDraggingRef.current || !dragStartPointRef.current || !activeSketch) return;
+      // Use ref to avoid stale closure issues during drag
+      const currentSketch = activeSketchRef.current;
+      if (!isDraggingRef.current || !dragStartPointRef.current || !currentSketch) return;
 
       const point = getMouseIntersection(event);
       if (!point) return;
@@ -1808,7 +1875,7 @@ export function useSketchMode(): UseSketchModeResult {
 
       // Get delta in sketch coordinates based on plane type
       let deltaX: number, deltaY: number;
-      switch (activeSketch.plane.type) {
+      switch (currentSketch.plane.type) {
         case "XZ":
           deltaX = delta.x;
           deltaY = delta.z;
@@ -1839,7 +1906,7 @@ export function useSketchMode(): UseSketchModeResult {
       // Apply all updates and solve in one go
       updatePrimitivesAndSolve(updates);
     },
-    [activeSketch, getMouseIntersection, updatePrimitivesAndSolve]
+    [getMouseIntersection, updatePrimitivesAndSolve]
   );
 
   const handleDragEnd = useCallback(async () => {
@@ -1939,18 +2006,6 @@ export function useSketchMode(): UseSketchModeResult {
       }
 
       if (event.type !== "mousedown") return;
-      if (!renderer || !camera || !scene) return;
-
-      // Calculate mouse position in normalized device coordinates
-      const rect = renderer.domElement.getBoundingClientRect();
-      const mouse = new THREE.Vector2(
-        ((event.clientX - rect.left) / rect.width) * 2 - 1,
-        -((event.clientY - rect.top) / rect.height) * 2 + 1
-      );
-
-      // Create raycaster
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(mouse, camera);
 
       // Get sketch objects
       const objects = sketchObjectsRef.current;
@@ -1962,8 +2017,8 @@ export function useSketchMode(): UseSketchModeResult {
         return;
       }
 
-      // Intersect with sketch objects
-      const intersects = raycaster.intersectObjects(objects, true);
+      // Use shared raycasting utility
+      const intersects = raycastToObjects(event, objects, true);
 
       if (intersects.length > 0) {
         // Find the first intersected object with a primitiveId
@@ -2033,7 +2088,7 @@ export function useSketchMode(): UseSketchModeResult {
         clearSelection();
       }
     },
-    [renderer, camera, scene, selectPrimitive, clearSelection, closeContextMenu, selectedPrimitives, activeSketch, startDrag, handleDragMove, handleDragEnd, findConnectedPrimitives]
+    [raycastToObjects, selectPrimitive, clearSelection, closeContextMenu, selectedPrimitives, activeSketch, startDrag, handleDragMove, handleDragEnd, findConnectedPrimitives]
   );
 
   // Main event handler

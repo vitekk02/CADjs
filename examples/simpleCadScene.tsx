@@ -767,43 +767,38 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         </p>
       </div>
 
-      {selectedObjectRef.current && (
-        <div className="absolute bottom-0 right-0 p-4 bg-gray-800 bg-opacity-75 rounded-tl-lg text-white">
-          <h3 className="font-bold">Element Info</h3>
-          <p>ID: {selectedObjectRef.current}</p>
-          {elements.find((el) => el.nodeId === selectedObjectRef.current) && (
-            <>
-              <p>
-                Position:{" "}
-                {`X: ${elements
-                  .find((el) => el.nodeId === selectedObjectRef.current)
-                  ?.position.x.toFixed(2)}, 
-                 Y: ${elements
-                   .find((el) => el.nodeId === selectedObjectRef.current)
-                   ?.position.y.toFixed(2)}, 
-                 Z: ${elements
-                   .find((el) => el.nodeId === selectedObjectRef.current)
-                   ?.position.z.toFixed(2)}`}
-              </p>
-              <p>
-                Vertices:{" "}
-                {elements.find((el) => el.nodeId === selectedObjectRef.current)
-                  ?.brep.vertices?.length || 0}
-              </p>
-              <p>
-                Edges:{" "}
-                {elements.find((el) => el.nodeId === selectedObjectRef.current)
-                  ?.brep.edges?.length || 0}
-              </p>
-              <p>
-                Faces:{" "}
-                {elements.find((el) => el.nodeId === selectedObjectRef.current)
-                  ?.brep.faces?.length || 0}
-              </p>
-            </>
-          )}
-        </div>
-      )}
+      {selectedObjectRef.current && (() => {
+        // Cache element lookup to avoid repeated O(n) searches
+        const selectedElement = elements.find((el) => el.nodeId === selectedObjectRef.current);
+        return (
+          <div className="absolute bottom-0 right-0 p-4 bg-gray-800 bg-opacity-75 rounded-tl-lg text-white">
+            <h3 className="font-bold">Element Info</h3>
+            <p>ID: {selectedObjectRef.current}</p>
+            {selectedElement && (
+              <>
+                <p>
+                  Position:{" "}
+                  {`X: ${selectedElement.position.x.toFixed(2)},
+                   Y: ${selectedElement.position.y.toFixed(2)},
+                   Z: ${selectedElement.position.z.toFixed(2)}`}
+                </p>
+                <p>
+                  Vertices:{" "}
+                  {selectedElement.brep.vertices?.length || 0}
+                </p>
+                <p>
+                  Edges:{" "}
+                  {selectedElement.brep.edges?.length || 0}
+                </p>
+                <p>
+                  Faces:{" "}
+                  {selectedElement.brep.faces?.length || 0}
+                </p>
+              </>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 };

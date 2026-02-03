@@ -465,18 +465,18 @@ export class SketchSolverService {
 
           if (prim0 && prim1) {
             // Handle different primitive combinations
-            if (prim0.type === "line" && (prim1.type === "point" || prim1.type === "circle")) {
+            if (isSketchLine(prim0) && (isSketchPoint(prim1) || isSketchCircle(prim1))) {
               // Swap - line is first, point/circle is second
               lineId = constraint.primitiveIds[0];
-              if (prim1.type === "circle") {
+              if (isSketchCircle(prim1)) {
                 // Use circle's center point
-                pointId = (prim1 as any).centerId;
+                pointId = prim1.centerId;
               } else {
                 pointId = constraint.primitiveIds[1];
               }
-            } else if (prim0.type === "circle") {
+            } else if (isSketchCircle(prim0)) {
               // Use circle's center point
-              pointId = (prim0 as any).centerId;
+              pointId = prim0.centerId;
             }
           }
 

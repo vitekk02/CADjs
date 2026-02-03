@@ -71,15 +71,17 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
   const [customShapePoints, setCustomShapePoints] = useState<THREE.Vector3[]>(
     [],
   );
-  const customShapeInProgressRef = useRef<boolean>(false);
+  const [customShapeInProgress, setCustomShapeInProgress] = useState<boolean>(false);
   const [currentShape, setCurrentShape] = useState<ShapeType>("rectangle");
   const [forceUpdate, setForceUpdate] = useState(0);
   const [showGroundPlane, setShowGroundPlane] = useState<boolean>(true);
   const groundPlaneRef = useRef<THREE.Group | null>(null);
   const [sceneReady, setSceneReady] = useState(false); // Track when scene is initialized
+  const customPreviewRef = useRef<THREE.Mesh | THREE.Line | null>(null); // Track custom shape preview for disposal
 
   const toggleGroundPlane = useCallback(() => {
     setShowGroundPlane((prev) => !prev);
@@ -116,9 +118,11 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     cameraRef.current = camera;
     rendererRef.current = renderer;
 
-    // Debug: expose globally for inspection
-    (window as any).__cadScene = scene;
-    (window as any).__cadCamera = camera;
+    // Debug: expose globally for inspection (development only)
+    if (import.meta.env.DEV) {
+      (window as any).__cadScene = scene;
+      (window as any).__cadCamera = camera;
+    }
 
     return { scene, camera, renderer };
   }, []);
@@ -159,7 +163,8 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       };
       window.addEventListener("resize", handleResize);
 
-      return () => {
+      // Store cleanup function for proper disposal
+      cleanupRef.current = () => {
         window.removeEventListener("resize", handleResize);
         controls.dispose();
       };
@@ -168,6 +173,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   );
 
   const unmountRenderer = useCallback(() => {
+    // Call cleanup function to remove event listeners and dispose controls
+    cleanupRef.current?.();
+    cleanupRef.current = null;
+
     if (containerRef.current && rendererRef.current) {
       containerRef.current.removeChild(rendererRef.current.domElement);
     }
@@ -264,9 +273,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   const handleCustomShapePoint = useCallback(
     (point: THREE.Vector3, isComplete: boolean = false) => {
       // For the first point, start a new shape
-      if (!customShapeInProgressRef.current) {
+      if (!customShapeInProgress) {
         setCustomShapePoints([point]);
-        customShapeInProgressRef.current = true;
+        setCustomShapeInProgress(true);
         return null; // No shape created yet
       }
 
@@ -283,19 +292,31 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
         // Reset the custom shape state
         setCustomShapePoints([]);
-        customShapeInProgressRef.current = false;
+        setCustomShapeInProgress(false);
 
         return result;
       }
 
       return null; // No shape created yet
     },
-    [customShapePoints, createCustomShape],
+    [customShapePoints, customShapeInProgress, createCustomShape],
   );
 
   // Generate preview mesh for custom shape in progress
   const createCustomShapePreview = useCallback(
     (currentPoint: THREE.Vector3): THREE.Mesh => {
+      // Dispose previous preview to prevent memory leak
+      if (customPreviewRef.current) {
+        customPreviewRef.current.geometry.dispose();
+        if (Array.isArray(customPreviewRef.current.material)) {
+          customPreviewRef.current.material.forEach((m) => m.dispose());
+        } else {
+          (customPreviewRef.current.material as THREE.Material).dispose();
+        }
+        sceneRef.current?.remove(customPreviewRef.current);
+        customPreviewRef.current = null;
+      }
+
       // Create a preview of the shape in progress
       const previewPoints = [...customShapePoints, currentPoint];
 
@@ -306,10 +327,12 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
           previewPoints,
         );
         const lineMaterial = new THREE.LineBasicMaterial({ color: 0x0088ff });
-        return new THREE.Line(
+        const line = new THREE.Line(
           lineGeometry,
           lineMaterial,
-        ) as unknown as THREE.Mesh;
+        );
+        customPreviewRef.current = line;
+        return line as unknown as THREE.Mesh;
       }
 
       // Create a shape for preview (similar to final shape creation)
@@ -328,13 +351,26 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         opacity: 0.5,
       });
 
-      return new THREE.Mesh(geometry, material);
+      const mesh = new THREE.Mesh(geometry, material);
+      customPreviewRef.current = mesh;
+      return mesh;
     },
     [customShapePoints],
   );
   const resetCustomShape = useCallback(() => {
+    // Dispose preview mesh when resetting
+    if (customPreviewRef.current) {
+      customPreviewRef.current.geometry.dispose();
+      if (Array.isArray(customPreviewRef.current.material)) {
+        customPreviewRef.current.material.forEach((m) => m.dispose());
+      } else {
+        (customPreviewRef.current.material as THREE.Material).dispose();
+      }
+      sceneRef.current?.remove(customPreviewRef.current);
+      customPreviewRef.current = null;
+    }
     setCustomShapePoints([]);
-    customShapeInProgressRef.current = false;
+    setCustomShapeInProgress(false);
   }, []);
   // Create and visualize a rectangle
   const createRectangle = useCallback(
@@ -864,7 +900,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         handleCustomShapePoint,
         createCustomShapePreview,
         resetCustomShape,
-        customShapeInProgress: customShapeInProgressRef.current,
+        customShapeInProgress: customShapeInProgress,
 
         showGroundPlane,
         toggleGroundPlane,

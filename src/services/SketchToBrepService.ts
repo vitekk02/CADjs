@@ -28,13 +28,53 @@ export class SketchToBrepService {
   }
 
   /**
+   * Validate sketch primitives for degenerate geometry.
+   * Returns true if valid, false if invalid geometry is detected.
+   */
+  private validateSketch(
+    primitives: SketchPrimitive[],
+    pointMap: Map<string, { x: number; y: number }>
+  ): boolean {
+    const EPSILON = 1e-6;
+
+    for (const prim of primitives) {
+      if (prim.type === "circle") {
+        const circle = prim as SketchCircle;
+        if (circle.radius <= EPSILON) {
+          console.warn(`[SketchToBrepService] Invalid circle radius: ${circle.radius} (id: ${circle.id})`);
+          return false;
+        }
+      } else if (prim.type === "line") {
+        const line = prim as SketchLine;
+        const p1 = pointMap.get(line.p1Id);
+        const p2 = pointMap.get(line.p2Id);
+        if (p1 && p2) {
+          const length = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+          if (length < EPSILON) {
+            console.warn(`[SketchToBrepService] Degenerate line detected (length: ${length}, id: ${line.id})`);
+            return false;
+          }
+        }
+      } else if (prim.type === "arc") {
+        const arc = prim as SketchArc;
+        if (arc.radius <= EPSILON) {
+          console.warn(`[SketchToBrepService] Invalid arc radius: ${arc.radius} (id: ${arc.id})`);
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
    * Convert a sketch to BRep.
    *
    * Process:
    * 1. Build point coordinate map from sketch primitives
-   * 2. Convert circles to individual faces (self-closing)
-   * 3. Convert lines/arcs to a single wire, then face
-   * 4. Union all faces together if multiple exist
+   * 2. Validate primitives for degenerate geometry
+   * 3. Convert circles to individual faces (self-closing)
+   * 4. Convert lines/arcs to a single wire, then face
+   * 5. Union all faces together if multiple exist
    */
   async convertSketchToBrep(sketch: Sketch): Promise<Brep> {
     if (!sketch.primitives || sketch.primitives.length === 0) {
@@ -47,6 +87,12 @@ export class SketchToBrepService {
 
     try {
       const pointMap = this.buildPointMap(sketch.primitives);
+
+      // Validate sketch geometry
+      if (!this.validateSketch(sketch.primitives, pointMap)) {
+        console.warn("[SketchToBrepService] Sketch validation failed - invalid geometry detected");
+        return new Brep([], [], []);
+      }
       const { circleEdges, otherEdges } = this.buildEdges(oc, sketch.primitives, pointMap);
 
       console.log(`[SketchToBrepService] Created ${circleEdges.length} circle edges and ${otherEdges.length} other edges`);
@@ -151,13 +197,19 @@ export class SketchToBrepService {
 
     let result: TopoDS_Face | ReturnType<typeof oc.BRepAlgoAPI_Fuse_3.prototype.Shape> = faces[0];
     for (let i = 1; i < faces.length; i++) {
+      let fuser: ReturnType<typeof oc.BRepAlgoAPI_Fuse_3> | null = null;
+      let progressRange: ReturnType<typeof oc.Message_ProgressRange_1> | null = null;
       try {
-        const fuser = new oc.BRepAlgoAPI_Fuse_3(result, faces[i], new oc.Message_ProgressRange_1());
+        progressRange = new oc.Message_ProgressRange_1();
+        fuser = new oc.BRepAlgoAPI_Fuse_3(result, faces[i], progressRange);
         if (fuser.IsDone()) {
           result = fuser.Shape();
         }
       } catch (error) {
         console.warn(`[SketchToBrepService] Failed to fuse face ${i + 1}:`, error);
+      } finally {
+        fuser?.delete();
+        progressRange?.delete();
       }
     }
     return result;
@@ -167,15 +219,20 @@ export class SketchToBrepService {
    * Convert a single edge to a face (for self-closing edges like circles).
    */
   private edgeToFace(oc: OpenCascadeInstance, edge: TopoDS_Edge): TopoDS_Face | null {
+    let wireBuilder: ReturnType<typeof oc.BRepBuilderAPI_MakeWire_1> | null = null;
+    let faceBuilder: ReturnType<typeof oc.BRepBuilderAPI_MakeFace_15> | null = null;
     try {
-      const wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
+      wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
       wireBuilder.Add_1(edge);
       if (!wireBuilder.IsDone()) return null;
 
-      const faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(wireBuilder.Wire(), true);
+      faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(wireBuilder.Wire(), true);
       return faceBuilder.IsDone() ? faceBuilder.Face() : null;
     } catch {
       return null;
+    } finally {
+      wireBuilder?.delete();
+      faceBuilder?.delete();
     }
   }
 
@@ -183,14 +240,17 @@ export class SketchToBrepService {
    * Build a wire from multiple edges.
    */
   private buildWire(oc: OpenCascadeInstance, edges: TopoDS_Edge[]): TopoDS_Wire | null {
+    let wireBuilder: ReturnType<typeof oc.BRepBuilderAPI_MakeWire_1> | null = null;
     try {
-      const wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
+      wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
       for (const edge of edges) {
         wireBuilder.Add_1(edge);
       }
       return wireBuilder.IsDone() ? wireBuilder.Wire() : null;
     } catch {
       return null;
+    } finally {
+      wireBuilder?.delete();
     }
   }
 
@@ -198,11 +258,14 @@ export class SketchToBrepService {
    * Convert a wire to a planar face.
    */
   private wireToFace(oc: OpenCascadeInstance, wire: TopoDS_Wire): TopoDS_Face | null {
+    let faceBuilder: ReturnType<typeof oc.BRepBuilderAPI_MakeFace_15> | null = null;
     try {
-      const faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
+      faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
       return faceBuilder.IsDone() ? faceBuilder.Face() : null;
     } catch {
       return null;
+    } finally {
+      faceBuilder?.delete();
     }
   }
 
@@ -220,13 +283,15 @@ export class SketchToBrepService {
 
     const gp1 = new oc.gp_Pnt_3(p1.x, p1.y, 0);
     const gp2 = new oc.gp_Pnt_3(p2.x, p2.y, 0);
+    let builder: ReturnType<typeof oc.BRepBuilderAPI_MakeEdge_3> | null = null;
 
     try {
-      const builder = new oc.BRepBuilderAPI_MakeEdge_3(gp1, gp2);
+      builder = new oc.BRepBuilderAPI_MakeEdge_3(gp1, gp2);
       return builder.IsDone() ? builder.Edge() : null;
     } finally {
       gp1.delete();
       gp2.delete();
+      builder?.delete();
     }
   }
 
@@ -245,15 +310,17 @@ export class SketchToBrepService {
     const dir = new oc.gp_Dir_4(0, 0, 1);
     const axis = new oc.gp_Ax2_3(gpCenter, dir);
     const gpCircle = new oc.gp_Circ_2(axis, circle.radius);
+    let builder: ReturnType<typeof oc.BRepBuilderAPI_MakeEdge_8> | null = null;
 
     try {
-      const builder = new oc.BRepBuilderAPI_MakeEdge_8(gpCircle);
+      builder = new oc.BRepBuilderAPI_MakeEdge_8(gpCircle);
       return builder.IsDone() ? builder.Edge() : null;
     } finally {
       gpCenter.delete();
       dir.delete();
       axis.delete();
       gpCircle.delete();
+      builder?.delete();
     }
   }
 
@@ -278,15 +345,17 @@ export class SketchToBrepService {
     const dir = new oc.gp_Dir_4(0, 0, 1);
     const axis = new oc.gp_Ax2_3(gpCenter, dir);
     const circle = new oc.gp_Circ_2(axis, radius);
+    let builder: ReturnType<typeof oc.BRepBuilderAPI_MakeEdge_9> | null = null;
 
     try {
-      const builder = new oc.BRepBuilderAPI_MakeEdge_9(circle, startAngle, endAngle);
+      builder = new oc.BRepBuilderAPI_MakeEdge_9(circle, startAngle, endAngle);
       return builder.IsDone() ? builder.Edge() : null;
     } finally {
       gpCenter.delete();
       dir.delete();
       axis.delete();
       circle.delete();
+      builder?.delete();
     }
   }
 }

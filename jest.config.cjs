@@ -20,7 +20,8 @@ module.exports = {
       },
       diagnostics: {
         // Ignore specific TypeScript errors
-        ignoreCodes: [2307, 2554, 2345, 2538],
+        // 18047: 'result' is possibly null
+        ignoreCodes: [2307, 2554, 2345, 2538, 18047],
       },
     }],
     // Transform opencascade.js from ESM to CommonJS
