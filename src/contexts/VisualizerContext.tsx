@@ -53,6 +53,8 @@ interface CadVisualizerContextType {
   cursorPosition: THREE.Vector3 | null;
   updateCursorPosition: (event: MouseEvent) => void;
   sceneReady: boolean;
+
+  setCameraRotationEnabled: (enabled: boolean) => void;
 }
 
 export const CadVisualizerContext = createContext<
@@ -83,6 +85,12 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     setShowGroundPlane((prev) => !prev);
   }, []);
 
+  const setCameraRotationEnabled = useCallback((enabled: boolean) => {
+    if (controlsRef.current) {
+      controlsRef.current.enableRotate = enabled;
+    }
+  }, []);
+
   const initSceneObjects = useCallback(() => {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x808080);
@@ -107,6 +115,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     sceneRef.current = scene;
     cameraRef.current = camera;
     rendererRef.current = renderer;
+
+    // Debug: expose globally for inspection
+    (window as any).__cadScene = scene;
+    (window as any).__cadCamera = camera;
 
     return { scene, camera, renderer };
   }, []);
@@ -726,6 +738,8 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         child.userData.helperType === "gizmo" ||
         child.userData.helperType === "handleType" ||
         child.userData.isGroundPlane === true ||
+        child.userData.isSketchGrid === true ||
+        child.userData.isSelectionPlanes === true ||
         child.type === "TransformControlsGizmo" ||
         child.userData.isSketchPrimitive === true ||
         child.userData.primitiveId !== undefined
@@ -857,6 +871,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         cursorPosition,
         updateCursorPosition,
         sceneReady,
+        setCameraRotationEnabled,
       }}
     >
       {children}

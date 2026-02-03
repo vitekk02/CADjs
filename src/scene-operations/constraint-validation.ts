@@ -96,11 +96,29 @@ const MULTI_APPLY_CONSTRAINTS: ConstraintType[] = [
   "horizontal", "vertical", "radius", "diameter"
 ];
 
+// Helper to count primitives by type
+function countPrimitiveTypes(primitives: SketchPrimitive[]): {
+  points: number;
+  lines: number;
+  circles: number;
+  arcs: number;
+} {
+  let points = 0, lines = 0, circles = 0, arcs = 0;
+  for (const p of primitives) {
+    const type = getPrimitiveType(p);
+    if (type === "point") points++;
+    else if (type === "line") lines++;
+    else if (type === "circle") circles++;
+    else if (type === "arc") arcs++;
+  }
+  return { points, lines, circles, arcs };
+}
+
 export function getAvailableConstraints(
   selectedIds: string[],
   primitives: SketchPrimitive[]
 ): ConstraintType[] {
-  if (selectedIds.length === 0 || selectedIds.length > 2) {
+  if (selectedIds.length === 0) {
     return [];
   }
 
@@ -112,31 +130,55 @@ export function getAvailableConstraints(
     return [];
   }
 
-  const combination = getCombination(selectedPrimitives);
-  if (!combination) {
-    return [];
-  }
-
   const available: ConstraintType[] = [];
+  const counts = countPrimitiveTypes(selectedPrimitives);
 
-  for (const rule of CONSTRAINT_RULES) {
-    // Standard case: count matches
-    if (rule.requiredCount === selectedPrimitives.length) {
-      if (rule.validCombinations.includes(combination)) {
-        available.push(rule.type);
+  // Standard case: exactly 1 or 2 primitives selected
+  if (selectedPrimitives.length <= 2) {
+    const combination = getCombination(selectedPrimitives);
+    if (combination) {
+      for (const rule of CONSTRAINT_RULES) {
+        if (rule.requiredCount === selectedPrimitives.length) {
+          if (rule.validCombinations.includes(combination)) {
+            available.push(rule.type);
+          }
+        }
       }
     }
-    // Special case: single-primitive constraints that can be applied to each selected primitive
-    else if (rule.requiredCount === 1 && selectedPrimitives.length === 2 &&
-             MULTI_APPLY_CONSTRAINTS.includes(rule.type)) {
-      // Check if all selected primitives are valid for this constraint
-      const allValid = selectedPrimitives.every(p => {
-        const singleCombination = getCombination([p]);
-        return singleCombination && rule.validCombinations.includes(singleCombination);
-      });
-      if (allValid) {
-        available.push(rule.type);
-      }
+  }
+
+  // Multi-selection cases (more than 2 primitives)
+  if (selectedPrimitives.length > 2) {
+    // horizontal/vertical: available if all are lines
+    if (counts.lines === selectedPrimitives.length) {
+      available.push("horizontal", "vertical", "parallel", "perpendicular", "equal");
+    }
+
+    // radius/diameter: available if all are circles/arcs
+    if (counts.circles + counts.arcs === selectedPrimitives.length) {
+      available.push("radius", "diameter", "equal", "concentric");
+    }
+  }
+
+  // Special case: pointOnLine - available if there's at least 1 point/circle and at least 1 line
+  // This allows selecting a shape (multiple lines) + a circle and applying pointOnLine
+  if (counts.lines >= 1 && (counts.points >= 1 || counts.circles >= 1)) {
+    if (!available.includes("pointOnLine")) {
+      available.push("pointOnLine");
+    }
+  }
+
+  // Special case: pointOnCircle - available if there's at least 1 point and at least 1 circle/arc
+  if ((counts.circles >= 1 || counts.arcs >= 1) && counts.points >= 1) {
+    if (!available.includes("pointOnCircle")) {
+      available.push("pointOnCircle");
+    }
+  }
+
+  // Special case: tangent - available if there's at least 1 line and at least 1 circle
+  if (counts.lines >= 1 && counts.circles >= 1) {
+    if (!available.includes("tangent")) {
+      available.push("tangent");
     }
   }
 

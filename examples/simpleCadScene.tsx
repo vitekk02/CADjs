@@ -12,6 +12,9 @@ import { useUngroupMode } from "../src/hooks/useUngroupMode";
 import { useResizeMode } from "../src/hooks/useResizeMode";
 import { useSketchMode } from "../src/hooks/useSketchMode";
 import SketchToolbar from "../src/navbar/SketchToolbar";
+import DimensionInput from "../src/components/DimensionInput";
+import SketchContextMenu from "../src/components/SketchContextMenu";
+// PlaneSelector removed - now using in-scene plane selection
 
 interface SimpleCadSceneProps {
   initialMode?: SceneMode;
@@ -97,11 +100,35 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     sketchSubMode,
     setSketchSubMode,
     handleSketchMode,
+    handleKeyDown: handleSketchKeyDown,
     cleanupSketchPreview,
     startNewSketch,
     selectedPrimitives,
     applyConstraint,
+    isChaining,
+    cancelCurrentOperation,
+    pendingLineDimension,
+    clearPendingLineDimension,
+    applyLineLengthConstraint,
+    contextMenu: sketchContextMenu,
+    closeContextMenu: closeSketchContextMenu,
+    applyConstraintToContextMenuPrimitives,
+    // Plane selection
+    isSelectingPlane,
+    hoveredPlane,
+    cancelPlaneSelection,
+    selectPlaneAndStartSketch,
+    handlePlaneSelectionMouseMove,
+    handlePlaneSelectionClick,
   } = useSketchMode();
+
+  // Dimension input state
+  const [dimensionInputVisible, setDimensionInputVisible] = useState(false);
+  const [dimensionInputPosition, setDimensionInputPosition] = useState({ x: 0, y: 0 });
+  const [dimensionInputLabel, setDimensionInputLabel] = useState("");
+  const [dimensionInputValue, setDimensionInputValue] = useState<number | undefined>(undefined);
+  const [pendingDimensionPrimitiveId, setPendingDimensionPrimitiveId] = useState<string | null>(null);
+  const [dimensionSource, setDimensionSource] = useState<"lineCreation" | "dimensionMode" | null>(null);
 
   const selectedObjectRef = useRef<string | null>(null);
   useEffect(() => {
@@ -165,6 +192,158 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.removeEventListener("mousemove", handleMouseMove);
     };
   }, [renderer, updateCursorPosition]);
+
+  // Global keyboard listener for sketch mode shortcuts
+  useEffect(() => {
+    if (mode !== "sketch") return;
+
+    window.addEventListener("keydown", handleSketchKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleSketchKeyDown);
+    };
+  }, [mode, handleSketchKeyDown]);
+
+  // Prevent default browser context menu in sketch mode
+  useEffect(() => {
+    if (mode !== "sketch" || !renderer) return;
+
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+
+    renderer.domElement.addEventListener("contextmenu", handleContextMenu);
+
+    return () => {
+      renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
+    };
+  }, [mode, renderer]);
+
+  // Show dimension input when primitive is selected in dimension mode
+  useEffect(() => {
+    // Don't interfere if showing line-creation dimension input
+    if (dimensionSource === "lineCreation") return;
+
+    if (mode !== "sketch" || sketchSubMode !== "dimension" || selectedPrimitives.length !== 1) {
+      if (dimensionSource === "dimensionMode") {
+        setDimensionInputVisible(false);
+        setPendingDimensionPrimitiveId(null);
+        setDimensionSource(null);
+      }
+      return;
+    }
+
+    const primitiveId = selectedPrimitives[0];
+    if (!activeSketch || !renderer) return;
+
+    // Find the primitive
+    const primitive = activeSketch.primitives.find((p) => p.id === primitiveId);
+    if (!primitive) return;
+
+    // Determine dimension type and position based on primitive type
+    let label = "";
+    let value: number | undefined;
+    let worldPos = new THREE.Vector3();
+
+    if (primitive.type === "line") {
+      label = "Length";
+      // Get line endpoints to calculate length and position
+      const p1 = activeSketch.primitives.find((p) => p.id === primitive.p1Id && p.type === "point");
+      const p2 = activeSketch.primitives.find((p) => p.id === primitive.p2Id && p.type === "point");
+      if (p1 && p2 && p1.type === "point" && p2.type === "point") {
+        const length = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+        value = length;
+        worldPos.set((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, 0);
+      }
+    } else if (primitive.type === "circle") {
+      label = "Radius";
+      value = primitive.radius;
+      const center = activeSketch.primitives.find((p) => p.id === primitive.centerId && p.type === "point");
+      if (center && center.type === "point") {
+        worldPos.set(center.x + primitive.radius / 2, center.y, 0);
+      }
+    } else if (primitive.type === "arc") {
+      label = "Radius";
+      value = primitive.radius;
+      const center = activeSketch.primitives.find((p) => p.id === primitive.centerId && p.type === "point");
+      if (center && center.type === "point") {
+        worldPos.set(center.x, center.y, 0);
+      }
+    } else {
+      // Point or other - no dimension to add
+      setDimensionInputVisible(false);
+      return;
+    }
+
+    // Convert world position to screen position
+    if (camera) {
+      worldPos.project(camera);
+      const rect = renderer.domElement.getBoundingClientRect();
+      const screenX = ((worldPos.x + 1) / 2) * rect.width + rect.left;
+      const screenY = ((-worldPos.y + 1) / 2) * rect.height + rect.top;
+
+      setDimensionInputPosition({ x: screenX, y: screenY });
+      setDimensionInputLabel(label);
+      setDimensionInputValue(value);
+      setPendingDimensionPrimitiveId(primitiveId);
+      setDimensionSource("dimensionMode");
+      setDimensionInputVisible(true);
+    }
+  }, [mode, sketchSubMode, selectedPrimitives, activeSketch, camera, renderer, dimensionSource]);
+
+  // Show dimension input immediately after line creation
+  useEffect(() => {
+    if (!pendingLineDimension || !renderer || !camera) {
+      return;
+    }
+
+    // Convert line midpoint to screen position
+    const worldPos = pendingLineDimension.midpoint.clone();
+    worldPos.project(camera);
+    const rect = renderer.domElement.getBoundingClientRect();
+    const screenX = ((worldPos.x + 1) / 2) * rect.width + rect.left;
+    const screenY = ((-worldPos.y + 1) / 2) * rect.height + rect.top;
+
+    setDimensionInputPosition({ x: screenX, y: screenY });
+    setDimensionInputLabel("Length");
+    setDimensionInputValue(pendingLineDimension.length);
+    setPendingDimensionPrimitiveId(pendingLineDimension.lineId);
+    setDimensionSource("lineCreation");
+    setDimensionInputVisible(true);
+  }, [pendingLineDimension, renderer, camera]);
+
+  // Handle dimension input submission
+  const handleDimensionSubmit = (value: number) => {
+    if (!pendingDimensionPrimitiveId) return;
+
+    if (dimensionSource === "lineCreation") {
+      // Apply length constraint to the newly created line
+      applyLineLengthConstraint(pendingDimensionPrimitiveId, value);
+    } else if (dimensionSource === "dimensionMode" && activeSketch) {
+      const primitive = activeSketch.primitives.find((p) => p.id === pendingDimensionPrimitiveId);
+      if (!primitive) return;
+
+      // Apply appropriate constraint based on primitive type
+      if (primitive.type === "line") {
+        applyConstraint("distance", value);
+      } else if (primitive.type === "circle" || primitive.type === "arc") {
+        applyConstraint("radius", value);
+      }
+    }
+
+    setDimensionInputVisible(false);
+    setPendingDimensionPrimitiveId(null);
+    setDimensionSource(null);
+  };
+
+  const handleDimensionCancel = () => {
+    if (dimensionSource === "lineCreation") {
+      clearPendingLineDimension();
+    }
+    setDimensionInputVisible(false);
+    setPendingDimensionPrimitiveId(null);
+    setDimensionSource(null);
+  };
 
   useEffect(() => {
     if (!renderer || !camera || !scene) return;
@@ -267,6 +446,19 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleSketchMode,
   ]);
 
+  // Plane selection event listeners
+  useEffect(() => {
+    if (!renderer || !isSelectingPlane) return;
+
+    renderer.domElement.addEventListener("mousemove", handlePlaneSelectionMouseMove);
+    renderer.domElement.addEventListener("click", handlePlaneSelectionClick);
+
+    return () => {
+      renderer.domElement.removeEventListener("mousemove", handlePlaneSelectionMouseMove);
+      renderer.domElement.removeEventListener("click", handlePlaneSelectionClick);
+    };
+  }, [renderer, isSelectingPlane, handlePlaneSelectionMouseMove, handlePlaneSelectionClick]);
+
   return (
     <div className="relative w-full h-screen">
       <div ref={mountRef} className="absolute inset-0" />
@@ -329,6 +521,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               }`}
               onClick={() => {
                 if (mode !== "sketch") {
+                  setMode("sketch");
+                  startNewSketch();
+                } else if (!activeSketch) {
+                  // Already in sketch mode but no active sketch - start new one
                   startNewSketch();
                 }
               }}
@@ -444,7 +640,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             Ungroup
           </button>
 
-          {mode === "sketch" && (
+          {mode === "sketch" && !isSelectingPlane && activeSketch && (
             <SketchToolbar
               activeSketch={activeSketch}
               sketchSubMode={sketchSubMode}
@@ -454,10 +650,81 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               onSolveSketch={solveSketch}
               selectedPrimitives={selectedPrimitives}
               onApplyConstraint={applyConstraint}
+              isChaining={isChaining}
             />
           )}
         </div>
       </div>
+
+      {/* Dimension input overlay */}
+      <DimensionInput
+        visible={dimensionInputVisible}
+        position={dimensionInputPosition}
+        label={dimensionInputLabel}
+        initialValue={dimensionInputValue}
+        onSubmit={handleDimensionSubmit}
+        onCancel={handleDimensionCancel}
+      />
+
+      {/* Sketch context menu for right-click constraints */}
+      {mode === "sketch" && (
+        <SketchContextMenu
+          visible={sketchContextMenu.visible}
+          x={sketchContextMenu.x}
+          y={sketchContextMenu.y}
+          primitiveIds={sketchContextMenu.primitiveIds}
+          primitiveTypes={sketchContextMenu.primitiveTypes}
+          onClose={closeSketchContextMenu}
+          onApplyConstraint={applyConstraintToContextMenuPrimitives}
+        />
+      )}
+
+      {/* Plane selection hint overlay */}
+      {mode === "sketch" && isSelectingPlane && (
+        <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-20 pointer-events-none">
+          <div className="bg-gray-800 bg-opacity-90 rounded-lg px-6 py-3 text-white shadow-lg">
+            <div className="text-center">
+              <p className="text-sm font-medium mb-2">Select a sketch plane</p>
+              <p className="text-xs text-gray-400 mb-2">Click on a colored plane in the scene</p>
+              {hoveredPlane && (
+                <p className="text-sm font-bold" style={{
+                  color: hoveredPlane === "XY" ? "#4488ff" :
+                         hoveredPlane === "XZ" ? "#44ff44" : "#ff4444"
+                }}>
+                  {hoveredPlane === "XY" ? "XY Plane (Front)" :
+                   hoveredPlane === "XZ" ? "XZ Plane (Top)" : "YZ Plane (Side)"}
+                </p>
+              )}
+              <div className="mt-3 flex justify-center gap-2 pointer-events-auto">
+                <button
+                  className="px-3 py-1 text-xs rounded bg-blue-600 hover:bg-blue-500"
+                  onClick={() => selectPlaneAndStartSketch("XY")}
+                >
+                  XY
+                </button>
+                <button
+                  className="px-3 py-1 text-xs rounded bg-green-600 hover:bg-green-500"
+                  onClick={() => selectPlaneAndStartSketch("XZ")}
+                >
+                  XZ
+                </button>
+                <button
+                  className="px-3 py-1 text-xs rounded bg-red-600 hover:bg-red-500"
+                  onClick={() => selectPlaneAndStartSketch("YZ")}
+                >
+                  YZ
+                </button>
+                <button
+                  className="px-3 py-1 text-xs rounded bg-gray-600 hover:bg-gray-500"
+                  onClick={cancelPlaneSelection}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {contextMenu.visible && (
         <div

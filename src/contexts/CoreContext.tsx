@@ -41,7 +41,7 @@ import {
   removeConstraintFromSketch,
 } from "../scene-operations/sketch-operations";
 import { SketchSolverService } from "../services/SketchSolverService";
-import { OpenCascadeService } from "../services/OpenCascadeService";
+import { SketchToBrepService } from "../services/SketchToBrepService";
 
 export interface CadCoreContextType {
   elements: SceneElement[];
@@ -72,6 +72,8 @@ export interface CadCoreContextType {
   sketches: Sketch[];
   startSketch: (plane: SketchPlane) => string;
   addPrimitive: (primitive: SketchPrimitive) => void;
+  updatePrimitive: (primitiveId: string, updates: Partial<SketchPrimitive>) => void;
+  updatePrimitivesAndSolve: (updates: Map<string, { x: number; y: number }>) => Promise<void>;
   addConstraint: (constraint: SketchConstraint) => void;
   addConstraintAndSolve: (constraint: SketchConstraint) => Promise<void>;
   removePrimitive: (primitiveId: string) => void;
@@ -102,12 +104,16 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
   const handleSetMode = useCallback(
     (newMode: SceneMode) => {
+      // Save previous mode when entering sketch mode for proper restoration on cancel
+      if (newMode === "sketch" && mode !== "sketch") {
+        setPreviousMode(mode);
+      }
       const result = handleSetModeOp(elements, newMode, objectsMap);
       setElements(result.updatedElements);
       setMode(result.mode);
       setSelectedElements([]);
     },
-    [elements, objectsMap]
+    [elements, objectsMap, mode]
   );
 
   const addElement = useCallback(
@@ -299,7 +305,11 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       const result = createSketchOp(plane, idCounter);
       setActiveSketch(result.sketch);
       setIdCounter(result.nextId);
-      setPreviousMode(mode);
+      // Only save previous mode if we're not already in sketch mode
+      // This preserves the original mode when entering via plane selection UI
+      if (mode !== "sketch") {
+        setPreviousMode(mode);
+      }
       setMode("sketch");
       return result.sketch.id;
     },
@@ -325,6 +335,79 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [idCounter]
   );
 
+  const updatePrimitive = useCallback(
+    (primitiveId: string, updates: Partial<SketchPrimitive>) => {
+      setActiveSketch((currentSketch) => {
+        if (!currentSketch) {
+          console.warn("No active sketch to update primitive in");
+          return null;
+        }
+
+        const updatedPrimitives = currentSketch.primitives.map((p) => {
+          if (p.id === primitiveId) {
+            return { ...p, ...updates } as SketchPrimitive;
+          }
+          return p;
+        });
+
+        return {
+          ...currentSketch,
+          primitives: updatedPrimitives,
+        };
+      });
+    },
+    []
+  );
+
+  // Batch update primitives and solve in one atomic operation
+  // This ensures the solver sees all position updates before solving
+  const updatePrimitivesAndSolve = useCallback(
+    async (updates: Map<string, { x: number; y: number }>) => {
+      // Use a promise to get the updated sketch from inside the functional update
+      const sketchPromise = new Promise<Sketch | null>((resolve) => {
+        setActiveSketch((currentSketch) => {
+          if (!currentSketch) {
+            resolve(null);
+            return null;
+          }
+
+          // Apply all position updates in one go
+          const updatedPrimitives = currentSketch.primitives.map((p) => {
+            const update = updates.get(p.id);
+            if (update && p.type === "point") {
+              return { ...p, x: update.x, y: update.y } as SketchPrimitive;
+            }
+            return p;
+          });
+
+          const updatedSketch = {
+            ...currentSketch,
+            primitives: updatedPrimitives,
+          };
+
+          resolve(updatedSketch);
+          return updatedSketch;
+        });
+      });
+
+      const sketchToSolve = await sketchPromise;
+      if (!sketchToSolve) return;
+
+      // Now solve with the updated sketch
+      try {
+        const solver = SketchSolverService.getInstance();
+        const result = await solver.solve(sketchToSolve);
+
+        if (result.success) {
+          setActiveSketch(result.sketch);
+        }
+      } catch (error) {
+        console.error("Sketch solve error during drag:", error);
+      }
+    },
+    []
+  );
+
   const addConstraint = useCallback(
     (constraint: SketchConstraint) => {
       if (!activeSketch) {
@@ -339,42 +422,51 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [activeSketch, idCounter]
   );
 
-  // Atomic add constraint and solve - avoids React batching issues
+  // Atomic add constraint and solve - uses functional update to avoid stale closure issues
   const addConstraintAndSolve = useCallback(
     async (constraint: SketchConstraint) => {
-      if (!activeSketch) {
-        console.warn("No active sketch to add constraint to");
-        return;
-      }
+      // We need to capture the sketch with the constraint added for solving
+      // Use a Promise to get the value from inside the functional update
+      const sketchPromise = new Promise<{ sketch: Sketch; nextId: number } | null>((resolve) => {
+        setActiveSketch((currentSketch) => {
+          if (!currentSketch) {
+            console.warn("No active sketch to add constraint to");
+            resolve(null);
+            return null;
+          }
 
-      // Add constraint to sketch
-      const addResult = addConstraintToSketch(activeSketch, constraint, idCounter);
-      const sketchWithConstraint = addResult.sketch;
+          const addResult = addConstraintToSketch(currentSketch, constraint, idCounter);
+          console.log("Added constraint:", constraint.type, "to sketch with", addResult.sketch.primitives.length, "primitives");
 
-      console.log("Added constraint:", constraint.type, "to sketch with", sketchWithConstraint.primitives.length, "primitives");
+          resolve({ sketch: addResult.sketch, nextId: addResult.nextId });
+          return addResult.sketch;
+        });
+      });
 
-      // Immediately solve the updated sketch
+      const result = await sketchPromise;
+      if (!result) return;
+
+      const { sketch: sketchToSolve, nextId } = result;
+
+      // Now solve asynchronously
       try {
         const solver = SketchSolverService.getInstance();
-        console.log("Solving sketch with", sketchWithConstraint.constraints.length, "constraints");
-        const solveResult = await solver.solve(sketchWithConstraint);
+        console.log("Solving sketch with", sketchToSolve.constraints.length, "constraints");
+        const solveResult = await solver.solve(sketchToSolve);
 
         if (solveResult.success) {
           console.log("Solve succeeded, DOF:", solveResult.dof);
           setActiveSketch(solveResult.sketch);
         } else {
           console.warn("Sketch solve failed, keeping constraint anyway");
-          setActiveSketch(sketchWithConstraint);
         }
-        setIdCounter(addResult.nextId);
+        setIdCounter(nextId);
       } catch (error) {
         console.error("Sketch solve error:", error);
-        // Still update with the constraint even if solve failed
-        setActiveSketch(sketchWithConstraint);
-        setIdCounter(addResult.nextId);
+        setIdCounter(nextId);
       }
     },
-    [activeSketch, idCounter]
+    [idCounter]
   );
 
   const removePrimitive = useCallback(
@@ -446,29 +538,18 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       // Store the finished sketch
       setSketches((prev) => [...prev, result.sketch]);
 
-      // Convert sketch to BRep and add as element
-      const ocService = OpenCascadeService.getInstance();
-      const brep = await ocService.sketchToBrep(result.sketch);
+      // Convert sketch to BRep using the new conversion service
+      const sketchService = SketchToBrepService.getInstance();
+      const brep = await sketchService.convertSketchToBrep(result.sketch);
 
       if (brep.vertices.length > 0 || brep.edges.length > 0 || brep.faces.length > 0) {
-        // Calculate center position from sketch primitives
-        let sumX = 0, sumY = 0, count = 0;
-        for (const prim of result.sketch.primitives) {
-          if (prim.type === "point") {
-            sumX += prim.x;
-            sumY += prim.y;
-            count++;
-          }
-        }
-        const centerX = count > 0 ? sumX / count : 0;
-        const centerY = count > 0 ? sumY / count : 0;
-
-        // Add as element at the sketch's position
-        const position = new THREE.Vector3(centerX, centerY, 0);
+        // BRep vertices are already in absolute canvas coordinates from the sketch
+        // Position should be (0,0,0) since geometry contains absolute coordinates
+        const position = new THREE.Vector3(0, 0, 0);
         addElement(brep, position);
-        console.log("Added sketch as BRep element at", position.toArray());
+        console.log("Added sketch as BRep element, vertices:", brep.vertices.length, "faces:", brep.faces.length);
       } else {
-        console.warn("Sketch produced empty BRep");
+        console.warn("Sketch produced empty BRep - no vertices, edges, or faces");
       }
 
       // Clear active sketch and return to previous mode
@@ -516,6 +597,8 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         sketches,
         startSketch,
         addPrimitive,
+        updatePrimitive,
+        updatePrimitivesAndSolve,
         addConstraint,
         addConstraintAndSolve,
         removePrimitive,

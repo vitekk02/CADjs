@@ -457,11 +457,34 @@ export class SketchSolverService {
 
       case "pointOnLine": {
         if (constraint.primitiveIds.length === 2) {
+          // Automatically detect which is point/circle and which is line
+          const prim0 = primitives.find(p => p.id === constraint.primitiveIds[0]);
+          const prim1 = primitives.find(p => p.id === constraint.primitiveIds[1]);
+          let pointId = constraint.primitiveIds[0];
+          let lineId = constraint.primitiveIds[1];
+
+          if (prim0 && prim1) {
+            // Handle different primitive combinations
+            if (prim0.type === "line" && (prim1.type === "point" || prim1.type === "circle")) {
+              // Swap - line is first, point/circle is second
+              lineId = constraint.primitiveIds[0];
+              if (prim1.type === "circle") {
+                // Use circle's center point
+                pointId = (prim1 as any).centerId;
+              } else {
+                pointId = constraint.primitiveIds[1];
+              }
+            } else if (prim0.type === "circle") {
+              // Use circle's center point
+              pointId = (prim0 as any).centerId;
+            }
+          }
+
           return {
             id: constraint.id,
             type: "point_on_line_pl",
-            p_id: constraint.primitiveIds[0],
-            l_id: constraint.primitiveIds[1],
+            p_id: pointId,
+            l_id: lineId,
             driving,
           } as GcsSketchPrimitive;
         }
@@ -470,11 +493,25 @@ export class SketchSolverService {
 
       case "pointOnCircle": {
         if (constraint.primitiveIds.length === 2) {
+          // Automatically detect which is point and which is circle
+          const prim0 = primitives.find(p => p.id === constraint.primitiveIds[0]);
+          const prim1 = primitives.find(p => p.id === constraint.primitiveIds[1]);
+          let pointId = constraint.primitiveIds[0];
+          let circleId = constraint.primitiveIds[1];
+
+          // Swap if first is circle and second is point
+          if (prim0 && prim1) {
+            if (prim1.type === "point" && prim0.type === "circle") {
+              pointId = constraint.primitiveIds[1];
+              circleId = constraint.primitiveIds[0];
+            }
+          }
+
           return {
             id: constraint.id,
             type: "point_on_circle",
-            p_id: constraint.primitiveIds[0],
-            c_id: constraint.primitiveIds[1],
+            p_id: pointId,
+            c_id: circleId,
             driving,
           } as GcsSketchPrimitive;
         }
