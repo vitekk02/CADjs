@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Brep, CompoundBrep, Edge, Face, Vertex } from "./geometry";
 import { createMeshFromBrep } from "./scene-operations";
+import { BODY } from "./theme";
 
 export function createGeometryFromBRep(faces: Face[]): THREE.BufferGeometry {
   const positions: number[] = [];
@@ -174,14 +175,7 @@ function vertexEqualsWithTolerance(
 export async function createMeshFromCompoundBrep(
   compoundBrep: CompoundBrep,
   material?: THREE.Material,
-): Promise<THREE.Mesh> {
-  if (!material) {
-    material = new THREE.MeshStandardMaterial({
-      color: 0x0000ff,
-      side: THREE.DoubleSide,
-    });
-  }
-
+): Promise<THREE.Object3D> {
   try {
     const unifiedBrep = await compoundBrep.getUnifiedBRep();
     return createMeshFromBrep(unifiedBrep);
@@ -195,6 +189,15 @@ export async function createMeshFromCompoundBrep(
         allFaces.push(...childBrep.faces);
       }
     });
+
+    if (!material) {
+      material = new THREE.MeshStandardMaterial({
+        color: BODY.default,
+        side: THREE.DoubleSide,
+        roughness: 0.6,
+        metalness: 0.2,
+      });
+    }
 
     const geometry = createGeometryFromBRep(allFaces);
     const mesh = new THREE.Mesh(geometry, material);

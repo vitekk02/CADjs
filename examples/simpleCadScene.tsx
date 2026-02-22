@@ -11,9 +11,11 @@ import { useDrawMode } from "../src/hooks/useDrawMode";
 import { useUngroupMode } from "../src/hooks/useUngroupMode";
 import { useResizeMode } from "../src/hooks/useResizeMode";
 import { useSketchMode } from "../src/hooks/useSketchMode";
+import { useExtrudeMode } from "../src/hooks/useExtrudeMode";
 import SketchToolbar from "../src/navbar/SketchToolbar";
 import DimensionInput from "../src/components/DimensionInput";
 import SketchContextMenu from "../src/components/SketchContextMenu";
+import FeatureTree from "../src/components/FeatureTree";
 // PlaneSelector removed - now using in-scene plane selection
 
 interface SimpleCadSceneProps {
@@ -41,6 +43,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     finishSketch,
     cancelSketch,
     solveSketch,
+    featureTree,
+    toggleNodeVisibility,
+    toggleNodeExpanded,
   } = useCadCore();
   const {
     createEdgeHelpers,
@@ -121,6 +126,22 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handlePlaneSelectionMouseMove,
     handlePlaneSelectionClick,
   } = useSketchMode();
+
+  const {
+    selectedElement: extrudeSelectedElement,
+    isExtruding,
+    extrusionDepth,
+    activeDirection: extrudeDirection,
+    showDimensionInput: showExtrudeDimensionInput,
+    dimensionInputPosition: extrudeDimensionPosition,
+    handleMouseDown: handleExtrudeMouseDown,
+    handleMouseMove: handleExtrudeMouseMove,
+    handleMouseUp: handleExtrudeMouseUp,
+    handleKeyDown: handleExtrudeKeyDown,
+    handleDimensionSubmit: handleExtrudeDimensionSubmit,
+    handleDimensionCancel: handleExtrudeDimensionCancel,
+    cleanup: cleanupExtrude,
+  } = useExtrudeMode();
 
   // Dimension input state
   const [dimensionInputVisible, setDimensionInputVisible] = useState(false);
@@ -203,6 +224,17 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       window.removeEventListener("keydown", handleSketchKeyDown);
     };
   }, [mode, handleSketchKeyDown]);
+
+  // Global keyboard listener for extrude mode (Escape to cancel)
+  useEffect(() => {
+    if (mode !== "extrude") return;
+
+    window.addEventListener("keydown", handleExtrudeKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleExtrudeKeyDown);
+    };
+  }, [mode, handleExtrudeKeyDown]);
 
   // Prevent default browser context menu in sketch mode
   useEffect(() => {
@@ -390,6 +422,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.addEventListener("mousedown", handleSketchMode);
       renderer.domElement.addEventListener("mousemove", handleSketchMode);
       renderer.domElement.addEventListener("mouseup", handleSketchMode);
+    } else if (mode === "extrude") {
+      renderer.domElement.addEventListener("mousedown", handleExtrudeMouseDown);
+      renderer.domElement.addEventListener("mousemove", handleExtrudeMouseMove);
+      renderer.domElement.addEventListener("mouseup", handleExtrudeMouseUp);
     }
 
     return () => {
@@ -418,6 +454,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.removeEventListener("mousedown", handleSketchMode);
       renderer.domElement.removeEventListener("mousemove", handleSketchMode);
       renderer.domElement.removeEventListener("mouseup", handleSketchMode);
+      renderer.domElement.removeEventListener("mousedown", handleExtrudeMouseDown);
+      renderer.domElement.removeEventListener("mousemove", handleExtrudeMouseMove);
+      renderer.domElement.removeEventListener("mouseup", handleExtrudeMouseUp);
       // cleanupPreview();
       // cleanupResize();
     };
@@ -444,6 +483,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleResizeMouseUp,
     cleanupResize,
     handleSketchMode,
+    handleExtrudeMouseDown,
+    handleExtrudeMouseMove,
+    handleExtrudeMouseUp,
   ]);
 
   // Plane selection event listeners
@@ -530,6 +572,19 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               }}
             >
               Sketch
+            </button>
+            <button
+              className={`px-3 py-1 rounded ${
+                mode === "extrude" ? "bg-blue-600" : "bg-gray-600"
+              }`}
+              onClick={() => {
+                if (mode !== "extrude") {
+                  cleanupExtrude();
+                }
+                setMode("extrude");
+              }}
+            >
+              Extrude
             </button>
 
             <button
@@ -629,6 +684,24 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             </div>
           )}
 
+          {mode === "extrude" && (
+            <div className="mt-2">
+              <p className="text-sm text-gray-300 mb-1">
+                Select a flat shape to extrude
+              </p>
+              {extrudeSelectedElement && (
+                <p className="text-sm text-green-400">
+                  Drag arrow to extrude
+                  {isExtruding && `: ${extrusionDepth.toFixed(2)} units`}
+                  {extrudeDirection && ` (${extrudeDirection})`}
+                </p>
+              )}
+              <p className="text-xs text-gray-500 mt-1">
+                Shift+drag: symmetric | Ctrl: fine control
+              </p>
+            </div>
+          )}
+
           <button
             onClick={performUngroup}
             disabled={!canUngroup}
@@ -665,6 +738,18 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         onSubmit={handleDimensionSubmit}
         onCancel={handleDimensionCancel}
       />
+
+      {/* Extrude dimension input */}
+      {mode === "extrude" && showExtrudeDimensionInput && (
+        <DimensionInput
+          visible={showExtrudeDimensionInput}
+          position={extrudeDimensionPosition}
+          label="Extrusion Depth"
+          initialValue={extrusionDepth > 0 ? extrusionDepth : 1}
+          onSubmit={handleExtrudeDimensionSubmit}
+          onCancel={handleExtrudeDimensionCancel}
+        />
+      )}
 
       {/* Sketch context menu for right-click constraints */}
       {mode === "sketch" && (
@@ -771,7 +856,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         // Cache element lookup to avoid repeated O(n) searches
         const selectedElement = elements.find((el) => el.nodeId === selectedObjectRef.current);
         return (
-          <div className="absolute bottom-0 right-0 p-4 bg-gray-800 bg-opacity-75 rounded-tl-lg text-white">
+          <div className="absolute bottom-0 right-0 p-4 bg-gray-800 bg-opacity-75 rounded-tl-lg text-white" style={{ right: featureTree.length > 0 ? "224px" : "0" }}>
             <h3 className="font-bold">Element Info</h3>
             <p>ID: {selectedObjectRef.current}</p>
             {selectedElement && (
@@ -799,6 +884,18 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
           </div>
         );
       })()}
+
+      {/* Feature Tree Sidebar */}
+      <div className="absolute top-0 right-0 w-56 h-full bg-gray-800 bg-opacity-90 border-l border-gray-700 z-10 overflow-auto">
+        <div className="p-3 border-b border-gray-700">
+          <h2 className="text-white font-bold text-sm">Feature Tree</h2>
+        </div>
+        <FeatureTree
+          nodes={featureTree}
+          onToggleVisibility={toggleNodeVisibility}
+          onToggleExpanded={toggleNodeExpanded}
+        />
+      </div>
     </div>
   );
 };

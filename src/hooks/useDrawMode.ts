@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { ShapeType, useCadVisualizer } from "../contexts/VisualizerContext";
+import { DRAW } from "../theme";
 
 interface UseDrawModeResult {
   handleDrawMode: (event: MouseEvent) => void;
@@ -89,9 +90,9 @@ export function useDrawMode(): UseDrawModeResult {
 
       const start = startPointRef.current;
       const material = new THREE.MeshBasicMaterial({
-        color: 0x0088ff,
+        color: DRAW.preview,
         transparent: true,
-        opacity: 0.5,
+        opacity: DRAW.previewOpacity,
         side: THREE.DoubleSide,
       });
 

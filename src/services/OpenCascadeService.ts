@@ -4,6 +4,7 @@ import type {
   TopoDS_Shape,
   TopoDS_Wire,
   TopoDS_Edge,
+  TopoDS_Face,
 } from "opencascade.js";
 import { Brep, CompoundBrep, Edge, Face, Vertex } from "../geometry";
 import * as THREE from "three";
@@ -339,8 +340,12 @@ export class OpenCascadeService {
     });
   }
 
-  // converts OC shape back to brep, centers at origin
-  async ocShapeToBRep(shape: TopoDS_Shape): Promise<Brep> {
+  /**
+   * Convert OpenCascade shape back to Brep.
+   * @param shape - The OpenCascade shape to convert
+   * @param centerAtOrigin - If true, centers the result at origin (default: true for backward compatibility)
+   */
+  async ocShapeToBRep(shape: TopoDS_Shape, centerAtOrigin: boolean = true): Promise<Brep> {
     const oc = await this.getOC();
 
     const vertexMap = new Map<string, Vertex>();
@@ -466,18 +471,21 @@ export class OpenCascadeService {
       }
 
       const resultBrep = new Brep(allVertices, allEdges, faces);
-      const bounds = this.calculateBrepBounds(resultBrep);
-      const center = new THREE.Vector3(
-        (bounds.minX + bounds.maxX) / 2,
-        (bounds.minY + bounds.maxY) / 2,
-        (bounds.minZ + bounds.maxZ) / 2,
-      );
 
-      // recenter to origin
-      const origin = new THREE.Vector3(0, 0, 0);
-      const centeredBrep = transformBrepVertices(resultBrep, center, origin);
+      if (centerAtOrigin) {
+        const bounds = this.calculateBrepBounds(resultBrep);
+        const center = new THREE.Vector3(
+          (bounds.minX + bounds.maxX) / 2,
+          (bounds.minY + bounds.maxY) / 2,
+          (bounds.minZ + bounds.maxZ) / 2,
+        );
 
-      return centeredBrep;
+        // recenter to origin
+        const origin = new THREE.Vector3(0, 0, 0);
+        return transformBrepVertices(resultBrep, center, origin);
+      }
+
+      return resultBrep;
     } catch (error) {
       console.error("Error converting OpenCascade shape to BRep:", error);
       throw error;
@@ -684,6 +692,382 @@ export class OpenCascadeService {
       console.error("Boolean difference failed:", error);
       throw error;
     }
+  }
+
+  /**
+   * Extrude a face/shell into a solid using BRepPrimAPI_MakePrism
+   * @param shape - The shape to extrude (should contain at least one face)
+   * @param depth - Extrusion depth (absolute value used)
+   * @param direction - Extrusion direction: 1 for +Z, -1 for -Z (default: 1)
+   * @returns The extruded solid shape (not centered - stays at extrusion position)
+   */
+  async extrudeShape(
+    shape: TopoDS_Shape,
+    depth: number,
+    direction: number = 1,
+  ): Promise<TopoDS_Shape> {
+    const oc = await this.getOC();
+
+    try {
+      const progressRange = new oc.Message_ProgressRange_1();
+
+      // Collect all faces from the shape
+      const faces: any[] = [];
+      const faceExplorer = new oc.TopExp_Explorer_2(
+        shape,
+        oc.TopAbs_ShapeEnum.TopAbs_FACE,
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE,
+      );
+
+      while (faceExplorer.More()) {
+        faces.push(oc.TopoDS.Face_1(faceExplorer.Current()));
+        faceExplorer.Next();
+      }
+      faceExplorer.delete();
+
+      if (faces.length === 0) {
+        progressRange.delete();
+        throw new Error("No face found in shape for extrusion");
+      }
+
+      console.log(`Extruding ${faces.length} faces`);
+
+      // Create extrusion vector in Z direction
+      const extrusionVec = new oc.gp_Vec_4(0, 0, direction * Math.abs(depth));
+
+      // If there's only one face, extrude it directly
+      // If there are multiple faces, we need to create a shell/compound and extrude that
+      let baseShape: any;
+
+      if (faces.length === 1) {
+        baseShape = faces[0];
+      } else {
+        // Sew all faces together into a shell
+        const sewing = new oc.BRepBuilderAPI_Sewing(1e-6, true, true, true, false);
+        for (const face of faces) {
+          sewing.Add(face);
+        }
+        sewing.Perform(progressRange);
+        baseShape = sewing.SewedShape();
+      }
+
+      // Create the prism using BRepPrimAPI_MakePrism
+      const prism = new oc.BRepPrimAPI_MakePrism_1(
+        baseShape,
+        extrusionVec,
+        false, // Don't copy the base shape
+        true,  // Canonize surfaces
+      );
+
+      prism.Build(progressRange);
+
+      if (!prism.IsDone()) {
+        extrusionVec.delete();
+        progressRange.delete();
+        throw new Error("Prism creation failed");
+      }
+
+      const result = prism.Shape();
+
+      // Fix and orient the solid (no centering - keep at extrusion position)
+      const fixer = new oc.ShapeFix_Shape_2(result);
+      fixer.SetPrecision(1e-9);
+      fixer.Perform(progressRange);
+
+      try {
+        oc.BRepLib.OrientClosedSolid(result);
+      } catch (e) {
+        // May not be orientable, continue anyway
+      }
+
+      // Clean up
+      extrusionVec.delete();
+      progressRange.delete();
+
+      return fixer.Shape();
+    } catch (error) {
+      console.error("Failed to extrude shape:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Build a clean planar face from a tessellated BRep's outer boundary.
+   *
+   * When BReps are stored, they're tessellated into triangles for rendering.
+   * This method uses OpenCascade's ShapeAnalysis_FreeBounds to properly extract
+   * the outer boundary and create a single clean planar face for extrusion.
+   *
+   * @param brep - A flat (2D) tessellated BRep
+   * @returns A clean TopoDS_Face, or null if failed
+   */
+  async buildPlanarFaceFromBoundary(brep: Brep): Promise<TopoDS_Shape | null> {
+    const oc = await this.getOC();
+
+    try {
+      // First, convert the BRep to an OC shape (shell/compound of triangles)
+      const shape = await this.brepToOCShape(brep);
+
+      if (shape.IsNull()) {
+        console.warn("[OpenCascadeService] BRep conversion produced null shape");
+        return null;
+      }
+
+      // Use ShapeAnalysis_FreeBounds to find the outer boundary
+      // This properly identifies edges that are not shared (free bounds)
+      const tolerance = 1e-5;
+
+      // Check if ShapeAnalysis_FreeBounds is available
+      if (!oc.ShapeAnalysis_FreeBounds_2) {
+        console.warn("[OpenCascadeService] ShapeAnalysis_FreeBounds not available, using fallback");
+        return this.buildPlanarFaceFromBoundaryFallback(brep);
+      }
+
+      const analyzer = new oc.ShapeAnalysis_FreeBounds_2(
+        shape,
+        tolerance,
+        false, // splitclosed - don't split closed wires
+        false  // splitopen - don't split open wires
+      );
+
+      const closedWires = analyzer.GetClosedWires();
+
+      if (closedWires.IsNull()) {
+        console.warn("[OpenCascadeService] No closed wires found");
+        analyzer.delete();
+        return null;
+      }
+
+      // Find the largest closed wire (the outer boundary)
+      let outerWire: TopoDS_Wire | null = null;
+      let largestArea = 0;
+
+      const wireExplorer = new oc.TopExp_Explorer_2(
+        closedWires,
+        oc.TopAbs_ShapeEnum.TopAbs_WIRE,
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+      );
+
+      while (wireExplorer.More()) {
+        const currentWire = oc.TopoDS.Wire_1(wireExplorer.Current());
+
+        // Calculate area to find the largest (outer) wire
+        try {
+          const tempFaceBuilder = new oc.BRepBuilderAPI_MakeFace_15(currentWire, true);
+          if (tempFaceBuilder.IsDone()) {
+            const tempFace = tempFaceBuilder.Face();
+            const props = new oc.GProp_GProps_1();
+            oc.BRepGProp.SurfaceProperties_1(tempFace, props, 1e-7, false as any);
+            const area = Math.abs(props.Mass());
+
+            if (area > largestArea) {
+              largestArea = area;
+              outerWire = currentWire;
+            }
+
+            props.delete();
+            tempFaceBuilder.delete();
+          }
+        } catch {
+          // If area calculation fails, just use first closed wire
+          if (!outerWire) {
+            outerWire = currentWire;
+          }
+        }
+
+        wireExplorer.Next();
+      }
+
+      wireExplorer.delete();
+      analyzer.delete();
+
+      if (!outerWire) {
+        console.warn("[OpenCascadeService] Could not find outer boundary wire");
+        return null;
+      }
+
+      console.log(`[OpenCascadeService] Found outer boundary wire with area ~${largestArea.toFixed(4)}`);
+
+      // Create a clean planar face from the outer wire
+      const faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(outerWire, true);
+
+      if (!faceBuilder.IsDone()) {
+        console.warn("[OpenCascadeService] Failed to create face from boundary wire");
+        return null;
+      }
+
+      console.log("[OpenCascadeService] Successfully built clean planar face from boundary");
+      return faceBuilder.Face();
+    } catch (error) {
+      console.error("[OpenCascadeService] Failed to build planar face from boundary:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Fallback method for building planar face when ShapeAnalysis_FreeBounds is unavailable.
+   * Uses manual edge counting approach.
+   */
+  private async buildPlanarFaceFromBoundaryFallback(brep: Brep): Promise<TopoDS_Shape | null> {
+    const oc = await this.getOC();
+
+    try {
+      // Find boundary edges: edges that appear in only one face (not shared)
+      const edgeCount = new Map<string, { edge: Edge; count: number }>();
+
+      for (const face of brep.faces) {
+        const verts = face.vertices;
+        for (let i = 0; i < verts.length; i++) {
+          const v1 = verts[i];
+          const v2 = verts[(i + 1) % verts.length];
+
+          const key = this.createEdgeKeyFromVertices(v1, v2);
+
+          if (edgeCount.has(key)) {
+            edgeCount.get(key)!.count++;
+          } else {
+            edgeCount.set(key, { edge: new Edge(v1, v2), count: 1 });
+          }
+        }
+      }
+
+      // Boundary edges appear exactly once
+      const boundaryEdges: Edge[] = [];
+      for (const [, data] of edgeCount) {
+        if (data.count === 1) {
+          boundaryEdges.push(data.edge);
+        }
+      }
+
+      if (boundaryEdges.length < 3) {
+        console.warn("[OpenCascadeService] Not enough boundary edges found");
+        return null;
+      }
+
+      console.log(`[OpenCascadeService] (Fallback) Found ${boundaryEdges.length} boundary edges`);
+
+      // Sort boundary edges to form a continuous chain
+      const sortedVertices = this.sortBoundaryEdgesToChain(boundaryEdges);
+
+      if (sortedVertices.length < 3) {
+        console.warn("[OpenCascadeService] Could not form closed boundary chain");
+        return null;
+      }
+
+      // Create OpenCascade wire from boundary vertices
+      const wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
+
+      for (let i = 0; i < sortedVertices.length; i++) {
+        const v1 = sortedVertices[i];
+        const v2 = sortedVertices[(i + 1) % sortedVertices.length];
+
+        const p1 = new oc.gp_Pnt_3(v1.x, v1.y, v1.z);
+        const p2 = new oc.gp_Pnt_3(v2.x, v2.y, v2.z);
+
+        const edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_3(p1, p2);
+        if (edgeBuilder.IsDone()) {
+          wireBuilder.Add_1(edgeBuilder.Edge());
+        }
+
+        p1.delete();
+        p2.delete();
+      }
+
+      if (!wireBuilder.IsDone()) {
+        console.warn("[OpenCascadeService] Failed to build wire from boundary");
+        return null;
+      }
+
+      const wire = wireBuilder.Wire();
+
+      if (!wire.Closed_1()) {
+        console.warn("[OpenCascadeService] Boundary wire is not closed");
+        return null;
+      }
+
+      const faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
+
+      if (!faceBuilder.IsDone()) {
+        console.warn("[OpenCascadeService] Failed to create face from boundary wire");
+        return null;
+      }
+
+      console.log("[OpenCascadeService] (Fallback) Successfully built clean planar face from boundary");
+      return faceBuilder.Face();
+    } catch (error) {
+      console.error("[OpenCascadeService] Fallback failed:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Create a canonical edge key from two vertices (for deduplication).
+   */
+  private createEdgeKeyFromVertices(v1: Vertex, v2: Vertex): string {
+    const precision = 1e-6;
+    const x1 = Math.round(v1.x / precision) * precision;
+    const y1 = Math.round(v1.y / precision) * precision;
+    const z1 = Math.round(v1.z / precision) * precision;
+    const x2 = Math.round(v2.x / precision) * precision;
+    const y2 = Math.round(v2.y / precision) * precision;
+    const z2 = Math.round(v2.z / precision) * precision;
+
+    if (x1 < x2 || (x1 === x2 && y1 < y2) || (x1 === x2 && y1 === y2 && z1 < z2)) {
+      return `${x1},${y1},${z1}-${x2},${y2},${z2}`;
+    }
+    return `${x2},${y2},${z2}-${x1},${y1},${z1}`;
+  }
+
+  /**
+   * Sort boundary edges to form a continuous chain of vertices.
+   */
+  private sortBoundaryEdgesToChain(edges: Edge[]): Vertex[] {
+    if (edges.length === 0) return [];
+
+    const precision = 1e-4;
+    const vertexKey = (v: Vertex) =>
+      `${Math.round(v.x / precision)},${Math.round(v.y / precision)},${Math.round(v.z / precision)}`;
+
+    const adjacency = new Map<string, Vertex[]>();
+
+    for (const edge of edges) {
+      const k1 = vertexKey(edge.start);
+      const k2 = vertexKey(edge.end);
+
+      if (!adjacency.has(k1)) adjacency.set(k1, []);
+      if (!adjacency.has(k2)) adjacency.set(k2, []);
+
+      adjacency.get(k1)!.push(edge.end);
+      adjacency.get(k2)!.push(edge.start);
+    }
+
+    const result: Vertex[] = [];
+    const visited = new Set<string>();
+
+    let current = edges[0].start;
+    result.push(current);
+    visited.add(vertexKey(current));
+
+    while (result.length < edges.length) {
+      const key = vertexKey(current);
+      const neighbors = adjacency.get(key) || [];
+
+      let found = false;
+      for (const neighbor of neighbors) {
+        const nKey = vertexKey(neighbor);
+        if (!visited.has(nKey)) {
+          result.push(neighbor);
+          visited.add(nKey);
+          current = neighbor;
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) break;
+    }
+
+    return result;
   }
 
   async booleanIntersection(
@@ -943,5 +1327,222 @@ export class OpenCascadeService {
     }
 
     return new Brep(vertices, brepEdges, []);
+  }
+
+  /**
+   * Detect all closed planar regions from a set of edges using BOPAlgo_Tools.
+   * This is the correct OpenCascade workflow for profile detection:
+   * 1. EdgesToWires - automatically computes intersections and splits edges
+   * 2. WiresToFaces - finds all closed planar regions from the wires
+   *
+   * For example, a rectangle + overlapping circle returns 3 faces:
+   * - The crescent (outer part of circle outside rectangle)
+   * - The lens shape (inner part of circle inside rectangle)
+   * - The rectangle with the "bite" taken out
+   *
+   * @param edges - Array of edges (may intersect/overlap)
+   * @returns Array of faces representing all closed regions
+   */
+  async detectProfileRegions(edges: TopoDS_Edge[]): Promise<TopoDS_Face[]> {
+    const oc = await this.getOC();
+
+    if (edges.length < 1) {
+      console.warn("[OpenCascadeService] Need at least 1 edge to detect profiles");
+      return [];
+    }
+
+    try {
+      // Build compound of all edges
+      const builder = new oc.BRep_Builder();
+      const edgeCompound = new oc.TopoDS_Compound();
+      builder.MakeCompound(edgeCompound);
+
+      for (const edge of edges) {
+        builder.Add(edgeCompound, edge);
+      }
+
+      // Step 1: Convert edges to wires (automatically splits at intersections)
+      // Create output compound for wires
+      const wireCompound = new oc.TopoDS_Compound();
+      builder.MakeCompound(wireCompound);
+
+      const theShared = false;  // edges are NOT pre-shared, need intersection detection
+      const angularTolerance = 1e-8;
+
+      console.log(`[OpenCascadeService] Running EdgesToWires with ${edges.length} edges...`);
+
+      const wireResult = oc.BOPAlgo_Tools.EdgesToWires(
+        edgeCompound,
+        wireCompound,
+        theShared,
+        angularTolerance
+      );
+
+      if (wireResult !== 0) {
+        console.warn(`[OpenCascadeService] EdgesToWires failed with code ${wireResult}`);
+        return [];
+      }
+
+      // Count wires created
+      let wireCount = 0;
+      const wireExplorer = new oc.TopExp_Explorer_2(
+        wireCompound,
+        oc.TopAbs_ShapeEnum.TopAbs_WIRE,
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+      );
+      while (wireExplorer.More()) {
+        wireCount++;
+        wireExplorer.Next();
+      }
+      wireExplorer.delete();
+
+      console.log(`[OpenCascadeService] EdgesToWires created ${wireCount} wires`);
+
+      // Step 2: Convert wires to faces (finds all closed regions)
+      const faceCompound = new oc.TopoDS_Compound();
+      builder.MakeCompound(faceCompound);
+
+      const success = oc.BOPAlgo_Tools.WiresToFaces(
+        wireCompound,
+        faceCompound,
+        angularTolerance
+      );
+
+      if (!success) {
+        console.warn("[OpenCascadeService] WiresToFaces returned false");
+        return [];
+      }
+
+      // Extract faces from result compound
+      const faces: TopoDS_Face[] = [];
+      const faceExplorer = new oc.TopExp_Explorer_2(
+        faceCompound,
+        oc.TopAbs_ShapeEnum.TopAbs_FACE,
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+      );
+
+      while (faceExplorer.More()) {
+        faces.push(oc.TopoDS.Face_1(faceExplorer.Current()));
+        faceExplorer.Next();
+      }
+
+      faceExplorer.delete();
+      console.log(`[OpenCascadeService] WiresToFaces found ${faces.length} regions`);
+
+      return faces;
+    } catch (error) {
+      console.error("[OpenCascadeService] Profile region detection failed:", error);
+      return [];
+    }
+  }
+
+  /**
+   * @deprecated Use detectProfileRegions instead
+   */
+  async splitEdgesAtIntersections(edges: TopoDS_Edge[]): Promise<TopoDS_Edge[]> {
+    console.warn("[OpenCascadeService] splitEdgesAtIntersections is deprecated, use detectProfileRegions");
+    return edges;
+  }
+
+  /**
+   * @deprecated Use detectProfileRegions instead
+   */
+  async buildFacesFromEdges(edges: TopoDS_Edge[], plane?: TopoDS_Face): Promise<TopoDS_Face[]> {
+    console.warn("[OpenCascadeService] buildFacesFromEdges is deprecated, use detectProfileRegions");
+    return this.detectProfileRegions(edges);
+  }
+
+  /**
+   * Convert a TopoDS_Face to a Brep, with optional centering.
+   * Does NOT recenter by default (keeps absolute coordinates).
+   */
+  async faceToBrep(face: TopoDS_Face, center: boolean = false): Promise<Brep> {
+    const oc = await this.getOC();
+
+    const vertexMap = new Map<string, Vertex>();
+    const edgeMap = new Map<string, Edge>();
+    const faces: Face[] = [];
+    const allVertices: Vertex[] = [];
+    const allEdges: Edge[] = [];
+
+    try {
+      // Mesh the face
+      new oc.BRepMesh_IncrementalMesh_2(face, 0.01, false, 0.1, true);
+
+      // Get triangulation
+      const location = new oc.TopLoc_Location_1();
+      const triangulation = oc.BRep_Tool.Triangulation(face, location, 0);
+
+      if (triangulation.IsNull()) {
+        console.warn("[OpenCascadeService] No triangulation for face");
+        return new Brep([], [], []);
+      }
+
+      const transformation = location.Transformation();
+      const nbTriangles = triangulation.get().NbTriangles();
+      const isReversed = face.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED;
+
+      for (let i = 1; i <= nbTriangles; i++) {
+        const triangle = triangulation.get().Triangle(i);
+
+        const n1 = triangle.Value(1);
+        const n2 = triangle.Value(2);
+        const n3 = triangle.Value(3);
+
+        const node1 = triangulation.get().Node(n1);
+        const node2 = triangulation.get().Node(n2);
+        const node3 = triangulation.get().Node(n3);
+
+        const p1 = node1.Transformed(transformation);
+        const p2 = node2.Transformed(transformation);
+        const p3 = node3.Transformed(transformation);
+
+        const v1 = this.getOrCreateVertex(vertexMap, p1.X(), p1.Y(), p1.Z(), allVertices);
+        const v2 = this.getOrCreateVertex(vertexMap, p2.X(), p2.Y(), p2.Z(), allVertices);
+        const v3 = this.getOrCreateVertex(vertexMap, p3.X(), p3.Y(), p3.Z(), allVertices);
+
+        if (isReversed) {
+          faces.push(new Face([v1, v3, v2]));
+        } else {
+          faces.push(new Face([v1, v2, v3]));
+        }
+      }
+
+      const resultBrep = new Brep(allVertices, allEdges, faces);
+
+      if (center) {
+        const bounds = this.calculateBrepBounds(resultBrep);
+        const centerPos = new THREE.Vector3(
+          (bounds.minX + bounds.maxX) / 2,
+          (bounds.minY + bounds.maxY) / 2,
+          (bounds.minZ + bounds.maxZ) / 2
+        );
+        const origin = new THREE.Vector3(0, 0, 0);
+        return transformBrepVertices(resultBrep, centerPos, origin);
+      }
+
+      return resultBrep;
+    } catch (error) {
+      console.error("[OpenCascadeService] Face to BRep conversion failed:", error);
+      return new Brep([], [], []);
+    }
+  }
+
+  /**
+   * Calculate the signed area of a face.
+   * Positive area = counterclockwise orientation (interior face).
+   */
+  async calculateFaceArea(face: TopoDS_Face): Promise<number> {
+    const oc = await this.getOC();
+
+    try {
+      const props = new oc.GProp_GProps_1();
+      // Type assertion needed - OC type system expects boolean but uses number
+      oc.BRepGProp.SurfaceProperties_1(face, props, 1e-7, false as any);
+      return props.Mass();
+    } catch (error) {
+      console.error("[OpenCascadeService] Area calculation failed:", error);
+      return 0;
+    }
   }
 }

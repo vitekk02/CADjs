@@ -12,6 +12,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
 import { Brep, CompoundBrep, Edge, Face, Vertex } from "../geometry";
 import { SceneElement } from "../scene-operations/types";
 import { useCadCore } from "./CoreContext";
+import { SCENE, LIGHTING, BODY, SELECTION, HELPERS, DRAW } from "../theme";
 
 export type ShapeType = "rectangle" | "triangle" | "circle" | "custom";
 
@@ -95,7 +96,20 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
   const initSceneObjects = useCallback(() => {
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x808080);
+
+    // Gradient background (top-to-bottom light gray, like Fusion 360)
+    const canvas = document.createElement("canvas");
+    canvas.width = 2;
+    canvas.height = 256;
+    const ctx = canvas.getContext("2d")!;
+    const gradient = ctx.createLinearGradient(0, 0, 0, 256);
+    gradient.addColorStop(0, `#${SCENE.backgroundTop.toString(16).padStart(6, "0")}`);
+    gradient.addColorStop(1, `#${SCENE.backgroundBottom.toString(16).padStart(6, "0")}`);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 2, 256);
+    const bgTexture = new THREE.CanvasTexture(canvas);
+    bgTexture.needsUpdate = true;
+    scene.background = bgTexture;
 
     const camera = new THREE.PerspectiveCamera(
       75,
@@ -108,11 +122,36 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    // Ambient light (base illumination)
+    const ambientLight = new THREE.AmbientLight(
+      LIGHTING.ambient.color,
+      LIGHTING.ambient.intensity,
+    );
     scene.add(ambientLight);
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(10, 10, 10);
-    scene.add(directionalLight);
+
+    // Hemisphere light (sky/ground soft fill)
+    const hemisphereLight = new THREE.HemisphereLight(
+      LIGHTING.hemisphereTop,
+      LIGHTING.hemisphereBottom,
+      LIGHTING.hemisphereIntensity,
+    );
+    scene.add(hemisphereLight);
+
+    // Key directional light (upper-left-front)
+    const keyLight = new THREE.DirectionalLight(
+      LIGHTING.keyLight.color,
+      LIGHTING.keyLight.intensity,
+    );
+    keyLight.position.set(...LIGHTING.keyLight.position);
+    scene.add(keyLight);
+
+    // Fill directional light (opposite side, softer)
+    const fillLight = new THREE.DirectionalLight(
+      LIGHTING.fillLight.color,
+      LIGHTING.fillLight.intensity,
+    );
+    fillLight.position.set(...LIGHTING.fillLight.position);
+    scene.add(fillLight);
 
     sceneRef.current = scene;
     cameraRef.current = camera;
@@ -255,8 +294,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
       const geometry = new THREE.ShapeGeometry(shape);
       const material = new THREE.MeshStandardMaterial({
-        color: 0x0000ff,
+        color: BODY.default,
         side: THREE.DoubleSide,
+        roughness: 0.6,
+        metalness: 0.2,
       });
 
       const mesh = new THREE.Mesh(geometry, material);
@@ -326,7 +367,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         const lineGeometry = new THREE.BufferGeometry().setFromPoints(
           previewPoints,
         );
-        const lineMaterial = new THREE.LineBasicMaterial({ color: 0x0088ff });
+        const lineMaterial = new THREE.LineBasicMaterial({ color: DRAW.preview });
         const line = new THREE.Line(
           lineGeometry,
           lineMaterial,
@@ -345,10 +386,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
       const geometry = new THREE.ShapeGeometry(shape);
       const material = new THREE.MeshBasicMaterial({
-        color: 0x0088ff,
+        color: DRAW.preview,
         side: THREE.DoubleSide,
         transparent: true,
-        opacity: 0.5,
+        opacity: DRAW.previewOpacity,
       });
 
       const mesh = new THREE.Mesh(geometry, material);
@@ -408,8 +449,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       // Create visual mesh (PlaneGeometry is already centered at origin)
       const geometry = new THREE.PlaneGeometry(width, height);
       const material = new THREE.MeshStandardMaterial({
-        color: 0x0000ff,
+        color: BODY.default,
         side: THREE.DoubleSide,
+        roughness: 0.6,
+        metalness: 0.2,
       });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.copy(position);
@@ -469,8 +512,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       geometry.setIndex([0, 1, 2]);
 
       const material = new THREE.MeshStandardMaterial({
-        color: 0x0000ff,
+        color: BODY.default,
         side: THREE.DoubleSide,
+        roughness: 0.6,
+        metalness: 0.2,
       });
 
       const mesh = new THREE.Mesh(geometry, material);
@@ -507,8 +552,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       // Create visual mesh (CircleGeometry is already centered at origin)
       const geometry = new THREE.CircleGeometry(radius, segments);
       const material = new THREE.MeshStandardMaterial({
-        color: 0x0000ff,
+        color: BODY.default,
         side: THREE.DoubleSide,
+        roughness: 0.6,
+        metalness: 0.2,
       });
 
       const mesh = new THREE.Mesh(geometry, material);
@@ -613,7 +660,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     );
 
     const edgeMaterial = new THREE.LineBasicMaterial({
-      color: 0x00ffff,
+      color: HELPERS.edgeColor,
       linewidth: 2,
       depthTest: false,
     });
@@ -672,7 +719,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     brepToVisualize.vertices.forEach((vertex) => {
       const sphereGeometry = new THREE.SphereGeometry(0.05, 16, 16);
       const sphereMaterial = new THREE.MeshBasicMaterial({
-        color: 0xff0000,
+        color: HELPERS.vertexColor,
         transparent: false,
         depthTest: false,
       });
@@ -698,7 +745,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
     // Set the color of the main mesh
     if (obj instanceof THREE.Mesh) {
-      (obj.material as THREE.MeshStandardMaterial).color.set(0xff9900);
+      (obj.material as THREE.MeshStandardMaterial).color.set(SELECTION.hover);
       (obj.material as THREE.MeshStandardMaterial).needsUpdate = true;
     }
 
@@ -709,8 +756,8 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       ) {
         child.visible = true;
       }
-      if (child instanceof THREE.Mesh) {
-        (child.material as THREE.MeshStandardMaterial).color.set(0xff9900);
+      if (child instanceof THREE.Mesh && !child.userData.isHelper) {
+        (child.material as THREE.MeshStandardMaterial).color.set(SELECTION.hover);
         (child.material as THREE.MeshStandardMaterial).needsUpdate = true;
       }
     });
@@ -723,7 +770,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
 
     // Reset the color
     const element = elements.find((el) => el.nodeId === nodeId);
-    const color = element?.selected ? 0xff0000 : 0x0000ff;
+    const color = element?.selected ? SELECTION.selected : BODY.default;
 
     // Hide helpers unless element is selected
     obj.traverse((child) => {
@@ -733,7 +780,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       ) {
         child.visible = element?.selected || false;
       }
-      if (child instanceof THREE.Mesh) {
+      if (child instanceof THREE.Mesh && !child.userData.isHelper) {
         (child.material as THREE.MeshStandardMaterial).color.set(color);
         (child.material as THREE.MeshStandardMaterial).needsUpdate = true;
       }
@@ -826,14 +873,14 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       const groundGroup = new THREE.Group();
       groundGroup.userData.isGroundPlane = true;
 
-      // Create grid
+      // Create grid (subtle light gray lines like Fusion 360)
       const gridSize = 20;
       const gridDivisions = 20;
       const gridHelper = new THREE.GridHelper(
         gridSize,
         gridDivisions,
-        0x888888,
-        0x444444,
+        SCENE.gridMajor,
+        SCENE.gridMinor,
       );
       gridHelper.rotation.x = Math.PI / 2; // Rotate to XY plane
       gridHelper.position.z = -0.02; // Slightly below objects
@@ -841,9 +888,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       // Create plane
       const planeGeometry = new THREE.PlaneGeometry(gridSize, gridSize);
       const planeMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
+        color: SCENE.groundPlane,
         transparent: true,
-        opacity: 0.2,
+        opacity: SCENE.groundPlaneOpacity,
         side: THREE.DoubleSide,
       });
       const plane = new THREE.Mesh(planeGeometry, planeMaterial);

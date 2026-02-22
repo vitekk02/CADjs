@@ -1,15 +1,17 @@
 import * as THREE from "three";
 import {
   createMeshFromBrep,
+  findChildMesh,
   getAllFaces,
   getObject,
   getAllObjects,
 } from "../../src/scene-operations/mesh-operations";
 import { Brep, CompoundBrep, Face, Vertex } from "../../src/geometry";
+import { BODY } from "../../src/theme";
 
 describe("mesh-operations", () => {
   describe("createMeshFromBrep", () => {
-    test("creates mesh from valid brep with faces", () => {
+    test("creates group with mesh and edge overlay from valid brep", () => {
       // Create a simple Brep with one face
       const v1 = new Vertex(0, 0, 0);
       const v2 = new Vertex(1, 0, 0);
@@ -18,24 +20,28 @@ describe("mesh-operations", () => {
       const face = new Face([v1, v2, v3, v4]);
       const brep = new Brep([v1, v2, v3, v4], [], [face]);
 
-      const mesh = createMeshFromBrep(brep);
+      const group = createMeshFromBrep(brep);
 
-      expect(mesh).toBeInstanceOf(THREE.Mesh);
-      expect(mesh.material).toBeInstanceOf(THREE.MeshStandardMaterial);
-      expect((mesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(
-        0x0000ff
+      expect(group).toBeInstanceOf(THREE.Group);
+      const mesh = findChildMesh(group);
+      expect(mesh).not.toBeNull();
+      expect(mesh!.material).toBeInstanceOf(THREE.MeshStandardMaterial);
+      expect((mesh!.material as THREE.MeshStandardMaterial).color.getHex()).toBe(
+        BODY.default
       );
     });
 
-    test("creates error mesh when brep has no faces", () => {
+    test("creates error mesh group when brep has no faces", () => {
       // Create an empty brep
       const brep = new Brep([], [], []);
 
-      const mesh = createMeshFromBrep(brep);
+      const group = createMeshFromBrep(brep);
 
-      expect(mesh).toBeInstanceOf(THREE.Mesh);
-      expect(mesh.geometry).toBeInstanceOf(THREE.BoxGeometry);
-      expect((mesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(
+      expect(group).toBeInstanceOf(THREE.Group);
+      const mesh = findChildMesh(group);
+      expect(mesh).not.toBeNull();
+      expect(mesh!.geometry).toBeInstanceOf(THREE.BoxGeometry);
+      expect((mesh!.material as THREE.MeshStandardMaterial).color.getHex()).toBe(
         0xff0000
       );
     });

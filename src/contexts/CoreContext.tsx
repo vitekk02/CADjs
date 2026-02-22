@@ -33,6 +33,7 @@ import {
   SketchPlane,
   SketchPrimitive,
   SketchConstraint,
+  FeatureNode,
 } from "../types/sketch-types";
 import {
   createSketch as createSketchOp,
@@ -65,8 +66,9 @@ export interface CadCoreContextType {
   updateElementRotation: (nodeId: string, rotation: THREE.Euler) => void;
   getObject: (nodeId: string) => THREE.Object3D | undefined;
   getAllObjects: () => Map<string, THREE.Object3D>;
-  createMeshFromBrep: (brep: Brep) => THREE.Mesh;
+  createMeshFromBrep: (brep: Brep) => THREE.Object3D;
   ungroupSelectedElement: () => void;
+  updateElementBrep: (nodeId: string, brep: Brep, newPosition?: THREE.Vector3) => void;
 
   // Sketch-related state and methods
   activeSketch: Sketch | null;
@@ -82,6 +84,11 @@ export interface CadCoreContextType {
   finishSketch: () => Promise<void>;
   cancelSketch: () => void;
   solveSketch: () => Promise<void>;
+
+  // Feature tree state and methods
+  featureTree: FeatureNode[];
+  toggleNodeVisibility: (nodeId: string) => void;
+  toggleNodeExpanded: (nodeId: string) => void;
 }
 
 export const CadCoreContext = createContext<CadCoreContextType | undefined>(
@@ -102,6 +109,9 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   const [activeSketch, setActiveSketch] = useState<Sketch | null>(null);
   const [sketches, setSketches] = useState<Sketch[]>([]);
   const [previousMode, setPreviousMode] = useState<SceneMode>("draw");
+
+  // Feature tree state
+  const [featureTree, setFeatureTree] = useState<FeatureNode[]>([]);
 
   // Ref to track solve operation version to prevent race conditions
   const solveVersionRef = useRef(0);
@@ -276,6 +286,50 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       );
     },
     [objectsMap]
+  );
+
+  const updateElementBrep = useCallback(
+    (nodeId: string, newBrep: Brep, newPosition?: THREE.Vector3) => {
+      // Get the existing element to preserve position and rotation
+      const existingElement = elements.find((el) => el.nodeId === nodeId);
+      if (!existingElement) {
+        console.warn(`Element ${nodeId} not found for brep update`);
+        return;
+      }
+
+      // Use new position if provided, otherwise keep existing
+      const position = newPosition || existingElement.position;
+
+      // Create new mesh from the updated BRep
+      const mesh = createMeshFromBrep(newBrep);
+      mesh.position.copy(position);
+      if (existingElement.rotation) {
+        mesh.rotation.copy(existingElement.rotation);
+      }
+      mesh.userData.nodeId = nodeId;
+
+      // Get old object and remove from scene if it exists
+      const oldObj = objectsMap.get(nodeId);
+      if (oldObj && oldObj.parent) {
+        const parent = oldObj.parent;
+        parent.remove(oldObj);
+        parent.add(mesh);
+      }
+
+      // Update objectsMap with new mesh
+      objectsMap.set(nodeId, mesh);
+
+      // Update the element state
+      setElements((prevElements) =>
+        prevElements.map((element) => {
+          if (element.nodeId === nodeId) {
+            return { ...element, brep: newBrep, position };
+          }
+          return element;
+        })
+      );
+    },
+    [elements, objectsMap]
   );
 
   const ungroupSelectedElementImpl = useCallback(() => {
@@ -553,22 +607,114 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     try {
       const solver = SketchSolverService.getInstance();
       const result = await solver.solve(activeSketch);
+      const finishedSketch = result.sketch;
 
       // Store the finished sketch
-      setSketches((prev) => [...prev, result.sketch]);
+      setSketches((prev) => [...prev, finishedSketch]);
 
-      // Convert sketch to BRep using the new conversion service
+      // Convert sketch to multiple profiles (Fusion 360-style)
       const sketchService = SketchToBrepService.getInstance();
-      const brep = await sketchService.convertSketchToBrep(result.sketch);
+      const conversionResult = await sketchService.convertSketchToProfiles(finishedSketch);
 
-      if (brep.vertices.length > 0 || brep.edges.length > 0 || brep.faces.length > 0) {
-        // BRep vertices are already in absolute canvas coordinates from the sketch
-        // Position should be (0,0,0) since geometry contains absolute coordinates
-        const position = new THREE.Vector3(0, 0, 0);
-        addElement(brep, position);
-        console.log("Added sketch as BRep element, vertices:", brep.vertices.length, "faces:", brep.faces.length);
+      if (conversionResult.success && conversionResult.profiles.length > 0) {
+        console.log(`Creating ${conversionResult.profiles.length} profile elements from sketch`);
+
+        // Create a sketch node for the feature tree
+        const sketchNode: FeatureNode = {
+          id: finishedSketch.id,
+          type: "sketch",
+          name: `Sketch ${sketches.length + 1}`,
+          visible: true,
+          expanded: true,
+          children: [],
+          sourceSketchId: finishedSketch.id,
+        };
+
+        // Add each profile as a separate element
+        // IMPORTANT: We need to track idCounter manually since React batches state updates
+        let currentIdCounter = idCounter;
+        const newElements: SceneElement[] = [...elements];
+
+        for (let i = 0; i < conversionResult.profiles.length; i++) {
+          const profile = conversionResult.profiles[i];
+
+          if (profile.brep.faces.length > 0) {
+            // Manually create nodeId and element to avoid stale state issues
+            currentIdCounter++;
+            const nodeId = `node_${currentIdCounter}`;
+
+            // Use the profile's center position (BRep is centered at origin, position is world coords)
+            const position = new THREE.Vector3(profile.center.x, profile.center.y, profile.center.z);
+
+            // Create mesh from brep
+            const mesh = createMeshFromBrep(profile.brep);
+            mesh.position.copy(position);
+            mesh.userData.nodeId = nodeId;
+
+            // Add to objectsMap
+            objectsMap.set(nodeId, mesh);
+
+            // Add to elements array
+            const newElement: SceneElement = {
+              brep: profile.brep,
+              nodeId,
+              position: position.clone(),
+              selected: false,
+            };
+            newElements.push(newElement);
+
+            console.log(`Added profile ${i + 1}: area=${profile.area.toFixed(4)}, nodeId=${nodeId}, position=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}), faces=${profile.brep.faces.length}`);
+
+            // Add profile node as child of sketch
+            const profileNode: FeatureNode = {
+              id: profile.id,
+              type: "profile",
+              name: `Profile ${i + 1} (area: ${profile.area.toFixed(2)})`,
+              visible: true,
+              sourceSketchId: finishedSketch.id,
+              elementId: nodeId,
+            };
+            sketchNode.children!.push(profileNode);
+          }
+        }
+
+        // Batch update state
+        setElements(newElements);
+        setIdCounter(currentIdCounter);
+
+        // Update feature tree
+        setFeatureTree((prev) => [...prev, sketchNode]);
       } else {
-        console.warn("Sketch produced empty BRep - no vertices, edges, or faces");
+        // Fallback: use old conversion method that unions everything
+        console.log("Multi-profile conversion failed, using fallback union method");
+        const brep = await sketchService.convertSketchToBrep(finishedSketch);
+
+        if (brep.vertices.length > 0 || brep.edges.length > 0 || brep.faces.length > 0) {
+          const position = new THREE.Vector3(0, 0, 0);
+          const nodeId = addElement(brep, position);
+          console.log("Added sketch as single BRep element, vertices:", brep.vertices.length, "faces:", brep.faces.length);
+
+          // Add to feature tree as single body
+          const sketchNode: FeatureNode = {
+            id: finishedSketch.id,
+            type: "sketch",
+            name: `Sketch ${sketches.length + 1}`,
+            visible: true,
+            expanded: true,
+            children: [{
+              id: `${finishedSketch.id}_body`,
+              type: "body",
+              name: "Body",
+              visible: true,
+              sourceSketchId: finishedSketch.id,
+              elementId: nodeId,
+            }],
+            sourceSketchId: finishedSketch.id,
+          };
+          setFeatureTree((prev) => [...prev, sketchNode]);
+        } else {
+          console.warn("Sketch produced empty BRep - no vertices, edges, or faces");
+        }
       }
 
       // Clear active sketch and return to previous mode
@@ -580,12 +726,72 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setActiveSketch(null);
       setMode(previousMode);
     }
-  }, [activeSketch, previousMode, addElement]);
+  }, [activeSketch, previousMode, addElement, sketches.length]);
 
   const cancelSketch = useCallback(() => {
     setActiveSketch(null);
     setMode(previousMode);
   }, [previousMode]);
+
+  // Feature tree methods
+  const toggleNodeVisibility = useCallback((nodeId: string) => {
+    // Helper to recursively update visibility
+    const updateNode = (nodes: FeatureNode[]): FeatureNode[] => {
+      return nodes.map((node) => {
+        if (node.id === nodeId) {
+          const newVisible = !node.visible;
+
+          // Toggle visibility of the Three.js object if this node has an elementId
+          if (node.elementId) {
+            const obj = objectsMap.get(node.elementId);
+            if (obj) {
+              obj.visible = newVisible;
+            }
+          }
+
+          // If this is a parent node (sketch), also toggle all children
+          if (node.children) {
+            const updatedChildren = node.children.map((child) => {
+              if (child.elementId) {
+                const obj = objectsMap.get(child.elementId);
+                if (obj) {
+                  obj.visible = newVisible;
+                }
+              }
+              return { ...child, visible: newVisible };
+            });
+            return { ...node, visible: newVisible, children: updatedChildren };
+          }
+
+          return { ...node, visible: newVisible };
+        }
+
+        // Recursively check children
+        if (node.children) {
+          return { ...node, children: updateNode(node.children) };
+        }
+        return node;
+      });
+    };
+
+    setFeatureTree((prev) => updateNode(prev));
+  }, [objectsMap]);
+
+  const toggleNodeExpanded = useCallback((nodeId: string) => {
+    const updateNode = (nodes: FeatureNode[]): FeatureNode[] => {
+      return nodes.map((node) => {
+        if (node.id === nodeId) {
+          return { ...node, expanded: !node.expanded };
+        }
+        if (node.children) {
+          return { ...node, children: updateNode(node.children) };
+        }
+        return node;
+      });
+    };
+
+    setFeatureTree((prev) => updateNode(prev));
+  }, []);
 
   return (
     <CadCoreContext.Provider
@@ -611,6 +817,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         getAllObjects: () => getAllObjects(objectsMap),
         createMeshFromBrep,
         ungroupSelectedElement: ungroupSelectedElementImpl,
+        updateElementBrep,
         // Sketch-related
         activeSketch,
         sketches,
@@ -625,6 +832,10 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         finishSketch,
         cancelSketch,
         solveSketch,
+        // Feature tree
+        featureTree,
+        toggleNodeVisibility,
+        toggleNodeExpanded,
       }}
     >
       {children}

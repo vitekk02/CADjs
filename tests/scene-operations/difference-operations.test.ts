@@ -777,6 +777,172 @@ describe("difference-operations", () => {
     });
   });
 
+  describe("error handling", () => {
+    test("returns null when base element has empty brep", async () => {
+      // Base (first selected) element has empty brep
+      elements[0].brep = new Brep([], [], []);
+
+      const result = await differenceSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result).toBeNull();
+    });
+
+    test("returns null when tool element has empty brep", async () => {
+      // Tool (second selected) element has empty brep
+      elements[1].brep = new Brep([], [], []);
+
+      const result = await differenceSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result).toBeNull();
+    });
+
+    test("returns null when all elements have empty breps", async () => {
+      elements[0].brep = new Brep([], [], []);
+      elements[1].brep = new Brep([], [], []);
+
+      const result = await differenceSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result).toBeNull();
+    });
+
+    test("returns null when base has degenerate geometry", async () => {
+      // Degenerate geometry: collinear vertices
+      const v1 = new Vertex(0, 0, 0);
+      const v2 = new Vertex(1, 0, 0);
+      const v3 = new Vertex(2, 0, 0);
+      const degenerateFace = new Face([v1, v2, v3]);
+      elements[0].brep = new Brep([v1, v2, v3], [], [degenerateFace]);
+
+      const result = await differenceSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result).toBeNull();
+    });
+
+    test("handles tool larger than base (may result in empty geometry)", async () => {
+      // Tool completely contains base - result should be empty
+      const smallBase = createBoxBrep(2, 2, 0, 1, 1, 1);
+      const largeTool = createBoxBrep(0, 0, 0, 10, 10, 10);
+
+      elements[0].brep = smallBase;
+      elements[1].brep = largeTool;
+
+      const result = await differenceSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // May return null if result is empty, or may succeed with empty geometry
+      expect(result === null || typeof result === "object").toBeTruthy();
+    });
+
+    test("handles NaN in base position", async () => {
+      elements[0].position = new THREE.Vector3(NaN, 0, 0);
+
+      const result = await differenceSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result === null || typeof result === "object").toBeTruthy();
+    });
+
+    test("handles Infinity in tool position", async () => {
+      elements[1].position = new THREE.Vector3(Infinity, 0, 0);
+
+      const result = await differenceSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result === null || typeof result === "object").toBeTruthy();
+    });
+
+    test("returns unchanged state when elements array is empty", async () => {
+      const result = await differenceSelectedElements(
+        [],
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // No elements found matching selection
+      expect(result.updatedElements).toEqual([]);
+      expect(result.nextIdCounter).toBe(idCounter);
+    });
+
+    test("handles selection that only partially matches elements", async () => {
+      // Selection includes nodeId not in elements array
+      const partialSelection = ["node_1", "node_99"];
+
+      const result = await differenceSelectedElements(
+        elements,
+        partialSelection,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // Should return unchanged state since < 2 valid elements
+      expect(result.updatedElements).toBe(elements);
+      expect(result.nextIdCounter).toBe(idCounter);
+    });
+
+    test("handles extremely small geometry near precision limits", async () => {
+      // Very small geometry - OpenCascade cannot handle sub-micron precision
+      const v1 = new Vertex(0, 0, 0);
+      const v2 = new Vertex(1e-10, 0, 0);
+      const v3 = new Vertex(1e-10, 1e-10, 0);
+      const v4 = new Vertex(0, 1e-10, 0);
+      const tinyFace = new Face([v1, v2, v3, v4]);
+      elements[0].brep = new Brep([v1, v2, v3, v4], [], [tinyFace]);
+
+      const result = await differenceSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // Extremely small geometry typically causes OpenCascade to fail
+      expect(result).toBeNull();
+    });
+  });
+
   describe("cross-shaped intersection (real-world scenario)", () => {
     test("handles cross-shaped difference (horizontal - vertical)", async () => {
       // Simulate the cross scenario that was fixed

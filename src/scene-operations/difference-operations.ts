@@ -156,23 +156,12 @@ export async function differenceSelectedElements(
       });
     });
 
-    const resultMesh = createMeshFromBrep(resultBrep);
-    resultMesh.position.set(0, 0, 0);
-
-    const wireframeMaterial = new THREE.MeshBasicMaterial({
-      color: 0x00ff00,
-      wireframe: true,
-    });
-    const wireframeMesh = new THREE.Mesh(
-      resultMesh.geometry.clone(),
-      wireframeMaterial,
-    );
-    wireframeMesh.position.set(0, 0, 0.01);
-    wireframeMesh.userData.isDebugWireframe = true;
+    const resultObj = createMeshFromBrep(resultBrep);
+    resultObj.position.set(0, 0, 0);
 
     const resultGroup = new THREE.Group();
     resultGroup.userData = { nodeId };
-    resultGroup.add(resultMesh);
+    resultGroup.add(resultObj);
 
     resultGroup.position.copy(worldCenter);
 

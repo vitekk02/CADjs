@@ -8,6 +8,7 @@ import {
   extrudeBRep,
   extrudeThreeJsObject,
 } from "../scene-operations/resize-operations";
+import { RESIZE } from "../theme";
 
 export function useResizeMode() {
   const { elements, getObject, updateElementPosition, objectsMap } =
@@ -48,7 +49,7 @@ export function useResizeMode() {
         handleSize,
         handleSize
       );
-      const handleMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+      const handleMaterial = new THREE.MeshBasicMaterial({ color: RESIZE.handle });
 
       const handlePositions = [
         {
@@ -368,14 +369,14 @@ export function useResizeMode() {
       } else if (axis === "z") {
         const isFlat = Math.abs(bbox.max.z - bbox.min.z) < 0.01;
         if (isFlat) {
-          // pink for flat objects
+          // distinct color for flat objects
           (handle as THREE.Mesh).material = new THREE.MeshBasicMaterial({
-            color: 0xff00ff,
+            color: RESIZE.previewWireframe,
           });
           handle.position.z = dir > 0 ? bbox.max.z + 0.1 : bbox.min.z - 0.1;
         } else {
           (handle as THREE.Mesh).material = new THREE.MeshBasicMaterial({
-            color: 0xffff00,
+            color: RESIZE.handle,
           });
           handle.position.z = dir > 0 ? bbox.max.z : bbox.min.z;
         }
@@ -396,7 +397,7 @@ export function useResizeMode() {
     });
   }, []);
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback(async () => {
     if (!isResizing || !selectedElement) return;
 
     const element = elements.find((el) => el.nodeId === selectedElement);
@@ -404,15 +405,13 @@ export function useResizeMode() {
 
     if (element && obj && originalBrepRef.current) {
       try {
-        const finalScale = obj.scale.clone();
-        const currentPosition = obj.position.clone();
+        // For X/Y resizing, use the current (preview-modified) position
+        // For Z extrusion, we'll calculate position separately using originalPosition + offset
+        let currentPosition = obj.position.clone();
 
         if (activeHandle === "z" && extrusionParamsRef.current) {
-          const { depth, direction } = extrusionParamsRef.current;
+          const { direction } = extrusionParamsRef.current;
 
-          const bbox = new THREE.Box3().setFromObject(obj);
-          const size = new THREE.Vector3();
-          bbox.getSize(size);
           const wasFlat =
             Math.abs(
               originalBrepRef.current.vertices[0].z -
@@ -426,15 +425,28 @@ export function useResizeMode() {
 
             const actualExtrusionHeight = actualSize.z;
 
-            const extrudedBrep = extrudeBRep(
+            // extrudeBRep returns centered BRep + position offset (bounding box center)
+            const extrusionResult = await extrudeBRep(
               originalBrepRef.current,
               actualExtrusionHeight,
               direction
             );
 
-            element.brep = extrudedBrep;
+            element.brep = extrusionResult.brep;
             (element as any).userData = (element as any).userData || {};
             (element as any).userData.brepExtruded = true;
+
+            // For Z extrusion, use ORIGINAL position + offset (not preview-modified position)
+            const originalPosition = obj.userData.originalPosition?.clone() || obj.position.clone();
+            console.log(`[useResizeMode] Original position: (${originalPosition.x.toFixed(2)}, ${originalPosition.y.toFixed(2)}, ${originalPosition.z.toFixed(2)})`);
+            console.log(`[useResizeMode] Position offset from extrudeBRep: (${extrusionResult.positionOffset.x}, ${extrusionResult.positionOffset.y}, ${extrusionResult.positionOffset.z.toFixed(2)})`);
+
+            currentPosition = new THREE.Vector3(
+              originalPosition.x + extrusionResult.positionOffset.x,
+              originalPosition.y + extrusionResult.positionOffset.y,
+              originalPosition.z + extrusionResult.positionOffset.z
+            );
+            console.log(`[useResizeMode] Final position: (${currentPosition.x.toFixed(2)}, ${currentPosition.y.toFixed(2)}, ${currentPosition.z.toFixed(2)})`);
           }
         }
 

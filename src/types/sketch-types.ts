@@ -178,3 +178,52 @@ export function isSketchEllipse(
 ): primitive is SketchEllipse {
   return primitive.type === "ellipse";
 }
+
+// Profile types for Fusion 360-style multi-profile detection
+
+/**
+ * Represents a single profile (closed region) detected from a sketch.
+ * When primitives intersect, they create multiple profiles.
+ */
+export interface SketchProfile {
+  id: string;
+  sketchId: string;
+  wireIndex: number;
+  isOuter: boolean;  // outer boundary vs interior region
+  area: number;
+}
+
+/**
+ * Result of converting a sketch to multiple profiles.
+ */
+export interface SketchConversionResult {
+  profiles: Array<{
+    id: string;
+    brep: import("../geometry").Brep;  // Centered at origin (local space)
+    area: number;
+    isOuter: boolean;
+    center: { x: number; y: number; z: number };  // World position of the profile center
+  }>;
+  success: boolean;
+}
+
+/**
+ * Feature tree node types for hierarchical display.
+ */
+export type FeatureNodeType = "sketch" | "profile" | "body" | "folder";
+
+/**
+ * A node in the feature tree hierarchy.
+ * Used to display sketches, profiles, and bodies in a tree view.
+ */
+export interface FeatureNode {
+  id: string;
+  type: FeatureNodeType;
+  name: string;
+  visible: boolean;
+  expanded?: boolean;
+  children?: FeatureNode[];
+  sourceSketchId?: string;  // For profiles/bodies: which sketch they came from
+  elementId?: string;       // Link to SceneElement.nodeId for bodies
+  profileId?: string;       // For bodies: which profile they came from
+}

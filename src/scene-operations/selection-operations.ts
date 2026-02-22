@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { CompoundBrep } from "../geometry";
 import { SceneElement, SceneMode } from "./types";
+import { BODY, SELECTION } from "../theme";
 
 export function handleSetMode(
   elements: SceneElement[],
@@ -10,7 +11,7 @@ export function handleSetMode(
   const updatedElements = elements.map((element) => {
     const object = objectsMap.get(element.nodeId);
     if (object instanceof THREE.Mesh) {
-      (object.material as THREE.MeshStandardMaterial).color.set(0x0000ff);
+      (object.material as THREE.MeshStandardMaterial).color.set(BODY.default);
     }
     return { ...element, selected: false };
   });
@@ -77,11 +78,11 @@ export function selectElement(
   nodesToSelect.forEach((id) => {
     const object = objectsMap.get(id);
     if (object instanceof THREE.Mesh) {
-      (object.material as THREE.MeshStandardMaterial).color.set(0xff0000);
+      (object.material as THREE.MeshStandardMaterial).color.set(SELECTION.selected);
     } else if (object instanceof THREE.Group) {
       object.traverse((child) => {
         if (child instanceof THREE.Mesh) {
-          (child.material as THREE.MeshStandardMaterial).color.set(0xff0000);
+          (child.material as THREE.MeshStandardMaterial).color.set(SELECTION.selected);
         }
       });
     }
@@ -164,15 +165,15 @@ export function deselectElement(
   // Make unique
   nodesToDeselect = Array.from(new Set(nodesToDeselect));
 
-  // Update visual state - set color back to blue
+  // Update visual state - reset to default body color
   nodesToDeselect.forEach((id) => {
     const object = objectsMap.get(id);
     if (object instanceof THREE.Mesh) {
-      (object.material as THREE.MeshStandardMaterial).color.set(0x0000ff);
+      (object.material as THREE.MeshStandardMaterial).color.set(BODY.default);
     } else if (object instanceof THREE.Group) {
       object.traverse((child) => {
         if (child instanceof THREE.Mesh) {
-          (child.material as THREE.MeshStandardMaterial).color.set(0x0000ff);
+          (child.material as THREE.MeshStandardMaterial).color.set(BODY.default);
         }
       });
     }

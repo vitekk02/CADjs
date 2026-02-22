@@ -8,6 +8,7 @@ import {
   isSketchCircle,
   isSketchArc,
 } from "../types/sketch-types";
+import { INFERENCE } from "../theme";
 
 // Inference point types matching Fusion 360
 export type InferenceType =
@@ -326,7 +327,7 @@ export function useSketchInference(): UseSketchInferenceResult {
             type: "horizontal",
             start: new THREE.Vector3(chainStartPoint.x - 10, chainStartPoint.y, 0),
             end: new THREE.Vector3(cursorPosition.x + 10, chainStartPoint.y, 0),
-            color: 0x00ffff, // Cyan
+            color: INFERENCE.guidelineChain,
           });
         }
 
@@ -336,7 +337,7 @@ export function useSketchInference(): UseSketchInferenceResult {
             type: "vertical",
             start: new THREE.Vector3(chainStartPoint.x, chainStartPoint.y - 10, 0),
             end: new THREE.Vector3(chainStartPoint.x, cursorPosition.y + 10, 0),
-            color: 0x00ffff, // Cyan
+            color: INFERENCE.guidelineChain,
           });
         }
       }
@@ -351,7 +352,7 @@ export function useSketchInference(): UseSketchInferenceResult {
               type: "horizontal",
               start: new THREE.Vector3(pointPos.x - 5, pointPos.y, 0),
               end: new THREE.Vector3(cursorPosition.x + 5, pointPos.y, 0),
-              color: 0x00ff00, // Green
+              color: INFERENCE.guidelinePoint,
             });
           }
 
@@ -360,7 +361,7 @@ export function useSketchInference(): UseSketchInferenceResult {
               type: "vertical",
               start: new THREE.Vector3(pointPos.x, pointPos.y - 5, 0),
               end: new THREE.Vector3(pointPos.x, cursorPosition.y + 5, 0),
-              color: 0x00ff00, // Green
+              color: INFERENCE.guidelinePoint,
             });
           }
         }

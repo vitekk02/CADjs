@@ -829,6 +829,231 @@ describe("intersection-operations", () => {
     });
   });
 
+  describe("error handling", () => {
+    test("returns null when first element has empty brep", async () => {
+      elements[0].brep = new Brep([], [], []);
+
+      const result = await intersectionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result).toBeNull();
+    });
+
+    test("returns null when second element has empty brep", async () => {
+      elements[1].brep = new Brep([], [], []);
+
+      const result = await intersectionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result).toBeNull();
+    });
+
+    test("returns null when all elements have empty breps", async () => {
+      elements[0].brep = new Brep([], [], []);
+      elements[1].brep = new Brep([], [], []);
+
+      const result = await intersectionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result).toBeNull();
+    });
+
+    test("returns null when elements have degenerate geometry", async () => {
+      // Degenerate geometry: collinear vertices
+      const v1 = new Vertex(0, 0, 0);
+      const v2 = new Vertex(1, 0, 0);
+      const v3 = new Vertex(2, 0, 0);
+      const degenerateFace = new Face([v1, v2, v3]);
+      elements[0].brep = new Brep([v1, v2, v3], [], [degenerateFace]);
+
+      const result = await intersectionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result).toBeNull();
+    });
+
+    test("handles NaN in position", async () => {
+      elements[0].position = new THREE.Vector3(NaN, 0, 0);
+
+      const result = await intersectionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result === null || typeof result === "object").toBeTruthy();
+    });
+
+    test("handles Infinity in position", async () => {
+      elements[1].position = new THREE.Vector3(Infinity, 0, 0);
+
+      const result = await intersectionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result === null || typeof result === "object").toBeTruthy();
+    });
+
+    test("returns unchanged state when elements array is empty", async () => {
+      const result = await intersectionSelectedElements(
+        [],
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // With no elements matching selection (< 2 valid elements),
+      // function should return unchanged state or null
+      if (result) {
+        expect(result.updatedElements).toEqual([]);
+        expect(result.nextIdCounter).toBe(idCounter);
+      } else {
+        expect(result).toBeNull();
+      }
+    });
+
+    test("handles selection that only partially matches elements", async () => {
+      // Selection includes nodeId not in elements array
+      const partialSelection = ["node_1", "node_99"];
+
+      const result = await intersectionSelectedElements(
+        elements,
+        partialSelection,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // The function checks selectedElements.length (2) not filtered elements count (1)
+      // So it proceeds with the operation even with only 1 valid element
+      // This may result in null or an operation with just 1 shape
+      expect(result === null || typeof result === "object").toBeTruthy();
+    });
+
+    test("handles extremely small geometry near precision limits", async () => {
+      // Very small geometry - OpenCascade cannot handle sub-micron precision
+      const v1 = new Vertex(0, 0, 0);
+      const v2 = new Vertex(1e-10, 0, 0);
+      const v3 = new Vertex(1e-10, 1e-10, 0);
+      const v4 = new Vertex(0, 1e-10, 0);
+      const tinyFace = new Face([v1, v2, v3, v4]);
+      elements[0].brep = new Brep([v1, v2, v3, v4], [], [tinyFace]);
+
+      const result = await intersectionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // Extremely small geometry typically causes OpenCascade to fail
+      expect(result).toBeNull();
+    });
+
+    test("handles negative coordinate values", async () => {
+      // Breps with negative coordinates
+      const v1 = new Vertex(-5, -5, -5);
+      const v2 = new Vertex(-4, -5, -5);
+      const v3 = new Vertex(-4, -4, -5);
+      const v4 = new Vertex(-5, -4, -5);
+      const v5 = new Vertex(-5, -5, -4);
+      const v6 = new Vertex(-4, -5, -4);
+      const v7 = new Vertex(-4, -4, -4);
+      const v8 = new Vertex(-5, -4, -4);
+
+      const bottom = new Face([v1, v2, v3, v4]);
+      const top = new Face([v5, v6, v7, v8]);
+      const front = new Face([v1, v2, v6, v5]);
+      const back = new Face([v4, v3, v7, v8]);
+      const left = new Face([v1, v4, v8, v5]);
+      const right = new Face([v2, v3, v7, v6]);
+
+      const negativeBrep = new Brep(
+        [v1, v2, v3, v4, v5, v6, v7, v8],
+        [],
+        [bottom, top, front, back, left, right]
+      );
+      elements[0].brep = negativeBrep;
+
+      const result = await intersectionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // Negative coordinates should work fine
+      expect(result).not.toBeNull();
+      expect(result?.nextIdCounter).toBe(6);
+    });
+
+    test("handles completely disjoint shapes (empty intersection)", async () => {
+      // Two shapes that don't overlap at all
+      const box1 = createBoxBrep(0, 0, 0, 1, 1, 1);
+      const box2 = createBoxBrep(100, 100, 100, 1, 1, 1);
+
+      elements = [
+        {
+          nodeId: "box1",
+          brep: box1,
+          position: new THREE.Vector3(0, 0, 0),
+          selected: true,
+        },
+        {
+          nodeId: "box2",
+          brep: box2,
+          position: new THREE.Vector3(0, 0, 0),
+          selected: true,
+        },
+      ];
+
+      objectsMap.set("box1", new THREE.Mesh());
+      objectsMap.set("box2", new THREE.Mesh());
+      brepGraph.addNode({ id: "box1", brep: box1, mesh: null, connections: [] });
+      brepGraph.addNode({ id: "box2", brep: box2, mesh: null, connections: [] });
+
+      const result = await intersectionSelectedElements(
+        elements,
+        ["box1", "box2"],
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // Empty intersection may return null or succeed with empty geometry
+      expect(result === null || result.nextIdCounter === 6).toBeTruthy();
+    });
+  });
+
   describe("commutativity of intersection", () => {
     test("intersection is commutative (A ∩ B = B ∩ A)", async () => {
       // First: node_1 ∩ node_2

@@ -1,5 +1,6 @@
-import { Face, Vertex, Edge, Brep } from "../geometry";
+import { Brep } from "../geometry";
 import * as THREE from "three";
+import { OpenCascadeService } from "../services/OpenCascadeService";
 
 export function extrudeThreeJsObject(
   originalObject: THREE.Mesh,
@@ -133,14 +134,34 @@ export function extrudeThreeJsObject(
   return extrudedMesh;
 }
 
-export function extrudeBRep(
+/**
+ * Result of extrusion operation, including position offset for the new center.
+ */
+export interface ExtrusionResult {
+  brep: Brep;
+  /** Position offset to apply to element.position to account for new center */
+  positionOffset: { x: number; y: number; z: number };
+}
+
+/**
+ * Extrude a flat BRep into a 3D solid using OpenCascade's BRepPrimAPI_MakePrism.
+ *
+ * The result BRep is CENTERED (architecture requirement), and a position
+ * offset is returned so the caller can update the element's world position.
+ *
+ * @param brep - The flat BRep to extrude (must be a 2D shape in XY plane, centered)
+ * @param extrusionDepth - The depth to extrude
+ * @param direction - Direction: 1 for +Z, -1 for -Z
+ * @returns Promise resolving to the extruded BRep and position offset
+ */
+export async function extrudeBRep(
   brep: Brep,
   extrusionDepth: number,
   direction: number
-): Brep {
+): Promise<ExtrusionResult> {
   // Only extrude if we have faces and vertices
   if (!brep.faces.length || !brep.vertices.length) {
-    return brep;
+    return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
   }
 
   // Check if it's already a 3D brep
@@ -151,133 +172,42 @@ export function extrudeBRep(
 
   if (!isFlat) {
     console.warn("Attempted to extrude a non-flat BRep");
-    return brep;
+    return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
   }
 
-  // Calculate half depth to center the result
-  const halfDepth = extrusionDepth / 2;
+  try {
+    const ocService = OpenCascadeService.getInstance();
 
-  // To center the extruded shape, we need to offset both top and bottom faces
-  // For positive direction: original face moves to +halfDepth, extruded face to -halfDepth
-  // For negative direction: original face moves to -halfDepth, extruded face to +halfDepth
-  const originalOffset = direction > 0 ? halfDepth : -halfDepth;
-  const extrudedOffset = direction > 0 ? -halfDepth : halfDepth;
+    // Build a clean planar face from the BRep's boundary edges
+    // (The stored BRep is tessellated into triangles, not suitable for direct extrusion)
+    const cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
 
-  // Offset original vertices
-  const offsetOriginalVertices = brep.vertices.map(
-    (v) => new Vertex(v.x, v.y, v.z + originalOffset)
-  );
-
-  // Create new vertices at extruded position
-  const extrudedVertices = brep.vertices.map(
-    (v) => new Vertex(v.x, v.y, v.z + extrudedOffset)
-  );
-
-  // Combine all vertices (offset originals + extruded)
-  const allVertices = [...offsetOriginalVertices, ...extrudedVertices];
-
-  // Create edges for the offset original face (top face)
-  const offsetOriginalEdges = brep.edges.map((edge) => {
-    const startIndex = brep.vertices.findIndex(
-      (v) => v.x === edge.start.x && v.y === edge.start.y && v.z === edge.start.z
-    );
-    const endIndex = brep.vertices.findIndex(
-      (v) => v.x === edge.end.x && v.y === edge.end.y && v.z === edge.end.z
-    );
-    return new Edge(offsetOriginalVertices[startIndex], offsetOriginalVertices[endIndex]);
-  });
-
-  // Create edges along extrusion direction (connecting top and bottom)
-  const extrusionEdges = offsetOriginalVertices.map(
-    (v, i) => new Edge(v, extrudedVertices[i])
-  );
-
-  // Create edges for the extruded face (bottom face)
-  const extrudedFaceEdges = brep.edges
-    .map((edge) => {
-      const startIndex = brep.vertices.findIndex(
-        (v) =>
-          v.x === edge.start.x && v.y === edge.start.y && v.z === edge.start.z
-      );
-      const endIndex = brep.vertices.findIndex(
-        (v) => v.x === edge.end.x && v.y === edge.end.y && v.z === edge.end.z
-      );
-
-      if (startIndex === -1 || endIndex === -1) {
-        console.error("Could not find edge vertices");
-        return null;
-      }
-
-      return new Edge(extrudedVertices[startIndex], extrudedVertices[endIndex]);
-    })
-    .filter((edge): edge is Edge => edge !== null);
-
-  // All edges
-  const allEdges = [...offsetOriginalEdges, ...extrusionEdges, ...extrudedFaceEdges];
-
-  // Create faces for the sides
-  const sideFaces: Face[] = [];
-
-  // For each edge in the original face, create a side face
-  brep.edges.forEach((edge) => {
-    const startIndex = brep.vertices.findIndex(
-      (v) =>
-        v.x === edge.start.x && v.y === edge.start.y && v.z === edge.start.z
-    );
-    const endIndex = brep.vertices.findIndex(
-      (v) => v.x === edge.end.x && v.y === edge.end.y && v.z === edge.end.z
-    );
-
-    if (startIndex === -1 || endIndex === -1) {
-      return;
+    if (!cleanFace) {
+      console.error("Failed to build clean face from BRep boundary");
+      return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
     }
 
-    // Create a quad face for this side using offset original and extruded vertices
-    const sideVertices =
-      direction > 0
-        ? [
-            offsetOriginalVertices[startIndex],
-            offsetOriginalVertices[endIndex],
-            extrudedVertices[endIndex],
-            extrudedVertices[startIndex],
-          ]
-        : [
-            offsetOriginalVertices[startIndex],
-            extrudedVertices[startIndex],
-            extrudedVertices[endIndex],
-            offsetOriginalVertices[endIndex],
-          ];
-
-    sideFaces.push(new Face(sideVertices));
-  });
-
-  // Create the top face (offset original face)
-  const originalFaceVertices = brep.faces[0].vertices;
-  const topFaceVertices = originalFaceVertices.map((v) => {
-    const index = brep.vertices.findIndex(
-      (bv) => bv.x === v.x && bv.y === v.y && bv.z === v.z
+    // Extrude using OpenCascade's BRepPrimAPI_MakePrism
+    const extrudedShape = await ocService.extrudeShape(
+      cleanFace,
+      extrusionDepth,
+      direction
     );
-    return offsetOriginalVertices[index];
-  });
-  const topFace = new Face(topFaceVertices);
 
-  // Create the bottom face (extruded face with reversed winding)
-  const bottomFaceVertices = originalFaceVertices.map((v) => {
-    const index = brep.vertices.findIndex(
-      (bv) => bv.x === v.x && bv.y === v.y && bv.z === v.z
-    );
-    return extrudedVertices[index];
-  });
+    // Convert back to BRep WITH centering - architecture requires centered BReps
+    const centeredBrep = await ocService.ocShapeToBRep(extrudedShape, true);
 
-  // Reverse the order for correct orientation based on direction
-  if (direction > 0) {
-    bottomFaceVertices.reverse();
+    // Position offset: only Z changes (input and output BReps are both centered at origin)
+    const positionOffset = {
+      x: 0,
+      y: 0,
+      z: (extrusionDepth / 2) * direction
+    };
+
+    return { brep: centeredBrep, positionOffset };
+  } catch (error) {
+    console.error("OpenCascade extrusion failed:", error);
+    // Return original BRep on failure
+    return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
   }
-
-  const bottomFace = new Face(bottomFaceVertices);
-
-  // All faces: top, bottom, and sides
-  const allFaces = [topFace, bottomFace, ...sideFaces];
-
-  return new Brep(allVertices, allEdges, allFaces);
 }

@@ -6,6 +6,9 @@ module.exports = {
   moduleNameMapper: {
     // Handle Vite's ?url import suffix - return a mock that provides the path
     "^(.+)\\.wasm\\?url$": "<rootDir>/tests/__mocks__/wasmUrlMock.js",
+    // Map planegcs - required because planegcs WASM initialization uses import.meta.url
+    // which babel-plugin-transform-import-meta cannot fully transform due to internal _require setup
+    "^@salusoft89/planegcs$": "<rootDir>/tests/__mocks__/@salusoft89/planegcs.js",
   },
   transform: {
     // TypeScript files
@@ -20,16 +23,16 @@ module.exports = {
       },
       diagnostics: {
         // Ignore specific TypeScript errors
-        // 18047: 'result' is possibly null
-        ignoreCodes: [2307, 2554, 2345, 2538, 18047],
+        ignoreCodes: [2307, 2554, 2345, 2538, 18047, 2344],
       },
     }],
-    // Transform opencascade.js from ESM to CommonJS
+    // Transform opencascade.js and planegcs from ESM to CommonJS
     "node_modules/opencascade\\.js/.+\\.(js|mjs)$": "babel-jest",
+    "node_modules/@salusoft89/planegcs/.+\\.(js|mjs)$": "babel-jest",
   },
   transformIgnorePatterns: [
-    // Transform opencascade.js (don't ignore it)
-    "/node_modules/(?!opencascade\\.js/)",
+    // Transform opencascade.js and planegcs (don't ignore them)
+    "/node_modules/(?!(opencascade\\.js|@salusoft89/planegcs)/)",
   ],
   moduleFileExtensions: ["ts", "tsx", "js", "jsx", "json", "node"],
   testTimeout: 60000,

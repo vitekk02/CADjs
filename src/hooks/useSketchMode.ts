@@ -93,24 +93,26 @@ const SKETCH_CONFIG = {
   DOUBLE_CLICK_THRESHOLD: 300,
 } as const;
 
-/** Colors for sketch visualization (hex values) */
+import { SKETCH as SKETCH_THEME, INFERENCE, SKETCH_PLANE as PLANE_THEME, BODY as BODY_THEME } from "../theme";
+
+/** Colors for sketch visualization (hex values) — Fusion 360 style */
 const COLORS = {
   /** Under-constrained geometry (needs more constraints) */
-  underconstrained: 0x00ff00, // Green
+  underconstrained: SKETCH_THEME.underconstrained,
   /** Fully constrained geometry */
-  constrained: 0x000000, // Black
+  constrained: SKETCH_THEME.constrained,
   /** Over-constrained geometry (conflicting constraints) */
-  overconstrained: 0xff0000, // Red
+  overconstrained: SKETCH_THEME.overconstrained,
   /** Preview while drawing */
-  preview: 0x0088ff, // Blue
-  /** Point primitives */
-  point: 0xff6600, // Orange
+  preview: SKETCH_THEME.preview,
+  /** Point primitives (unconstrained) */
+  point: SKETCH_THEME.point,
   /** Selected elements */
-  selected: 0xff9900, // Orange
+  selected: SKETCH_THEME.selected,
   /** Selected line primitives */
-  selectedLine: 0xff6600, // Orange
+  selectedLine: SKETCH_THEME.selectedLine,
   /** Selected point primitives */
-  selectedPoint: 0xffcc00, // Yellow
+  selectedPoint: SKETCH_THEME.selectedPoint,
 } as const;
 
 export function useSketchMode(): UseSketchModeResult {
@@ -123,6 +125,8 @@ export function useSketchMode(): UseSketchModeResult {
     startSketch,
     solveSketch,
     mode,
+    elements,
+    getObject,
   } = useCadCore();
 
   const {
@@ -153,6 +157,76 @@ export function useSketchMode(): UseSketchModeResult {
   const [guidelines, setGuidelines] = useState<Guideline[]>([]);
   const inferenceObjectsRef = useRef<THREE.Object3D[]>([]);
   const guidelineObjectsRef = useRef<THREE.Object3D[]>([]);
+
+  // Body dimming state - stores original material properties for restoration
+  const dimmedMaterialsRef = useRef<Map<string, { color: number; opacity: number; transparent: boolean }>>(new Map());
+
+  /** Dim all existing 3D bodies so the sketch stands out */
+  const dimSceneBodies = useCallback(() => {
+    dimmedMaterialsRef.current.clear();
+    elements.forEach((el) => {
+      const obj = getObject(el.nodeId);
+      if (!obj) return;
+      obj.traverse((child) => {
+        if (child instanceof THREE.Mesh && !child.userData.isSketchPrimitive && !child.userData.isEdgeOverlay) {
+          const mat = child.material as THREE.MeshStandardMaterial;
+          // Store original values
+          const key = child.uuid;
+          dimmedMaterialsRef.current.set(key, {
+            color: mat.color.getHex(),
+            opacity: mat.opacity,
+            transparent: mat.transparent,
+          });
+          // Dim: reduce opacity and desaturate
+          mat.transparent = true;
+          mat.opacity = BODY_THEME.dimmedOpacity;
+          mat.color.set(BODY_THEME.dimmedColor);
+          mat.needsUpdate = true;
+        }
+        // Also dim edge overlays
+        if (child instanceof THREE.LineSegments && child.userData.isEdgeOverlay) {
+          const mat = child.material as THREE.LineBasicMaterial;
+          const key = child.uuid;
+          dimmedMaterialsRef.current.set(key, {
+            color: mat.color.getHex(),
+            opacity: mat.opacity,
+            transparent: mat.transparent,
+          });
+          mat.transparent = true;
+          mat.opacity = BODY_THEME.dimmedOpacity;
+          mat.needsUpdate = true;
+        }
+      });
+    });
+  }, [elements, getObject]);
+
+  /** Restore all dimmed bodies to their original appearance */
+  const restoreSceneBodies = useCallback(() => {
+    elements.forEach((el) => {
+      const obj = getObject(el.nodeId);
+      if (!obj) return;
+      obj.traverse((child) => {
+        const key = child.uuid;
+        const saved = dimmedMaterialsRef.current.get(key);
+        if (!saved) return;
+        if (child instanceof THREE.Mesh) {
+          const mat = child.material as THREE.MeshStandardMaterial;
+          mat.color.set(saved.color);
+          mat.opacity = saved.opacity;
+          mat.transparent = saved.transparent;
+          mat.needsUpdate = true;
+        }
+        if (child instanceof THREE.LineSegments) {
+          const mat = child.material as THREE.LineBasicMaterial;
+          mat.color.set(saved.color);
+          mat.opacity = saved.opacity;
+          mat.transparent = saved.transparent;
+          mat.needsUpdate = true;
+        }
+      });
+    });
+    dimmedMaterialsRef.current.clear();
+  }, [elements, getObject]);
 
   // Drawing state refs
   const isDrawingRef = useRef(false);
@@ -372,7 +446,7 @@ export function useSketchMode(): UseSketchModeResult {
         case "endpoint":
           // Square glyph for endpoints
           geometry = new THREE.BoxGeometry(0.15, 0.15, 0.05);
-          color = 0x00ff00; // Green
+          color = INFERENCE.endpoint;
           break;
         case "midpoint":
           // Triangle glyph for midpoints
@@ -382,12 +456,12 @@ export function useSketchMode(): UseSketchModeResult {
           triangleShape.lineTo(0.08, -0.05);
           triangleShape.lineTo(0, 0.1);
           geometry = new THREE.ShapeGeometry(triangleShape);
-          color = 0xffff00; // Yellow
+          color = INFERENCE.midpoint;
           break;
         case "center":
           // Circle glyph for centers
           geometry = new THREE.CircleGeometry(0.08, 16);
-          color = 0xff00ff; // Magenta
+          color = INFERENCE.center;
           break;
         case "quadrant":
           // Diamond glyph for quadrants
@@ -398,16 +472,16 @@ export function useSketchMode(): UseSketchModeResult {
           diamondShape.lineTo(0.08, 0);
           diamondShape.lineTo(0, 0.08);
           geometry = new THREE.ShapeGeometry(diamondShape);
-          color = 0x00ffff; // Cyan
+          color = INFERENCE.quadrant;
           break;
         case "intersection":
           // X glyph for intersections
           geometry = new THREE.BoxGeometry(0.12, 0.12, 0.05);
-          color = 0xff8800; // Orange
+          color = INFERENCE.intersection;
           break;
         default:
           geometry = new THREE.CircleGeometry(0.06, 8);
-          color = 0xffffff; // White
+          color = INFERENCE.default;
       }
 
       const material = new THREE.MeshBasicMaterial({
@@ -1075,7 +1149,7 @@ export function useSketchMode(): UseSketchModeResult {
     const xyGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
     geometries.push(xyGeometry);
     const xyMaterial = new THREE.MeshBasicMaterial({
-      color: 0x4488ff,
+      color: PLANE_THEME.xy,
       transparent: true,
       opacity: 0.5,
       side: THREE.DoubleSide,
@@ -1085,7 +1159,7 @@ export function useSketchMode(): UseSketchModeResult {
     const xyPlane = new THREE.Mesh(xyGeometry, xyMaterial);
     xyPlane.position.set(halfSize, halfSize, 0); // Position to form corner
     xyPlane.userData.planeType = "XY";
-    xyPlane.userData.baseColor = 0x4488ff;
+    xyPlane.userData.baseColor = PLANE_THEME.xy;
     xyPlane.userData.baseOpacity = 0.5;
     planesGroup.add(xyPlane);
 
@@ -1093,7 +1167,7 @@ export function useSketchMode(): UseSketchModeResult {
     const xzGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
     geometries.push(xzGeometry);
     const xzMaterial = new THREE.MeshBasicMaterial({
-      color: 0x44ff88,
+      color: PLANE_THEME.xz,
       transparent: true,
       opacity: 0.5,
       side: THREE.DoubleSide,
@@ -1104,7 +1178,7 @@ export function useSketchMode(): UseSketchModeResult {
     xzPlane.rotation.x = -Math.PI / 2;
     xzPlane.position.set(halfSize, 0, halfSize); // Position to form corner
     xzPlane.userData.planeType = "XZ";
-    xzPlane.userData.baseColor = 0x44ff88;
+    xzPlane.userData.baseColor = PLANE_THEME.xz;
     xzPlane.userData.baseOpacity = 0.5;
     planesGroup.add(xzPlane);
 
@@ -1112,7 +1186,7 @@ export function useSketchMode(): UseSketchModeResult {
     const yzGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
     geometries.push(yzGeometry);
     const yzMaterial = new THREE.MeshBasicMaterial({
-      color: 0xff6644,
+      color: PLANE_THEME.yz,
       transparent: true,
       opacity: 0.5,
       side: THREE.DoubleSide,
@@ -1123,12 +1197,12 @@ export function useSketchMode(): UseSketchModeResult {
     yzPlane.rotation.y = Math.PI / 2;
     yzPlane.position.set(0, halfSize, halfSize); // Position to form corner
     yzPlane.userData.planeType = "YZ";
-    yzPlane.userData.baseColor = 0xff6644;
+    yzPlane.userData.baseColor = PLANE_THEME.yz;
     yzPlane.userData.baseOpacity = 0.5;
     planesGroup.add(yzPlane);
 
     // Add wireframe edges to make it look more like a cube
-    const edgeMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+    const edgeMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.edge, linewidth: 2 });
     materials.push(edgeMaterial);
 
     // Edge along X axis (from origin)
@@ -1137,7 +1211,7 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(planeSize, 0, 0),
     ]);
     geometries.push(xEdgeGeometry);
-    const xEdgeMaterial = new THREE.LineBasicMaterial({ color: 0xff4444 });
+    const xEdgeMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.xAxis });
     materials.push(xEdgeMaterial);
     const xEdge = new THREE.Line(xEdgeGeometry, xEdgeMaterial);
     planesGroup.add(xEdge);
@@ -1148,7 +1222,7 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(0, planeSize, 0),
     ]);
     geometries.push(yEdgeGeometry);
-    const yEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x44ff44 });
+    const yEdgeMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.yAxis });
     materials.push(yEdgeMaterial);
     const yEdge = new THREE.Line(yEdgeGeometry, yEdgeMaterial);
     planesGroup.add(yEdge);
@@ -1159,7 +1233,7 @@ export function useSketchMode(): UseSketchModeResult {
       new THREE.Vector3(0, 0, planeSize),
     ]);
     geometries.push(zEdgeGeometry);
-    const zEdgeMaterial = new THREE.LineBasicMaterial({ color: 0x4488ff });
+    const zEdgeMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.zAxis });
     materials.push(zEdgeMaterial);
     const zEdge = new THREE.Line(zEdgeGeometry, zEdgeMaterial);
     planesGroup.add(zEdge);
@@ -1210,7 +1284,7 @@ export function useSketchMode(): UseSketchModeResult {
     // Add origin sphere
     const originGeometry = new THREE.SphereGeometry(0.15, 16, 16);
     geometries.push(originGeometry);
-    const originMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const originMaterial = new THREE.MeshBasicMaterial({ color: PLANE_THEME.origin });
     materials.push(originMaterial);
     const originSphere = new THREE.Mesh(originGeometry, originMaterial);
     planesGroup.add(originSphere);
@@ -1274,7 +1348,7 @@ export function useSketchMode(): UseSketchModeResult {
       const halfSize = gridSize / 2;
 
       // Grid line material
-      const gridMaterial = new THREE.LineBasicMaterial({ color: 0x555555 });
+      const gridMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.grid });
 
       const gridPoints: THREE.Vector3[] = [];
 
@@ -1364,7 +1438,7 @@ export function useSketchMode(): UseSketchModeResult {
       if (intersects.length > 0) {
         const hitPlane = intersects[0].object as THREE.Mesh;
         const material = hitPlane.material as THREE.MeshBasicMaterial;
-        material.color.setHex(0xffff44); // Bright yellow on hover
+        material.color.setHex(PLANE_THEME.hover); // Bright yellow on hover
         material.opacity = 0.8;
         setHoveredPlane(hitPlane.userData.planeType as SketchPlaneType);
       } else {
@@ -1436,6 +1510,9 @@ export function useSketchMode(): UseSketchModeResult {
       // Disable camera rotation in sketch mode (only allow pan/zoom)
       setCameraRotationEnabled(false);
 
+      // Dim existing 3D bodies so sketch stands out
+      dimSceneBodies();
+
       // Orient camera to the plane
       orientCameraToPlane(planeType);
 
@@ -1446,7 +1523,7 @@ export function useSketchMode(): UseSketchModeResult {
       const plane = createSketchPlane(planeType);
       startSketch(plane);
     },
-    [removeSelectionPlanes, orientCameraToPlane, createSketchGrid, startSketch, showGroundPlane, toggleGroundPlane, setCameraRotationEnabled]
+    [removeSelectionPlanes, orientCameraToPlane, createSketchGrid, startSketch, showGroundPlane, toggleGroundPlane, setCameraRotationEnabled, dimSceneBodies]
   );
 
   // Start new sketch - enters plane selection mode
@@ -2269,7 +2346,7 @@ export function useSketchMode(): UseSketchModeResult {
         // Render point as larger sphere for visibility
         const size = isSelected ? 0.25 : 0.2; // Bigger when selected
         const geometry = new THREE.SphereGeometry(size, 16, 16);
-        const pointColor = isSelected ? COLORS.selectedPoint : 0xff0000;
+        const pointColor = isSelected ? COLORS.selectedPoint : COLORS.point;
         const material = new THREE.MeshBasicMaterial({ color: pointColor });
         const mesh = new THREE.Mesh(geometry, material);
         const pos = sketchTo3D(primitive.x, primitive.y, 0.1);
@@ -2302,7 +2379,7 @@ export function useSketchMode(): UseSketchModeResult {
 
           const thickness = isSelected ? 0.08 : 0.05; // Thicker when selected
           const tubeGeometry = new THREE.CylinderGeometry(thickness, thickness, length, 8);
-          const lineColor = isSelected ? COLORS.selectedLine : 0x00ff00;
+          const lineColor = isSelected ? COLORS.selectedLine : color;
           const tubeMaterial = new THREE.MeshBasicMaterial({ color: lineColor });
           const tube = new THREE.Mesh(tubeGeometry, tubeMaterial);
 
@@ -2406,6 +2483,9 @@ export function useSketchMode(): UseSketchModeResult {
       setCurrentInferencePoint(null);
       setGuidelines([]);
 
+      // Restore dimmed bodies
+      restoreSceneBodies();
+
       // Restore ground plane if it was hidden
       if (!showGroundPlane) {
         toggleGroundPlane();
@@ -2414,7 +2494,7 @@ export function useSketchMode(): UseSketchModeResult {
       // Re-enable camera rotation when leaving sketch mode
       setCameraRotationEnabled(true);
     }
-  }, [mode, cleanupInferenceObjects, cleanupSketchGrid, removeSelectionPlanes, showGroundPlane, toggleGroundPlane, setCameraRotationEnabled]);
+  }, [mode, cleanupInferenceObjects, cleanupSketchGrid, removeSelectionPlanes, showGroundPlane, toggleGroundPlane, setCameraRotationEnabled, restoreSceneBodies]);
 
   return {
     sketchSubMode,
