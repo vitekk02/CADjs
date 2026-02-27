@@ -1,7 +1,19 @@
-import React, { FC } from "react";
+import React, { FC, useState } from "react";
 import { SketchSubMode } from "../hooks/useSketchMode";
-import { Sketch, ConstraintType } from "../types/sketch-types";
-import ConstraintPanel from "./ConstraintPanel";
+import {
+  Sketch,
+  ConstraintType,
+  GeometricConstraintType,
+  DimensionalConstraintType,
+} from "../types/sketch-types";
+import {
+  getAvailableConstraints,
+  requiresValue,
+  getDefaultValue,
+  getConstraintIcon,
+  getConstraintLabel,
+} from "../scene-operations/constraint-validation";
+import ValueInputModal from "./ValueInputModal";
 
 interface SketchToolbarProps {
   activeSketch: Sketch | null;
@@ -13,7 +25,28 @@ interface SketchToolbarProps {
   selectedPrimitives: string[];
   onApplyConstraint: (type: ConstraintType, value?: number) => void;
   isChaining?: boolean;
+  isOperationPending?: boolean;
 }
+
+const GEOMETRIC_CONSTRAINTS: GeometricConstraintType[] = [
+  "horizontal",
+  "vertical",
+  "parallel",
+  "perpendicular",
+  "tangent",
+  "equal",
+  "coincident",
+  "concentric",
+  "pointOnLine",
+  "pointOnCircle",
+];
+
+const DIMENSIONAL_CONSTRAINTS: DimensionalConstraintType[] = [
+  "distance",
+  "angle",
+  "radius",
+  "diameter",
+];
 
 const SketchToolbar: FC<SketchToolbarProps> = ({
   activeSketch,
@@ -25,208 +58,166 @@ const SketchToolbar: FC<SketchToolbarProps> = ({
   selectedPrimitives,
   onApplyConstraint,
   isChaining = false,
+  isOperationPending = false,
 }) => {
+  const [pendingConstraint, setPendingConstraint] = useState<ConstraintType | null>(null);
+  const [defaultValue, setDefaultValue] = useState<number | undefined>(undefined);
+
   if (!activeSketch) return null;
 
-  const getStatusColor = () => {
-    switch (activeSketch.status) {
-      case "fully_constrained":
-        return "text-green-400";
-      case "overconstrained":
-        return "text-red-400";
-      default:
-        return "text-yellow-400";
+  const availableConstraints = getAvailableConstraints(
+    selectedPrimitives,
+    activeSketch.primitives
+  );
+
+  const handleConstraintClick = (type: ConstraintType) => {
+    if (requiresValue(type)) {
+      const value = getDefaultValue(type, selectedPrimitives, activeSketch.primitives);
+      setDefaultValue(value);
+      setPendingConstraint(type);
+    } else {
+      onApplyConstraint(type);
     }
   };
 
-  const getStatusText = () => {
-    switch (activeSketch.status) {
-      case "fully_constrained":
-        return "Fully Constrained";
-      case "overconstrained":
-        return "Over-constrained";
-      default:
-        return "Under-constrained";
+  const handleValueConfirm = (value: number) => {
+    if (pendingConstraint) {
+      const finalValue = pendingConstraint === "angle"
+        ? (value * Math.PI) / 180
+        : value;
+      onApplyConstraint(pendingConstraint, finalValue);
+      setPendingConstraint(null);
+      setDefaultValue(undefined);
     }
+  };
+
+  const handleValueCancel = () => {
+    setPendingConstraint(null);
+    setDefaultValue(undefined);
+  };
+
+  const toolBtn = (mode: SketchSubMode, label: string, shortcut: string) => (
+    <button
+      className={`flex-none px-2 py-1 text-sm rounded ${
+        isOperationPending
+          ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+          : sketchSubMode === mode ? "bg-blue-600 text-white" : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+      }`}
+      disabled={isOperationPending}
+      onClick={() => onSubModeChange(mode)}
+      title={`${label} (${shortcut})`}
+    >
+      {label}
+    </button>
+  );
+
+  const constraintBtn = (type: ConstraintType) => {
+    const available = availableConstraints.includes(type) && !isOperationPending;
+    const icon = getConstraintIcon(type);
+    const label = getConstraintLabel(type);
+
+    return (
+      <button
+        key={type}
+        onClick={() => available && handleConstraintClick(type)}
+        disabled={!available}
+        className={`flex-none px-1.5 py-1 text-xs rounded font-mono ${
+          available
+            ? "bg-gray-700 hover:bg-blue-500 text-gray-200 cursor-pointer"
+            : "bg-gray-700 opacity-50 cursor-not-allowed text-gray-500"
+        }`}
+        title={label}
+      >
+        {icon}
+      </button>
+    );
   };
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="border-t border-gray-600 pt-3">
-        <h3 className="font-bold text-blue-400 mb-2">Sketch Mode</h3>
+    <div className="flex items-center gap-1 w-full min-w-0 relative">
+      {/* Drawing tools */}
+      {toolBtn("line", "Line", "L")}
+      {toolBtn("circle", "Circle", "C")}
+      {toolBtn("arc", "Arc", "A")}
+      {toolBtn("point", "Point", "P")}
+      {toolBtn("dimension", "Dim", "D")}
+      {toolBtn("select", "Select", "S")}
 
-        {/* Primitive tools */}
-        <div className="mb-3">
-          <p className="text-xs text-gray-400 mb-1">Primitives:</p>
-          <div className="flex flex-wrap gap-1">
-            <button
-              className={`px-2 py-1 text-sm rounded ${
-                sketchSubMode === "point" ? "bg-blue-600" : "bg-gray-600"
-              } hover:bg-blue-500`}
-              onClick={() => onSubModeChange("point")}
-              title="Add point (P)"
-            >
-              Point
-            </button>
-            <button
-              className={`px-2 py-1 text-sm rounded ${
-                sketchSubMode === "line" ? "bg-blue-600" : "bg-gray-600"
-              } hover:bg-blue-500`}
-              onClick={() => onSubModeChange("line")}
-              title="Draw line (L)"
-            >
-              Line
-            </button>
-            <button
-              className={`px-2 py-1 text-sm rounded ${
-                sketchSubMode === "circle" ? "bg-blue-600" : "bg-gray-600"
-              } hover:bg-blue-500`}
-              onClick={() => onSubModeChange("circle")}
-              title="Draw circle (C)"
-            >
-              Circle
-            </button>
-            <button
-              className={`px-2 py-1 text-sm rounded ${
-                sketchSubMode === "arc" ? "bg-blue-600" : "bg-gray-600"
-              } hover:bg-blue-500`}
-              onClick={() => onSubModeChange("arc")}
-              title="Draw arc (A)"
-            >
-              Arc
-            </button>
-            <button
-              className={`px-2 py-1 text-sm rounded ${
-                sketchSubMode === "dimension" ? "bg-blue-600" : "bg-gray-600"
-              } hover:bg-blue-500`}
-              onClick={() => onSubModeChange("dimension")}
-              title="Add dimension (D)"
-            >
-              Dim
-            </button>
-            <button
-              className={`px-2 py-1 text-sm rounded ${
-                sketchSubMode === "select" ? "bg-blue-600" : "bg-gray-600"
-              } hover:bg-blue-500`}
-              onClick={() => onSubModeChange("select")}
-              title="Select (S)"
-            >
-              Select
-            </button>
-          </div>
-        </div>
+      {/* Separator */}
+      <div className="flex-none w-px h-5 bg-gray-600 mx-1" />
 
-        {/* Constraints panel - show in select and dimension modes */}
-        {(sketchSubMode === "select" || sketchSubMode === "dimension") && (
-          <ConstraintPanel
-            selectedPrimitives={selectedPrimitives}
-            activeSketch={activeSketch}
-            onApplyConstraint={onApplyConstraint}
+      {/* Construction toggle */}
+      <button
+        className={`flex-none px-2 py-1 text-sm rounded ${
+          isOperationPending
+            ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+            : "bg-gray-700 hover:bg-orange-600 text-gray-200"
+        }`}
+        disabled={isOperationPending}
+        onClick={() => {
+          const event = new KeyboardEvent("keydown", { key: "x" });
+          window.dispatchEvent(event);
+        }}
+        title="Toggle Construction (X)"
+      >
+        Constr
+      </button>
+
+      {/* Separator */}
+      <div className="flex-none w-px h-5 bg-gray-600 mx-1" />
+
+      {/* Geometric constraints */}
+      {GEOMETRIC_CONSTRAINTS.map((type) => constraintBtn(type))}
+
+      {/* Separator */}
+      <div className="flex-none w-px h-5 bg-gray-600 mx-1" />
+
+      {/* Dimensional constraints */}
+      {DIMENSIONAL_CONSTRAINTS.map((type) => constraintBtn(type))}
+
+      {/* Chain indicator */}
+      {isChaining && (
+        <span className="flex-none text-xs text-green-400 ml-1">Chain</span>
+      )}
+
+      {/* Spacer */}
+      <div className="flex-1 min-w-0" />
+
+      {/* Actions on the right */}
+      <button
+        className={`flex-none px-3 py-1 text-sm rounded ${
+          isOperationPending
+            ? "bg-gray-600 text-gray-400 cursor-wait"
+            : "bg-green-600 hover:bg-green-500 text-white"
+        }`}
+        disabled={isOperationPending}
+        onClick={onFinishSketch}
+      >
+        {isOperationPending ? "Finishing..." : "Finish"}
+      </button>
+      <button
+        className={`flex-none px-3 py-1 text-sm rounded ${
+          isOperationPending
+            ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+            : "bg-red-600 hover:bg-red-500 text-white"
+        }`}
+        disabled={isOperationPending}
+        onClick={onCancelSketch}
+      >
+        Cancel
+      </button>
+
+      {/* Value input dropdown for dimensional constraints */}
+      {pendingConstraint && (
+        <div className="absolute top-full mt-1 left-0 z-50">
+          <ValueInputModal
+            constraintType={pendingConstraint}
+            defaultValue={defaultValue}
+            onConfirm={handleValueConfirm}
+            onCancel={handleValueCancel}
           />
-        )}
-
-        {/* Sketch info */}
-        <div className="mb-3 p-2 bg-gray-700 rounded text-sm">
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-gray-400">Plane:</span>
-            <span className="text-blue-400 font-medium">{activeSketch.plane.type}</span>
-          </div>
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-gray-400">DOF:</span>
-            <span className={activeSketch.dof === 0 ? "text-green-400" : "text-yellow-400"}>
-              {activeSketch.dof}
-            </span>
-          </div>
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-gray-400">Status:</span>
-            <span className={getStatusColor()}>{getStatusText()}</span>
-          </div>
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-gray-400">Primitives:</span>
-            <span>{activeSketch.primitives.length}</span>
-          </div>
-          <div className="flex justify-between items-center">
-            <span className="text-gray-400">Constraints:</span>
-            <span>{activeSketch.constraints.length}</span>
-          </div>
         </div>
-
-        {/* Actions */}
-        <div className="flex flex-col gap-2">
-          <button
-            className="px-3 py-2 bg-green-600 hover:bg-green-500 rounded text-sm font-medium"
-            onClick={onFinishSketch}
-          >
-            Finish Sketch
-          </button>
-          <button
-            className="px-3 py-2 bg-yellow-600 hover:bg-yellow-500 rounded text-sm font-medium"
-            onClick={onSolveSketch}
-          >
-            Re-solve
-          </button>
-          <button
-            className="px-3 py-2 bg-red-600 hover:bg-red-500 rounded text-sm font-medium"
-            onClick={onCancelSketch}
-          >
-            Cancel Sketch
-          </button>
-        </div>
-      </div>
-
-      {/* Instructions */}
-      <div className="text-xs text-gray-400 border-t border-gray-600 pt-2">
-        <p className="font-medium mb-1">Instructions:</p>
-        {sketchSubMode === "line" && (
-          <>
-            <p>Click to place points, lines chain automatically</p>
-            <p className="text-blue-400">Escape: finish chain</p>
-            <p className="text-blue-400">Double-click: close loop</p>
-            {isChaining && (
-              <p className="text-green-400 font-medium mt-1">Drawing line chain...</p>
-            )}
-          </>
-        )}
-        {sketchSubMode === "circle" && (
-          <p>Click center, drag to set radius</p>
-        )}
-        {sketchSubMode === "arc" && (
-          <>
-            <p>Click: 1) start, 2) end, 3) bulge point</p>
-            <p className="text-blue-400">3-point arc drawing</p>
-          </>
-        )}
-        {sketchSubMode === "point" && (
-          <p>Click to place a point</p>
-        )}
-        {sketchSubMode === "dimension" && (
-          <>
-            <p>Click geometry to add dimension</p>
-            <p>Type value and press Enter</p>
-          </>
-        )}
-        {sketchSubMode === "select" && (
-          <>
-            <p>Click to select primitives</p>
-            <p>Shift+click for multi-select (max 2)</p>
-            <p>Apply constraints from panel above</p>
-          </>
-        )}
-
-        {/* Keyboard shortcuts */}
-        <div className="mt-2 pt-2 border-t border-gray-700">
-          <p className="font-medium mb-1">Shortcuts:</p>
-          <div className="grid grid-cols-2 gap-x-2 text-xs">
-            <span><kbd className="bg-gray-700 px-1 rounded">L</kbd> Line</span>
-            <span><kbd className="bg-gray-700 px-1 rounded">C</kbd> Circle</span>
-            <span><kbd className="bg-gray-700 px-1 rounded">A</kbd> Arc</span>
-            <span><kbd className="bg-gray-700 px-1 rounded">P</kbd> Point</span>
-            <span><kbd className="bg-gray-700 px-1 rounded">D</kbd> Dimension</span>
-            <span><kbd className="bg-gray-700 px-1 rounded">S</kbd> Select</span>
-            <span className="col-span-2"><kbd className="bg-gray-700 px-1 rounded">Esc</kbd> Cancel/Finish</span>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 };

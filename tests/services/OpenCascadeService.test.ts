@@ -362,37 +362,15 @@ describe("OpenCascadeService", () => {
     });
   });
 
-  describe("Boolean operation configuration", () => {
-    /**
-     * These tests document the expected configuration for boolean operations.
-     * The actual OpenCascade calls are tested in integration tests.
-     */
-
-    test("GlueOff mode is required for proper boolean difference", () => {
-      // Document that BOPAlgo_GlueOff should be used for difference operations
-      // BOPAlgo_GlueShift preserves coincident faces incorrectly
-      const expectedGlueMode = "BOPAlgo_GlueOff";
-      expect(expectedGlueMode).toBe("BOPAlgo_GlueOff");
-    });
-
-    test("fuzzy value should be small but non-zero for precision", () => {
-      // A small fuzzy value (1e-7) helps with numerical precision
-      // Zero fuzzy value can cause issues at exact boundaries
-      const expectedFuzzyValue = 1e-7;
-      expect(expectedFuzzyValue).toBeGreaterThan(0);
-      expect(expectedFuzzyValue).toBeLessThan(1e-5);
-    });
-
-    test("tessellation parameters should provide sufficient detail", () => {
-      // Linear deflection of 0.01 provides good mesh quality
-      // Angular deflection of 0.1 ensures smooth curves
-      const linearDeflection = 0.01;
-      const angularDeflection = 0.1;
-
-      expect(linearDeflection).toBeLessThanOrEqual(0.1);
-      expect(angularDeflection).toBeLessThanOrEqual(0.5);
-    });
-  });
+  /*
+   * Boolean operation configuration reference (verified by integration tests below):
+   * - Glue mode: BOPAlgo_GlueOff (preserves coincident faces correctly)
+   * - Fuzzy value: 1e-5 (helps with numerical precision at exact boundaries)
+   * - Tessellation: linearDeflection=0.01, angularDeflection=0.1 (in ocShapeToBRep)
+   * - Default shapeToThreeGeometry: linearDeflection=0.1, angularDeflection=0.5
+   * These values are hardcoded in OpenCascadeService methods and can only be
+   * tested through integration tests that load the WASM module.
+   */
 
   describe("2D vs 3D shape detection", () => {
     test("detects 2D shape (flat in Z)", () => {

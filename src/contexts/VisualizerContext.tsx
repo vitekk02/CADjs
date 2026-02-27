@@ -56,6 +56,7 @@ interface CadVisualizerContextType {
   sceneReady: boolean;
 
   setCameraRotationEnabled: (enabled: boolean) => void;
+  setDrawingPlane: (normal: THREE.Vector3, constant?: number) => void;
 }
 
 export const CadVisualizerContext = createContext<
@@ -83,6 +84,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   const groundPlaneRef = useRef<THREE.Group | null>(null);
   const [sceneReady, setSceneReady] = useState(false); // Track when scene is initialized
   const customPreviewRef = useRef<THREE.Mesh | THREE.Line | null>(null); // Track custom shape preview for disposal
+  const drawingPlaneRef = useRef(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0));
 
   const toggleGroundPlane = useCallback(() => {
     setShowGroundPlane((prev) => !prev);
@@ -92,6 +94,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     if (controlsRef.current) {
       controlsRef.current.enableRotate = enabled;
     }
+  }, []);
+
+  const setDrawingPlane = useCallback((normal: THREE.Vector3, constant: number = 0) => {
+    drawingPlaneRef.current.set(normal, constant);
   }, []);
 
   const initSceneObjects = useCallback(() => {
@@ -227,7 +233,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       const camera = cameraRef.current;
       if (!renderer || !camera) return null;
 
-      const drawingPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+      const drawingPlane = drawingPlaneRef.current;
       const raycaster = new THREE.Raycaster();
 
       const rect = renderer.domElement.getBoundingClientRect();
@@ -804,6 +810,13 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         if (!scene.children.includes(obj)) {
           scene.add(obj);
         }
+        // Defensive: keep Three.js object position/rotation in sync with element state
+        if (!obj.position.equals(element.position)) {
+          obj.position.copy(element.position);
+        }
+        if (element.rotation && !obj.rotation.equals(element.rotation)) {
+          obj.rotation.copy(element.rotation);
+        }
       }
     });
 
@@ -818,11 +831,14 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         child.type === "GridHelper" ||
         child.type === "AxesHelper" ||
         child.userData.isHelper ||
+        child.userData.isPreview === true ||
         child.userData.helperType === "gizmo" ||
         child.userData.helperType === "handleType" ||
+        child.userData.handleType !== undefined ||
         child.userData.isGroundPlane === true ||
         child.userData.isSketchGrid === true ||
         child.userData.isSelectionPlanes === true ||
+        child.userData.isOriginHelper === true ||
         child.type === "TransformControlsGizmo" ||
         child.userData.isSketchPrimitive === true ||
         child.userData.primitiveId !== undefined
@@ -904,9 +920,6 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       groundGroup.userData.isGroundPlane = true;
       groundPlaneRef.current = groundGroup;
     }
-
-    // Force scene update
-    forceSceneUpdate();
   }, [showGroundPlane]);
 
   return (
@@ -955,6 +968,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         updateCursorPosition,
         sceneReady,
         setCameraRotationEnabled,
+        setDrawingPlane,
       }}
     >
       {children}

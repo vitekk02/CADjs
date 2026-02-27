@@ -141,6 +141,7 @@ export interface ExtrusionResult {
   brep: Brep;
   /** Position offset to apply to element.position to account for new center */
   positionOffset: { x: number; y: number; z: number };
+  edgeGeometry?: THREE.BufferGeometry;
 }
 
 /**
@@ -149,9 +150,9 @@ export interface ExtrusionResult {
  * The result BRep is CENTERED (architecture requirement), and a position
  * offset is returned so the caller can update the element's world position.
  *
- * @param brep - The flat BRep to extrude (must be a 2D shape in XY plane, centered)
+ * @param brep - The flat BRep to extrude (centered, flat along any axis)
  * @param extrusionDepth - The depth to extrude
- * @param direction - Direction: 1 for +Z, -1 for -Z
+ * @param direction - Direction: 1 for positive, -1 for negative along the flat normal
  * @returns Promise resolving to the extruded BRep and position offset
  */
 export async function extrudeBRep(
@@ -164,13 +165,22 @@ export async function extrudeBRep(
     return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
   }
 
-  // Check if it's already a 3D brep
-  const zValues = brep.vertices.map((v) => v.z);
-  const minZ = Math.min(...zValues);
-  const maxZ = Math.max(...zValues);
-  const isFlat = Math.abs(maxZ - minZ) < 0.01;
+  // Detect which axis the shape is flat along
+  const xs = brep.vertices.map((v) => v.x);
+  const ys = brep.vertices.map((v) => v.y);
+  const zs = brep.vertices.map((v) => v.z);
+  const rangeX = Math.max(...xs) - Math.min(...xs);
+  const rangeY = Math.max(...ys) - Math.min(...ys);
+  const rangeZ = Math.max(...zs) - Math.min(...zs);
 
-  if (!isFlat) {
+  let normal: { x: number; y: number; z: number };
+  if (rangeX < 0.01) {
+    normal = { x: 1, y: 0, z: 0 };
+  } else if (rangeY < 0.01) {
+    normal = { x: 0, y: 1, z: 0 };
+  } else if (rangeZ < 0.01) {
+    normal = { x: 0, y: 0, z: 1 };
+  } else {
     console.warn("Attempted to extrude a non-flat BRep");
     return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
   }
@@ -187,24 +197,36 @@ export async function extrudeBRep(
       return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
     }
 
-    // Extrude using OpenCascade's BRepPrimAPI_MakePrism
+    // Extrude using OpenCascade's BRepPrimAPI_MakePrism along the flat normal
     const extrudedShape = await ocService.extrudeShape(
       cleanFace,
       extrusionDepth,
-      direction
+      direction,
+      normal
     );
 
     // Convert back to BRep WITH centering - architecture requires centered BReps
     const centeredBrep = await ocService.ocShapeToBRep(extrudedShape, true);
 
-    // Position offset: only Z changes (input and output BReps are both centered at origin)
+    // Extract clean topological edges from OCC shape
+    const edgeGeometry = await ocService.shapeToEdgeLineSegments(extrudedShape, 0.05);
+
+    // Position offset along the extrusion normal
+    const halfOffset = (extrusionDepth / 2) * direction;
     const positionOffset = {
-      x: 0,
-      y: 0,
-      z: (extrusionDepth / 2) * direction
+      x: normal.x * halfOffset,
+      y: normal.y * halfOffset,
+      z: normal.z * halfOffset,
     };
 
-    return { brep: centeredBrep, positionOffset };
+    // Translate edge geometry to local space (centered)
+    edgeGeometry.translate(
+      -normal.x * halfOffset,
+      -normal.y * halfOffset,
+      -normal.z * halfOffset,
+    );
+
+    return { brep: centeredBrep, positionOffset, edgeGeometry };
   } catch (error) {
     console.error("OpenCascade extrusion failed:", error);
     // Return original BRep on failure

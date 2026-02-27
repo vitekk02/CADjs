@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
+import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../src/contexts/CoreContext";
 import { SceneMode } from "../src/scene-operations";
@@ -7,25 +7,23 @@ import useMoveMode from "../src/hooks/useMoveMode";
 import { useUnionMode } from "../src/hooks/useUnionMode";
 import { useDifferenceMode } from "../src/hooks/useDifferenceMode";
 import { useIntersectionMode } from "../src/hooks/useIntersectionMode";
-import { useDrawMode } from "../src/hooks/useDrawMode";
-import { useUngroupMode } from "../src/hooks/useUngroupMode";
-import { useResizeMode } from "../src/hooks/useResizeMode";
 import { useSketchMode } from "../src/hooks/useSketchMode";
 import { useExtrudeMode } from "../src/hooks/useExtrudeMode";
+import { useFilletMode } from "../src/hooks/useFilletMode";
 import SketchToolbar from "../src/navbar/SketchToolbar";
 import DimensionInput from "../src/components/DimensionInput";
 import SketchContextMenu from "../src/components/SketchContextMenu";
-import FeatureTree from "../src/components/FeatureTree";
-// PlaneSelector removed - now using in-scene plane selection
+import BrowserPanel from "../src/components/FeatureTree";
+import { buildBrowserSections } from "../src/scene-operations/browser-sections";
+import { SKETCH_PLANE } from "../src/theme";
+import FileMenu from "../src/components/FileMenu";
 
 interface SimpleCadSceneProps {
   initialMode?: SceneMode;
-  initialShape?: ShapeType;
 }
 
 const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
-  initialMode = "draw",
-  initialShape = "rectangle",
+  initialMode = "move",
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const {
@@ -46,6 +44,26 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     featureTree,
     toggleNodeVisibility,
     toggleNodeExpanded,
+    renameNode,
+    deleteNode,
+    sectionExpandedState,
+    toggleSectionExpanded,
+    originVisibility,
+    toggleOriginVisibility,
+    deselectAll,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    undoActionName,
+    redoActionName,
+    undoStack,
+    redoStack,
+    undoSketch,
+    redoSketch,
+    canUndoSketch,
+    canRedoSketch,
+    isOperationPending,
   } = useCadCore();
   const {
     createEdgeHelpers,
@@ -67,40 +85,26 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     updateCursorPosition,
   } = useCadVisualizer();
 
-  const [shape, setShape] = useState<ShapeType>(initialShape);
+  const [booleanMenuOpen, setBooleanMenuOpen] = useState(false);
+  const booleanMenuRef = useRef<HTMLDivElement>(null);
+  const [undoDropdownOpen, setUndoDropdownOpen] = useState(false);
+  const [redoDropdownOpen, setRedoDropdownOpen] = useState(false);
+  const undoDropdownRef = useRef<HTMLDivElement>(null);
+  const redoDropdownRef = useRef<HTMLDivElement>(null);
 
   const [
-    { selectedObject, contextMenu },
-    {
-      handleMouseDown,
-      handleMouseMove,
-      handleMouseUp,
-      updateContextMenuPosition,
-      clearSelection,
-    },
+    { selectedObject },
+    { handleMouseDown, handleMouseMove, handleMouseUp, clearSelection },
   ] = useMoveMode();
   const { handleUnionModeClick, performUnion, canUnion } = useUnionMode();
-  const { handleDifferenceModeClick, performDifference, canDifference, selectedCount } =
-    useDifferenceMode();
+  const {
+    handleDifferenceModeClick,
+    performDifference,
+    canDifference,
+    selectedCount,
+  } = useDifferenceMode();
   const { handleIntersectionModeClick, performIntersection, canIntersect } =
     useIntersectionMode();
-  const { handleUngroupModeClick, performUngroup, canUngroup } =
-    useUngroupMode();
-
-  const {
-    handleDrawMode,
-    previewMeshRef,
-    isDrawingRef,
-    startPointRef,
-    cleanupPreview,
-  } = useDrawMode();
-  const {
-    handleMouseDown: handleResizeMouseDown,
-    handleMouseMove: handleResizeMouseMove,
-    handleMouseUp: handleResizeMouseUp,
-    cleanup: cleanupResize,
-  } = useResizeMode();
-
   const {
     sketchSubMode,
     setSketchSubMode,
@@ -125,6 +129,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     selectPlaneAndStartSketch,
     handlePlaneSelectionMouseMove,
     handlePlaneSelectionClick,
+    constraintFeedback,
   } = useSketchMode();
 
   const {
@@ -143,18 +148,71 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     cleanup: cleanupExtrude,
   } = useExtrudeMode();
 
+  const {
+    selectedElement: filletSelectedElement,
+    selectedEdgeIndices: filletSelectedEdges,
+    radius: filletRadius,
+    operationType: filletOpType,
+    isApplying: filletIsApplying,
+    showDimensionInput: showFilletDimensionInput,
+    dimensionInputPosition: filletDimensionPosition,
+    handleMouseDown: handleFilletMouseDown,
+    handleMouseMove: handleFilletMouseMove,
+    handleMouseUp: handleFilletMouseUp,
+    handleKeyDown: handleFilletKeyDown,
+    handleRadiusSubmit: handleFilletRadiusSubmit,
+    handleRadiusCancel: handleFilletRadiusCancel,
+    toggleOperationType: toggleFilletOpType,
+    cleanup: cleanupFillet,
+  } = useFilletMode();
+
   // Dimension input state
   const [dimensionInputVisible, setDimensionInputVisible] = useState(false);
-  const [dimensionInputPosition, setDimensionInputPosition] = useState({ x: 0, y: 0 });
+  const [dimensionInputPosition, setDimensionInputPosition] = useState({
+    x: 0,
+    y: 0,
+  });
   const [dimensionInputLabel, setDimensionInputLabel] = useState("");
-  const [dimensionInputValue, setDimensionInputValue] = useState<number | undefined>(undefined);
-  const [pendingDimensionPrimitiveId, setPendingDimensionPrimitiveId] = useState<string | null>(null);
-  const [dimensionSource, setDimensionSource] = useState<"lineCreation" | "dimensionMode" | null>(null);
+  const [dimensionInputValue, setDimensionInputValue] = useState<
+    number | undefined
+  >(undefined);
+  const [pendingDimensionPrimitiveId, setPendingDimensionPrimitiveId] =
+    useState<string | null>(null);
+  const [dimensionSource, setDimensionSource] = useState<
+    "lineCreation" | "dimensionMode" | null
+  >(null);
 
   const selectedObjectRef = useRef<string | null>(null);
   useEffect(() => {
     selectedObjectRef.current = selectedObject;
   }, [selectedObject]);
+
+  // Compute browser panel sections from feature tree
+  const browserSections = useMemo(
+    () =>
+      buildBrowserSections(featureTree, sectionExpandedState, originVisibility),
+    [featureTree, sectionExpandedState, originVisibility],
+  );
+
+  // Selection sync: tree → 3D viewport
+  const handleBrowserSelect = (elementId: string) => {
+    // Deselect any currently selected elements first
+    deselectAll();
+    selectElement(elementId);
+  };
+
+  // Route visibility toggles: origin items → originVisibility, others → featureTree
+  const handleToggleVisibility = (nodeId: string) => {
+    if (nodeId.startsWith("origin-")) {
+      toggleOriginVisibility(nodeId);
+    } else {
+      toggleNodeVisibility(nodeId);
+    }
+  };
+
+  // Determine which element is currently selected for tree highlight
+  const selectedElementId =
+    selectedElements.length === 1 ? selectedElements[0] : undefined;
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -198,9 +256,6 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   }, [elements, scene]);
 
   useEffect(() => {
-    setCurrentShape(shape);
-  }, [shape]);
-  useEffect(() => {
     if (!renderer) return;
 
     const handleMouseMove = (event: MouseEvent) => {
@@ -236,6 +291,57 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     };
   }, [mode, handleExtrudeKeyDown]);
 
+  // Global keyboard listener for fillet mode
+  useEffect(() => {
+    if (mode !== "fillet") return;
+
+    window.addEventListener("keydown", handleFilletKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleFilletKeyDown);
+    };
+  }, [mode, handleFilletKeyDown]);
+
+  // Global keyboard listener for undo/redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
+  // In sketch mode with active sketch, routes to sketch undo/redo exclusively
+  useEffect(() => {
+    const handleUndoRedoKeys = (event: KeyboardEvent) => {
+      const isUndo =
+        (event.ctrlKey || event.metaKey) &&
+        event.key === "z" &&
+        !event.shiftKey;
+      const isRedo =
+        (event.ctrlKey || event.metaKey) &&
+        (event.key === "y" ||
+          (event.key === "z" && event.shiftKey) ||
+          (event.key === "Z" && event.shiftKey));
+
+      if (!isUndo && !isRedo) return;
+      event.preventDefault();
+
+      const inSketchMode = mode === "sketch" && activeSketch;
+
+      if (isUndo) {
+        if (inSketchMode) {
+          undoSketch();
+        } else {
+          undo();
+        }
+      } else {
+        if (inSketchMode) {
+          redoSketch();
+        } else {
+          redo();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleUndoRedoKeys);
+    return () => {
+      window.removeEventListener("keydown", handleUndoRedoKeys);
+    };
+  }, [mode, activeSketch, undo, redo, undoSketch, redoSketch]);
+
   // Prevent default browser context menu in sketch mode
   useEffect(() => {
     if (mode !== "sketch" || !renderer) return;
@@ -256,7 +362,11 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     // Don't interfere if showing line-creation dimension input
     if (dimensionSource === "lineCreation") return;
 
-    if (mode !== "sketch" || sketchSubMode !== "dimension" || selectedPrimitives.length !== 1) {
+    if (
+      mode !== "sketch" ||
+      sketchSubMode !== "dimension" ||
+      selectedPrimitives.length !== 1
+    ) {
       if (dimensionSource === "dimensionMode") {
         setDimensionInputVisible(false);
         setPendingDimensionPrimitiveId(null);
@@ -279,30 +389,38 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
 
     if (primitive.type === "line") {
       label = "Length";
-      // Get line endpoints to calculate length and position
-      const p1 = activeSketch.primitives.find((p) => p.id === primitive.p1Id && p.type === "point");
-      const p2 = activeSketch.primitives.find((p) => p.id === primitive.p2Id && p.type === "point");
+      const p1 = activeSketch.primitives.find(
+        (p) => p.id === primitive.p1Id && p.type === "point",
+      );
+      const p2 = activeSketch.primitives.find(
+        (p) => p.id === primitive.p2Id && p.type === "point",
+      );
       if (p1 && p2 && p1.type === "point" && p2.type === "point") {
-        const length = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+        const length = Math.sqrt(
+          Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2),
+        );
         value = length;
         worldPos.set((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, 0);
       }
     } else if (primitive.type === "circle") {
       label = "Radius";
       value = primitive.radius;
-      const center = activeSketch.primitives.find((p) => p.id === primitive.centerId && p.type === "point");
+      const center = activeSketch.primitives.find(
+        (p) => p.id === primitive.centerId && p.type === "point",
+      );
       if (center && center.type === "point") {
         worldPos.set(center.x + primitive.radius / 2, center.y, 0);
       }
     } else if (primitive.type === "arc") {
       label = "Radius";
       value = primitive.radius;
-      const center = activeSketch.primitives.find((p) => p.id === primitive.centerId && p.type === "point");
+      const center = activeSketch.primitives.find(
+        (p) => p.id === primitive.centerId && p.type === "point",
+      );
       if (center && center.type === "point") {
         worldPos.set(center.x, center.y, 0);
       }
     } else {
-      // Point or other - no dimension to add
       setDimensionInputVisible(false);
       return;
     }
@@ -321,7 +439,15 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       setDimensionSource("dimensionMode");
       setDimensionInputVisible(true);
     }
-  }, [mode, sketchSubMode, selectedPrimitives, activeSketch, camera, renderer, dimensionSource]);
+  }, [
+    mode,
+    sketchSubMode,
+    selectedPrimitives,
+    activeSketch,
+    camera,
+    renderer,
+    dimensionSource,
+  ]);
 
   // Show dimension input immediately after line creation
   useEffect(() => {
@@ -329,7 +455,6 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       return;
     }
 
-    // Convert line midpoint to screen position
     const worldPos = pendingLineDimension.midpoint.clone();
     worldPos.project(camera);
     const rect = renderer.domElement.getBoundingClientRect();
@@ -349,13 +474,13 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     if (!pendingDimensionPrimitiveId) return;
 
     if (dimensionSource === "lineCreation") {
-      // Apply length constraint to the newly created line
       applyLineLengthConstraint(pendingDimensionPrimitiveId, value);
     } else if (dimensionSource === "dimensionMode" && activeSketch) {
-      const primitive = activeSketch.primitives.find((p) => p.id === pendingDimensionPrimitiveId);
+      const primitive = activeSketch.primitives.find(
+        (p) => p.id === pendingDimensionPrimitiveId,
+      );
       if (!primitive) return;
 
-      // Apply appropriate constraint based on primitive type
       if (primitive.type === "line") {
         applyConstraint("distance", value);
       } else if (primitive.type === "circle" || primitive.type === "arc") {
@@ -377,6 +502,52 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     setDimensionSource(null);
   };
 
+  // Close boolean menu on click outside
+  useEffect(() => {
+    if (!booleanMenuOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        booleanMenuRef.current &&
+        !booleanMenuRef.current.contains(event.target as Node)
+      ) {
+        setBooleanMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [booleanMenuOpen]);
+
+  // Close undo/redo dropdowns on click outside
+  useEffect(() => {
+    if (!undoDropdownOpen && !redoDropdownOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        undoDropdownOpen &&
+        undoDropdownRef.current &&
+        !undoDropdownRef.current.contains(event.target as Node)
+      ) {
+        setUndoDropdownOpen(false);
+      }
+      if (
+        redoDropdownOpen &&
+        redoDropdownRef.current &&
+        !redoDropdownRef.current.contains(event.target as Node)
+      ) {
+        setRedoDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [undoDropdownOpen, redoDropdownOpen]);
+
   useEffect(() => {
     if (!renderer || !camera || !scene) return;
 
@@ -390,34 +561,22 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       }
     };
 
-    const handleResizeMode = (event: MouseEvent) => {
-      if (event.type === "mousedown") {
-        handleResizeMouseDown(event);
-      } else if (event.type === "mousemove") {
-        handleResizeMouseMove(event);
-      } else if (event.type === "mouseup") {
-        handleResizeMouseUp();
-      }
-    };
-
-    if (mode === "draw") {
-      renderer.domElement.addEventListener("mousedown", handleDrawMode);
-      renderer.domElement.addEventListener("mouseup", handleDrawMode);
-      renderer.domElement.addEventListener("mousemove", handleDrawMode);
-    } else if (mode === "move") {
+    if (mode === "move") {
       renderer.domElement.addEventListener("mousedown", handleMoveMode);
       renderer.domElement.addEventListener("mousemove", handleMoveMode);
       renderer.domElement.addEventListener("mouseup", handleMoveMode);
     } else if (mode === "union") {
       renderer.domElement.addEventListener("mousedown", handleUnionModeClick);
     } else if (mode === "difference") {
-      renderer.domElement.addEventListener("mousedown", handleDifferenceModeClick);
+      renderer.domElement.addEventListener(
+        "mousedown",
+        handleDifferenceModeClick,
+      );
     } else if (mode === "intersection") {
-      renderer.domElement.addEventListener("mousedown", handleIntersectionModeClick);
-    } else if (mode === "resize") {
-      renderer.domElement.addEventListener("mousedown", handleResizeMode);
-      renderer.domElement.addEventListener("mousemove", handleResizeMode);
-      renderer.domElement.addEventListener("mouseup", handleResizeMode);
+      renderer.domElement.addEventListener(
+        "mousedown",
+        handleIntersectionModeClick,
+      );
     } else if (mode === "sketch") {
       renderer.domElement.addEventListener("mousedown", handleSketchMode);
       renderer.domElement.addEventListener("mousemove", handleSketchMode);
@@ -426,39 +585,49 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.addEventListener("mousedown", handleExtrudeMouseDown);
       renderer.domElement.addEventListener("mousemove", handleExtrudeMouseMove);
       renderer.domElement.addEventListener("mouseup", handleExtrudeMouseUp);
+    } else if (mode === "fillet") {
+      renderer.domElement.addEventListener("mousedown", handleFilletMouseDown);
+      renderer.domElement.addEventListener("mousemove", handleFilletMouseMove);
+      renderer.domElement.addEventListener("mouseup", handleFilletMouseUp);
     }
 
     return () => {
-      renderer.domElement.removeEventListener("mousedown", handleDrawMode);
-      renderer.domElement.removeEventListener("mousemove", handleDrawMode);
-      renderer.domElement.removeEventListener("mouseup", handleDrawMode);
       renderer.domElement.removeEventListener("mousedown", handleMoveMode);
       renderer.domElement.removeEventListener("mousemove", handleMoveMode);
       renderer.domElement.removeEventListener("mouseup", handleMoveMode);
       renderer.domElement.removeEventListener(
         "mousedown",
-        handleUnionModeClick
+        handleUnionModeClick,
       );
       renderer.domElement.removeEventListener(
         "mousedown",
-        handleDifferenceModeClick
+        handleDifferenceModeClick,
       );
       renderer.domElement.removeEventListener(
         "mousedown",
-        handleIntersectionModeClick
+        handleIntersectionModeClick,
       );
-      renderer.domElement.removeEventListener("mouseup", handleDrawMode);
-      renderer.domElement.removeEventListener("mousedown", handleResizeMode);
-      renderer.domElement.removeEventListener("mousemove", handleResizeMode);
-      renderer.domElement.removeEventListener("mouseup", handleResizeMode);
       renderer.domElement.removeEventListener("mousedown", handleSketchMode);
       renderer.domElement.removeEventListener("mousemove", handleSketchMode);
       renderer.domElement.removeEventListener("mouseup", handleSketchMode);
-      renderer.domElement.removeEventListener("mousedown", handleExtrudeMouseDown);
-      renderer.domElement.removeEventListener("mousemove", handleExtrudeMouseMove);
+      renderer.domElement.removeEventListener(
+        "mousedown",
+        handleExtrudeMouseDown,
+      );
+      renderer.domElement.removeEventListener(
+        "mousemove",
+        handleExtrudeMouseMove,
+      );
       renderer.domElement.removeEventListener("mouseup", handleExtrudeMouseUp);
-      // cleanupPreview();
-      // cleanupResize();
+      renderer.domElement.removeEventListener(
+        "mousedown",
+        handleFilletMouseDown,
+      );
+      renderer.domElement.removeEventListener(
+        "mousemove",
+        handleFilletMouseMove,
+      );
+      renderer.domElement.removeEventListener("mouseup", handleFilletMouseUp);
     };
   }, [
     mode,
@@ -466,107 +635,276 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     scene,
     elements,
     selectedElements,
-    shape,
-    drawShape,
     handleMouseDown,
     handleMouseMove,
     handleMouseUp,
-    updateContextMenuPosition,
     handleUnionModeClick,
     handleDifferenceModeClick,
     handleIntersectionModeClick,
     clearSelection,
-    cleanupPreview,
-    handleDrawMode,
-    handleResizeMouseDown,
-    handleResizeMouseMove,
-    handleResizeMouseUp,
-    cleanupResize,
     handleSketchMode,
     handleExtrudeMouseDown,
     handleExtrudeMouseMove,
     handleExtrudeMouseUp,
+    handleFilletMouseDown,
+    handleFilletMouseMove,
+    handleFilletMouseUp,
   ]);
 
   // Plane selection event listeners
   useEffect(() => {
     if (!renderer || !isSelectingPlane) return;
 
-    renderer.domElement.addEventListener("mousemove", handlePlaneSelectionMouseMove);
+    renderer.domElement.addEventListener(
+      "mousemove",
+      handlePlaneSelectionMouseMove,
+    );
     renderer.domElement.addEventListener("click", handlePlaneSelectionClick);
 
     return () => {
-      renderer.domElement.removeEventListener("mousemove", handlePlaneSelectionMouseMove);
-      renderer.domElement.removeEventListener("click", handlePlaneSelectionClick);
+      renderer.domElement.removeEventListener(
+        "mousemove",
+        handlePlaneSelectionMouseMove,
+      );
+      renderer.domElement.removeEventListener(
+        "click",
+        handlePlaneSelectionClick,
+      );
     };
-  }, [renderer, isSelectingPlane, handlePlaneSelectionMouseMove, handlePlaneSelectionClick]);
+  }, [
+    renderer,
+    isSelectingPlane,
+    handlePlaneSelectionMouseMove,
+    handlePlaneSelectionClick,
+  ]);
+
+  // ── Persistent origin helpers (planes, axes, origin point) ──────────
+  const originGroupRef = useRef<THREE.Group | null>(null);
+
+  // Create persistent origin helpers on mount
+  useEffect(() => {
+    if (!scene) return;
+
+    const group = new THREE.Group();
+    group.userData.isOriginHelper = true;
+
+    const materials: THREE.Material[] = [];
+    const geometries: THREE.BufferGeometry[] = [];
+
+    const planeSize = 4;
+    const halfSize = planeSize / 2;
+
+    // ── Planes ──────────────────────────────────────────────
+    // XY plane (blue)
+    const xyGeo = new THREE.PlaneGeometry(planeSize, planeSize);
+    geometries.push(xyGeo);
+    const xyMat = new THREE.MeshBasicMaterial({
+      color: SKETCH_PLANE.xy,
+      transparent: true,
+      opacity: 0.15,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    materials.push(xyMat);
+    const xyPlane = new THREE.Mesh(xyGeo, xyMat);
+    xyPlane.position.set(halfSize, halfSize, 0);
+    xyPlane.userData.originId = "origin-xy";
+    group.add(xyPlane);
+
+    // XZ plane (green)
+    const xzGeo = new THREE.PlaneGeometry(planeSize, planeSize);
+    geometries.push(xzGeo);
+    const xzMat = new THREE.MeshBasicMaterial({
+      color: SKETCH_PLANE.xz,
+      transparent: true,
+      opacity: 0.15,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    materials.push(xzMat);
+    const xzPlane = new THREE.Mesh(xzGeo, xzMat);
+    xzPlane.rotation.x = -Math.PI / 2;
+    xzPlane.position.set(halfSize, 0, halfSize);
+    xzPlane.userData.originId = "origin-xz";
+    group.add(xzPlane);
+
+    // YZ plane (red)
+    const yzGeo = new THREE.PlaneGeometry(planeSize, planeSize);
+    geometries.push(yzGeo);
+    const yzMat = new THREE.MeshBasicMaterial({
+      color: SKETCH_PLANE.yz,
+      transparent: true,
+      opacity: 0.15,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    materials.push(yzMat);
+    const yzPlane = new THREE.Mesh(yzGeo, yzMat);
+    yzPlane.rotation.y = Math.PI / 2;
+    yzPlane.position.set(0, halfSize, halfSize);
+    yzPlane.userData.originId = "origin-yz";
+    group.add(yzPlane);
+
+    // ── Axis lines ──────────────────────────────────────────
+    // X axis (red)
+    const xAxisGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(planeSize, 0, 0),
+    ]);
+    geometries.push(xAxisGeo);
+    const xAxisMat = new THREE.LineBasicMaterial({ color: SKETCH_PLANE.xAxis });
+    materials.push(xAxisMat);
+    const xAxis = new THREE.Line(xAxisGeo, xAxisMat);
+    xAxis.userData.originId = "origin-x-axis";
+    group.add(xAxis);
+
+    // Y axis (green)
+    const yAxisGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, planeSize, 0),
+    ]);
+    geometries.push(yAxisGeo);
+    const yAxisMat = new THREE.LineBasicMaterial({ color: SKETCH_PLANE.yAxis });
+    materials.push(yAxisMat);
+    const yAxis = new THREE.Line(yAxisGeo, yAxisMat);
+    yAxis.userData.originId = "origin-y-axis";
+    group.add(yAxis);
+
+    // Z axis (blue)
+    const zAxisGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, planeSize),
+    ]);
+    geometries.push(zAxisGeo);
+    const zAxisMat = new THREE.LineBasicMaterial({ color: SKETCH_PLANE.zAxis });
+    materials.push(zAxisMat);
+    const zAxis = new THREE.Line(zAxisGeo, zAxisMat);
+    zAxis.userData.originId = "origin-z-axis";
+    group.add(zAxis);
+
+    // ── Origin sphere ───────────────────────────────────────
+    const originGeo = new THREE.SphereGeometry(0.1, 16, 16);
+    geometries.push(originGeo);
+    const originMat = new THREE.MeshBasicMaterial({
+      color: SKETCH_PLANE.origin,
+    });
+    materials.push(originMat);
+    const originSphere = new THREE.Mesh(originGeo, originMat);
+    originSphere.userData.originId = "origin-point";
+    group.add(originSphere);
+
+    // Store for disposal
+    group.userData.materials = materials;
+    group.userData.geometries = geometries;
+
+    scene.add(group);
+    originGroupRef.current = group;
+
+    return () => {
+      if (originGroupRef.current) {
+        scene.remove(originGroupRef.current);
+        materials.forEach((m) => m.dispose());
+        geometries.forEach((g) => g.dispose());
+        originGroupRef.current = null;
+      }
+    };
+  }, [scene]);
+
+  // Sync visibility of each origin child with originVisibility state
+  useEffect(() => {
+    if (!originGroupRef.current) return;
+    originGroupRef.current.traverse((child) => {
+      if (child.userData.originId) {
+        child.visible = originVisibility[child.userData.originId] ?? true;
+      }
+    });
+  }, [originVisibility]);
+
+  // Hide persistent origin helpers while sketch plane selection is active
+  useEffect(() => {
+    if (!originGroupRef.current) return;
+    originGroupRef.current.visible = !isSelectingPlane;
+  }, [isSelectingPlane]);
+
+  // Helper to get mode display label
+  const getModeLabel = (): string => {
+    switch (mode) {
+      case "sketch":
+        return isSelectingPlane ? "Select Plane" : "Sketch";
+      case "extrude":
+        return "Extrude";
+      case "fillet":
+        return filletOpType === "fillet" ? "Fillet" : "Chamfer";
+      case "move":
+        return "Move";
+      case "union":
+        return "Union";
+      case "difference":
+        return "Difference";
+      case "intersection":
+        return "Intersection";
+      default:
+        return mode.charAt(0).toUpperCase() + mode.slice(1);
+    }
+  };
+
+  // Check if we're in a boolean mode
+  const isBooleanMode =
+    mode === "union" || mode === "difference" || mode === "intersection";
+
+  // Lock UI during active sketch or async operations
+  const inActiveSketch = mode === "sketch" && !!activeSketch;
+  const isLocked = inActiveSketch || isOperationPending;
+
+  // Check if secondary bar should be shown
+  const showSecondaryBar =
+    (mode === "sketch" && !isSelectingPlane && activeSketch) ||
+    isBooleanMode ||
+    mode === "extrude" ||
+    mode === "fillet";
 
   return (
-    <div className="relative w-full h-screen">
-      <div ref={mountRef} className="absolute inset-0" />
+    <div className="w-full h-screen flex overflow-hidden">
+      {/* Browser Panel - left side */}
+      <div className="flex-none w-56 bg-gray-800 bg-opacity-90 border-r border-gray-700 overflow-hidden">
+        <BrowserPanel
+          sections={browserSections}
+          selectedElementId={selectedElementId}
+          onSelectNode={handleBrowserSelect}
+          onToggleVisibility={handleToggleVisibility}
+          onToggleSectionExpanded={toggleSectionExpanded}
+          onToggleItemExpanded={toggleNodeExpanded}
+          onRenameNode={renameNode}
+          onDeleteNode={deleteNode}
+        />
+      </div>
 
-      <div className="absolute top-0 left-0 p-4 z-10 bg-gray-800 bg-opacity-75 rounded-br-lg text-white">
-        <div className="flex flex-col gap-2">
-          <h2 className="font-bold">Mode:</h2>
-          <div className="space-x-2">
+      {/* Center column: toolbars + canvas */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Primary Toolbar */}
+        <div className="flex-none h-12 bg-gray-900 border-b border-gray-700 flex items-center z-20">
+          <div className="flex items-center px-3 gap-1 min-w-0 flex-1">
+            {/* File menu */}
+            <FileMenu />
+
+            {/* Separator */}
+            <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
+
+            {/* Primary mode buttons */}
             <button
-              className={`px-3 py-1 rounded ${
-                mode === "draw" ? "bg-blue-600" : "bg-gray-600"
+              className={`flex-none px-3 py-1.5 text-sm rounded ${
+                isOperationPending
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                  : mode === "sketch"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
               }`}
-              onClick={() => setMode("draw")}
-            >
-              Draw
-            </button>
-            <button
-              className={`px-3 py-1 rounded ${
-                mode === "move" ? "bg-blue-600" : "bg-gray-600"
-              }`}
-              onClick={() => setMode("move")}
-            >
-              Move
-            </button>
-            <button
-              className={`px-3 py-1 rounded ${
-                mode === "resize" ? "bg-blue-600" : "bg-gray-600"
-              }`}
-              onClick={() => setMode("resize")}
-            >
-              Resize
-            </button>
-            <button
-              className={`px-3 py-1 rounded ${
-                mode === "union" ? "bg-blue-600" : "bg-gray-600"
-              }`}
-              onClick={() => setMode("union")}
-            >
-              Union
-            </button>
-            <button
-              className={`px-3 py-1 rounded ${
-                mode === "difference" ? "bg-blue-600" : "bg-gray-600"
-              }`}
-              onClick={() => setMode("difference")}
-            >
-              Difference
-            </button>
-            <button
-              className={`px-3 py-1 rounded ${
-                mode === "intersection" ? "bg-blue-600" : "bg-gray-600"
-              }`}
-              onClick={() => setMode("intersection")}
-            >
-              Intersection
-            </button>
-            <button
-              className={`px-3 py-1 rounded ${
-                mode === "sketch" ? "bg-blue-600" : "bg-gray-600"
-              }`}
+              disabled={isOperationPending}
               onClick={() => {
                 if (mode !== "sketch") {
                   setMode("sketch");
                   startNewSketch();
                 } else if (!activeSketch) {
-                  // Already in sketch mode but no active sketch - start new one
                   startNewSketch();
                 }
               }}
@@ -574,9 +912,14 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               Sketch
             </button>
             <button
-              className={`px-3 py-1 rounded ${
-                mode === "extrude" ? "bg-blue-600" : "bg-gray-600"
+              className={`flex-none px-3 py-1.5 text-sm rounded ${
+                isLocked
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                  : mode === "extrude"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
               }`}
+              disabled={isLocked}
               onClick={() => {
                 if (mode !== "extrude") {
                   cleanupExtrude();
@@ -586,316 +929,656 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             >
               Extrude
             </button>
-
             <button
-              className={`px-3 py-1 rounded ${
-                showGroundPlane ? "bg-blue-600" : "bg-gray-600"
+              className={`flex-none px-3 py-1.5 text-sm rounded ${
+                isLocked
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                  : mode === "move"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+              }`}
+              disabled={isLocked}
+              onClick={() => setMode("move")}
+            >
+              Move
+            </button>
+
+            {/* Separator */}
+            <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
+
+            {/* Boolean dropdown */}
+            <div className="relative flex-none" ref={booleanMenuRef}>
+              <button
+                className={`px-3 py-1.5 text-sm rounded flex items-center gap-1 ${
+                  isLocked
+                    ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                    : isBooleanMode
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                }`}
+                disabled={isLocked}
+                onClick={() =>
+                  !isLocked && setBooleanMenuOpen(!booleanMenuOpen)
+                }
+              >
+                Boolean
+                <svg
+                  className="w-3 h-3"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 9l-7 7-7-7"
+                  />
+                </svg>
+              </button>
+              {booleanMenuOpen && (
+                <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-600 rounded-md shadow-lg py-1 z-30 min-w-[160px]">
+                  <button
+                    className={`w-full px-4 py-2 text-sm text-left hover:bg-gray-700 text-gray-200 ${
+                      mode === "union" ? "bg-gray-700" : ""
+                    }`}
+                    onClick={() => {
+                      setMode("union");
+                      setBooleanMenuOpen(false);
+                    }}
+                  >
+                    Union
+                  </button>
+                  <button
+                    className={`w-full px-4 py-2 text-sm text-left hover:bg-gray-700 text-gray-200 ${
+                      mode === "difference" ? "bg-gray-700" : ""
+                    }`}
+                    onClick={() => {
+                      setMode("difference");
+                      setBooleanMenuOpen(false);
+                    }}
+                  >
+                    Difference
+                  </button>
+                  <button
+                    className={`w-full px-4 py-2 text-sm text-left hover:bg-gray-700 text-gray-200 ${
+                      mode === "intersection" ? "bg-gray-700" : ""
+                    }`}
+                    onClick={() => {
+                      setMode("intersection");
+                      setBooleanMenuOpen(false);
+                    }}
+                  >
+                    Intersection
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Fillet / Chamfer button */}
+            <button
+              className={`flex-none px-3 py-1.5 text-sm rounded ${
+                isLocked
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                  : mode === "fillet"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+              }`}
+              disabled={isLocked}
+              onClick={() => {
+                if (mode !== "fillet") {
+                  cleanupFillet();
+                }
+                setMode("fillet");
+              }}
+            >
+              Fillet (Chamfer)
+            </button>
+
+            {/* Separator */}
+            <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
+
+            {/* Grid toggle */}
+            <button
+              className={`flex-none px-2 py-1.5 text-sm rounded ${
+                showGroundPlane
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-700 hover:bg-gray-600 text-gray-200"
               }`}
               onClick={toggleGroundPlane}
+              title={showGroundPlane ? "Hide Grid" : "Show Grid"}
             >
-              {showGroundPlane ? "Hide Grid" : "Show Grid"}
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.5}
+                  d="M3 3h18v18H3V3zM3 9h18M3 15h18M9 3v18M15 3v18"
+                />
+              </svg>
             </button>
+
+            {/* Separator */}
+            <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
+
+            {/* Undo/Redo buttons — switch to sketch undo when in sketch mode */}
+            {(() => {
+              const inSketch = mode === "sketch" && !!activeSketch;
+              const effectiveCanUndo = inSketch ? canUndoSketch : canUndo;
+              const effectiveCanRedo = inSketch ? canRedoSketch : canRedo;
+              const effectiveUndo = inSketch ? undoSketch : undo;
+              const effectiveRedo = inSketch ? redoSketch : redo;
+              const undoTitle = inSketch
+                ? `Undo sketch action (Ctrl+Z)`
+                : undoActionName
+                  ? `Undo ${undoActionName} (Ctrl+Z)`
+                  : "Undo (Ctrl+Z)";
+              const redoTitle = inSketch
+                ? `Redo sketch action (Ctrl+Y)`
+                : redoActionName
+                  ? `Redo ${redoActionName} (Ctrl+Y)`
+                  : "Redo (Ctrl+Y)";
+
+              return (
+                <div className="flex items-center gap-0.5">
+                  {/* Undo button with dropdown */}
+                  <div className="relative" ref={undoDropdownRef}>
+                    <div className="flex">
+                      <button
+                        className={`flex-none px-2 py-1.5 text-sm ${!inSketch && canUndo ? "rounded-l" : "rounded"} ${
+                          effectiveCanUndo
+                            ? "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                            : "bg-gray-800 text-gray-500 cursor-not-allowed"
+                        }`}
+                        onClick={() => {
+                          effectiveUndo();
+                          setUndoDropdownOpen(false);
+                        }}
+                        disabled={!effectiveCanUndo}
+                        title={undoTitle}
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M3 10h10a5 5 0 015 5v0a5 5 0 01-5 5H3M3 10l4-4M3 10l4 4"
+                          />
+                        </svg>
+                      </button>
+                      {!inSketch && (
+                        <button
+                          className={`flex-none px-1 py-1.5 text-sm rounded-r border-l border-gray-600 ${
+                            canUndo
+                              ? "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                              : "bg-gray-800 text-gray-500 cursor-not-allowed"
+                          }`}
+                          onClick={() => {
+                            setUndoDropdownOpen(!undoDropdownOpen);
+                            setRedoDropdownOpen(false);
+                          }}
+                          disabled={!canUndo}
+                        >
+                          <svg
+                            className="w-3 h-3"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M19 9l-7 7-7-7"
+                            />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                    {!inSketch && undoDropdownOpen && undoStack.length > 0 && (
+                      <div className="absolute top-full left-0 mt-1 w-48 bg-gray-800 border border-gray-600 rounded-md shadow-lg z-50 max-h-60 overflow-y-auto">
+                        {[...undoStack].reverse().map((snapshot, idx) => (
+                          <button
+                            key={snapshot.timestamp}
+                            className="w-full px-3 py-1.5 text-sm text-left text-gray-200 hover:bg-gray-700"
+                            onClick={() => {
+                              for (let i = 0; i <= idx; i++) {
+                                undo();
+                              }
+                              setUndoDropdownOpen(false);
+                            }}
+                          >
+                            {snapshot.actionName}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Redo button with dropdown */}
+                  <div className="relative" ref={redoDropdownRef}>
+                    <div className="flex">
+                      <button
+                        className={`flex-none px-2 py-1.5 text-sm ${!inSketch && canRedo ? "rounded-l" : "rounded"} ${
+                          effectiveCanRedo
+                            ? "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                            : "bg-gray-800 text-gray-500 cursor-not-allowed"
+                        }`}
+                        onClick={() => {
+                          effectiveRedo();
+                          setRedoDropdownOpen(false);
+                        }}
+                        disabled={!effectiveCanRedo}
+                        title={redoTitle}
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M21 10H11a5 5 0 00-5 5v0a5 5 0 005 5h10M21 10l-4-4M21 10l-4 4"
+                          />
+                        </svg>
+                      </button>
+                      {!inSketch && (
+                        <button
+                          className={`flex-none px-1 py-1.5 text-sm rounded-r border-l border-gray-600 ${
+                            canRedo
+                              ? "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                              : "bg-gray-800 text-gray-500 cursor-not-allowed"
+                          }`}
+                          onClick={() => {
+                            setRedoDropdownOpen(!redoDropdownOpen);
+                            setUndoDropdownOpen(false);
+                          }}
+                          disabled={!canRedo}
+                        >
+                          <svg
+                            className="w-3 h-3"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M19 9l-7 7-7-7"
+                            />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                    {!inSketch && redoDropdownOpen && redoStack.length > 0 && (
+                      <div className="absolute top-full left-0 mt-1 w-48 bg-gray-800 border border-gray-600 rounded-md shadow-lg z-50 max-h-60 overflow-y-auto">
+                        {[...redoStack].reverse().map((snapshot, idx) => (
+                          <button
+                            key={snapshot.timestamp}
+                            className="w-full px-3 py-1.5 text-sm text-left text-gray-200 hover:bg-gray-700"
+                            onClick={() => {
+                              for (let i = 0; i <= idx; i++) {
+                                redo();
+                              }
+                              setRedoDropdownOpen(false);
+                            }}
+                          >
+                            {snapshot.actionName}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Right side: mode label */}
+            <div className="ml-auto flex-none text-sm text-gray-400">
+              {getModeLabel()}
+            </div>
           </div>
+        </div>
 
-          {mode === "draw" && (
-            <>
-              <h2 className="font-bold mt-2">Shape:</h2>
-              <div className="space-x-2">
-                <button
-                  className={`px-3 py-1 rounded ${
-                    shape === "rectangle" ? "bg-blue-600" : "bg-gray-600"
-                  }`}
-                  onClick={() => setShape("rectangle")}
-                >
-                  Rectangle
-                </button>
-                <button
-                  className={`px-3 py-1 rounded ${
-                    shape === "triangle" ? "bg-blue-600" : "bg-gray-600"
-                  }`}
-                  onClick={() => setShape("triangle")}
-                >
-                  Triangle
-                </button>
-                <button
-                  className={`px-3 py-1 rounded ${
-                    shape === "circle" ? "bg-blue-600" : "bg-gray-600"
-                  }`}
-                  onClick={() => setShape("circle")}
-                >
-                  Circle
-                </button>
-                <button
-                  className={`px-3 py-1 rounded ${
-                    shape === "custom" ? "bg-blue-600" : "bg-gray-600"
-                  }`}
-                  onClick={() => setShape("custom")}
-                >
-                  Polygon
-                </button>
-              </div>
-            </>
-          )}
+        {/* Secondary Action Bar */}
+        {showSecondaryBar && (
+          <div className="flex-none h-10 bg-gray-800 border-b border-gray-700 flex items-center z-20">
+            <div className="flex items-center px-3 min-w-0 flex-1 overflow-visible">
+              {/* Sketch mode tools */}
+              {mode === "sketch" && !isSelectingPlane && activeSketch && (
+                <SketchToolbar
+                  activeSketch={activeSketch}
+                  sketchSubMode={sketchSubMode}
+                  onSubModeChange={setSketchSubMode}
+                  onFinishSketch={finishSketch}
+                  onCancelSketch={cancelSketch}
+                  onSolveSketch={solveSketch}
+                  selectedPrimitives={selectedPrimitives}
+                  onApplyConstraint={applyConstraint}
+                  isChaining={isChaining}
+                  isOperationPending={isOperationPending}
+                />
+              )}
 
-          {mode === "union" && canUnion && (
-            <button
-              className="px-4 py-2 bg-green-600 rounded mt-2"
-              onClick={() => {
-                performUnion();
-              }}
+              {/* Boolean mode controls */}
+              {mode === "union" && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">
+                    Select 2+ shapes to union
+                  </span>
+                  {canUnion && (
+                    <button
+                      className="flex-none px-3 py-1 text-sm bg-green-600 hover:bg-green-500 text-white rounded"
+                      onClick={performUnion}
+                    >
+                      Union ({selectedElements.length})
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {mode === "difference" && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">
+                    Select base, then tool(s)
+                  </span>
+                  {canDifference && (
+                    <button
+                      className="flex-none px-3 py-1 text-sm bg-orange-600 hover:bg-orange-500 text-white rounded"
+                      onClick={performDifference}
+                    >
+                      Subtract ({selectedCount - 1})
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {mode === "intersection" && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">
+                    Select 2+ shapes
+                  </span>
+                  {canIntersect && (
+                    <button
+                      className="flex-none px-3 py-1 text-sm bg-purple-600 hover:bg-purple-500 text-white rounded"
+                      onClick={performIntersection}
+                    >
+                      Intersect ({selectedElements.length})
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Extrude mode controls */}
+              {mode === "extrude" && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">
+                    {extrudeSelectedElement
+                      ? isExtruding
+                        ? `Depth: ${extrusionDepth.toFixed(2)}${extrudeDirection ? ` (${extrudeDirection})` : ""}`
+                        : "Drag arrow to extrude"
+                      : "Select a flat shape"}
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    Shift: symmetric | Ctrl: fine
+                  </span>
+                </div>
+              )}
+
+              {/* Fillet/Chamfer mode controls */}
+              {mode === "fillet" && (
+                <div className="flex items-center gap-3">
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      filletOpType === "fillet"
+                        ? "bg-orange-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={toggleFilletOpType}
+                  >
+                    Fillet
+                  </button>
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      filletOpType === "chamfer"
+                        ? "bg-orange-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={toggleFilletOpType}
+                  >
+                    Chamfer
+                  </button>
+                  <div className="w-px h-4 bg-gray-600" />
+                  <span className="text-sm text-gray-400">
+                    {filletIsApplying
+                      ? "Applying..."
+                      : !filletSelectedElement
+                        ? "Select a 3D body"
+                        : filletSelectedEdges.length === 0
+                          ? "Click edges to select (Ctrl+click for multiple)"
+                          : `${filletSelectedEdges.length} edge(s) | Radius: ${filletRadius.toFixed(2)}`}
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    F: toggle | Enter: apply
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Canvas area */}
+        <div className="flex-1 relative min-h-0 overflow-hidden">
+          <div ref={mountRef} className="absolute inset-0" />
+
+          {/* Constraint feedback toast */}
+          {constraintFeedback && (
+            <div
+              className={`absolute top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded shadow-lg text-sm font-medium z-50 pointer-events-none ${
+                constraintFeedback.type === "redundant"
+                  ? "bg-yellow-500 text-black"
+                  : "bg-red-500 text-white"
+              }`}
             >
-              Union Selected ({selectedElements.length})
-            </button>
-          )}
-
-          {mode === "difference" && (
-            <div className="mt-2">
-              <p className="text-sm text-gray-300 mb-1">
-                Select base shape first, then tool(s) to subtract
-              </p>
-              {canDifference && (
-                <button
-                  className="px-4 py-2 bg-orange-600 rounded"
-                  onClick={() => {
-                    performDifference();
-                  }}
-                >
-                  Subtract ({selectedCount - 1}) from Base
-                </button>
-              )}
+              {constraintFeedback.message}
             </div>
           )}
 
-          {mode === "intersection" && (
-            <div className="mt-2">
-              <p className="text-sm text-gray-300 mb-1">
-                Select 2+ shapes to get their common volume
-              </p>
-              {canIntersect && (
-                <button
-                  className="px-4 py-2 bg-purple-600 rounded"
-                  onClick={() => {
-                    performIntersection();
-                  }}
-                >
-                  Intersect Selected ({selectedElements.length})
-                </button>
-              )}
-            </div>
-          )}
+          {/* Dimension input overlay */}
+          <DimensionInput
+            visible={dimensionInputVisible}
+            position={dimensionInputPosition}
+            label={dimensionInputLabel}
+            initialValue={dimensionInputValue}
+            onSubmit={handleDimensionSubmit}
+            onCancel={handleDimensionCancel}
+          />
 
-          {mode === "extrude" && (
-            <div className="mt-2">
-              <p className="text-sm text-gray-300 mb-1">
-                Select a flat shape to extrude
-              </p>
-              {extrudeSelectedElement && (
-                <p className="text-sm text-green-400">
-                  Drag arrow to extrude
-                  {isExtruding && `: ${extrusionDepth.toFixed(2)} units`}
-                  {extrudeDirection && ` (${extrudeDirection})`}
-                </p>
-              )}
-              <p className="text-xs text-gray-500 mt-1">
-                Shift+drag: symmetric | Ctrl: fine control
-              </p>
-            </div>
-          )}
-
-          <button
-            onClick={performUngroup}
-            disabled={!canUngroup}
-            className={`px-3 py-1 rounded ${
-              canUngroup ? "bg-blue-600 hover:bg-blue-700" : "bg-gray-400"
-            }`}
-            title="Break compound object into its parts"
-          >
-            Ungroup
-          </button>
-
-          {mode === "sketch" && !isSelectingPlane && activeSketch && (
-            <SketchToolbar
-              activeSketch={activeSketch}
-              sketchSubMode={sketchSubMode}
-              onSubModeChange={setSketchSubMode}
-              onFinishSketch={finishSketch}
-              onCancelSketch={cancelSketch}
-              onSolveSketch={solveSketch}
-              selectedPrimitives={selectedPrimitives}
-              onApplyConstraint={applyConstraint}
-              isChaining={isChaining}
+          {/* Extrude dimension input */}
+          {mode === "extrude" && showExtrudeDimensionInput && (
+            <DimensionInput
+              visible={showExtrudeDimensionInput}
+              position={extrudeDimensionPosition}
+              label="Extrusion Depth"
+              initialValue={extrusionDepth > 0 ? extrusionDepth : 1}
+              onSubmit={handleExtrudeDimensionSubmit}
+              onCancel={handleExtrudeDimensionCancel}
             />
           )}
-        </div>
-      </div>
 
-      {/* Dimension input overlay */}
-      <DimensionInput
-        visible={dimensionInputVisible}
-        position={dimensionInputPosition}
-        label={dimensionInputLabel}
-        initialValue={dimensionInputValue}
-        onSubmit={handleDimensionSubmit}
-        onCancel={handleDimensionCancel}
-      />
+          {/* Fillet/Chamfer dimension input */}
+          {mode === "fillet" && showFilletDimensionInput && (
+            <DimensionInput
+              visible={showFilletDimensionInput}
+              position={filletDimensionPosition}
+              label={
+                filletOpType === "fillet" ? "Fillet Radius" : "Chamfer Distance"
+              }
+              initialValue={filletRadius}
+              onSubmit={handleFilletRadiusSubmit}
+              onCancel={handleFilletRadiusCancel}
+            />
+          )}
 
-      {/* Extrude dimension input */}
-      {mode === "extrude" && showExtrudeDimensionInput && (
-        <DimensionInput
-          visible={showExtrudeDimensionInput}
-          position={extrudeDimensionPosition}
-          label="Extrusion Depth"
-          initialValue={extrusionDepth > 0 ? extrusionDepth : 1}
-          onSubmit={handleExtrudeDimensionSubmit}
-          onCancel={handleExtrudeDimensionCancel}
-        />
-      )}
+          {/* Sketch context menu for right-click constraints */}
+          {mode === "sketch" && (
+            <SketchContextMenu
+              visible={sketchContextMenu.visible}
+              x={sketchContextMenu.x}
+              y={sketchContextMenu.y}
+              primitiveIds={sketchContextMenu.primitiveIds}
+              primitiveTypes={sketchContextMenu.primitiveTypes}
+              onClose={closeSketchContextMenu}
+              onApplyConstraint={applyConstraintToContextMenuPrimitives}
+            />
+          )}
 
-      {/* Sketch context menu for right-click constraints */}
-      {mode === "sketch" && (
-        <SketchContextMenu
-          visible={sketchContextMenu.visible}
-          x={sketchContextMenu.x}
-          y={sketchContextMenu.y}
-          primitiveIds={sketchContextMenu.primitiveIds}
-          primitiveTypes={sketchContextMenu.primitiveTypes}
-          onClose={closeSketchContextMenu}
-          onApplyConstraint={applyConstraintToContextMenuPrimitives}
-        />
-      )}
-
-      {/* Plane selection hint overlay */}
-      {mode === "sketch" && isSelectingPlane && (
-        <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-20 pointer-events-none">
-          <div className="bg-gray-800 bg-opacity-90 rounded-lg px-6 py-3 text-white shadow-lg">
-            <div className="text-center">
-              <p className="text-sm font-medium mb-2">Select a sketch plane</p>
-              <p className="text-xs text-gray-400 mb-2">Click on a colored plane in the scene</p>
-              {hoveredPlane && (
-                <p className="text-sm font-bold" style={{
-                  color: hoveredPlane === "XY" ? "#4488ff" :
-                         hoveredPlane === "XZ" ? "#44ff44" : "#ff4444"
-                }}>
-                  {hoveredPlane === "XY" ? "XY Plane (Front)" :
-                   hoveredPlane === "XZ" ? "XZ Plane (Top)" : "YZ Plane (Side)"}
-                </p>
-              )}
-              <div className="mt-3 flex justify-center gap-2 pointer-events-auto">
-                <button
-                  className="px-3 py-1 text-xs rounded bg-blue-600 hover:bg-blue-500"
-                  onClick={() => selectPlaneAndStartSketch("XY")}
-                >
-                  XY
-                </button>
-                <button
-                  className="px-3 py-1 text-xs rounded bg-green-600 hover:bg-green-500"
-                  onClick={() => selectPlaneAndStartSketch("XZ")}
-                >
-                  XZ
-                </button>
-                <button
-                  className="px-3 py-1 text-xs rounded bg-red-600 hover:bg-red-500"
-                  onClick={() => selectPlaneAndStartSketch("YZ")}
-                >
-                  YZ
-                </button>
-                <button
-                  className="px-3 py-1 text-xs rounded bg-gray-600 hover:bg-gray-500"
-                  onClick={cancelPlaneSelection}
-                >
-                  Cancel
-                </button>
+          {/* Plane selection hint overlay */}
+          {mode === "sketch" && isSelectingPlane && (
+            <div className="absolute bottom-12 left-1/2 transform -translate-x-1/2 z-20 pointer-events-none">
+              <div className="bg-gray-800 bg-opacity-90 rounded-lg px-6 py-3 text-white shadow-lg">
+                <div className="text-center">
+                  <p className="text-sm font-medium mb-2">
+                    Select a sketch plane
+                  </p>
+                  <p className="text-xs text-gray-400 mb-2">
+                    Click on a colored plane in the scene
+                  </p>
+                  {hoveredPlane && (
+                    <p
+                      className="text-sm font-bold"
+                      style={{
+                        color:
+                          hoveredPlane === "XY"
+                            ? "#4488ff"
+                            : hoveredPlane === "XZ"
+                              ? "#44ff44"
+                              : "#ff4444",
+                      }}
+                    >
+                      {hoveredPlane === "XY"
+                        ? "XY Plane (Front)"
+                        : hoveredPlane === "XZ"
+                          ? "XZ Plane (Top)"
+                          : "YZ Plane (Side)"}
+                    </p>
+                  )}
+                  <div className="mt-3 flex justify-center gap-2 pointer-events-auto">
+                    <button
+                      className="px-3 py-1 text-xs rounded bg-blue-600 hover:bg-blue-500"
+                      onClick={() => selectPlaneAndStartSketch("XY")}
+                    >
+                      XY
+                    </button>
+                    <button
+                      className="px-3 py-1 text-xs rounded bg-green-600 hover:bg-green-500"
+                      onClick={() => selectPlaneAndStartSketch("XZ")}
+                    >
+                      XZ
+                    </button>
+                    <button
+                      className="px-3 py-1 text-xs rounded bg-red-600 hover:bg-red-500"
+                      onClick={() => selectPlaneAndStartSketch("YZ")}
+                    >
+                      YZ
+                    </button>
+                    <button
+                      className="px-3 py-1 text-xs rounded bg-gray-600 hover:bg-gray-500"
+                      onClick={cancelPlaneSelection}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {contextMenu.visible && (
-        <div
-          className="absolute z-20 bg-gray-900 bg-opacity-90 rounded shadow-lg p-2 min-w-[120px] text-white"
-          style={{
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-          }}
-        >
-          <div className="flex flex-col gap-1">
-            <button
-              className="px-3 py-1 text-left hover:bg-gray-700 rounded"
-              onClick={() => {
-                if (contextMenu.nodeId) {
-                  // TODO copy
-                }
-              }}
-            >
-              Copy
-            </button>
-            <button
-              className="px-3 py-1 text-left hover:bg-gray-700 rounded"
-              onClick={() => {
-                // TODO delete
-              }}
-            >
-              Delete
-            </button>
-          </div>
-        </div>
-      )}
-      <div className="absolute bottom-4 left-4 bg-gray-800 bg-opacity-75 p-2 rounded text-white text-sm font-mono">
-        <h3 className="font-bold">Cursor Position</h3>
-        <p>
-          X: {cursorPosition ? cursorPosition.x.toFixed(2) : "--"}
-          <br />
-          Y: {cursorPosition ? cursorPosition.y.toFixed(2) : "--"}
-          <br />
-          Z: {cursorPosition ? cursorPosition.z.toFixed(2) : "--"}
-        </p>
-      </div>
+          {/* Bottom status bar */}
+          <div className="absolute bottom-0 left-0 right-0 h-8 bg-gray-900 bg-opacity-90 border-t border-gray-700 flex items-center px-3 text-xs text-gray-400 font-mono z-10 overflow-hidden whitespace-nowrap">
+            <span className="flex-none">
+              X: {cursorPosition ? cursorPosition.x.toFixed(2) : "--"} Y:{" "}
+              {cursorPosition ? cursorPosition.y.toFixed(2) : "--"} Z:{" "}
+              {cursorPosition ? cursorPosition.z.toFixed(2) : "--"}
+            </span>
 
-      {selectedObjectRef.current && (() => {
-        // Cache element lookup to avoid repeated O(n) searches
-        const selectedElement = elements.find((el) => el.nodeId === selectedObjectRef.current);
-        return (
-          <div className="absolute bottom-0 right-0 p-4 bg-gray-800 bg-opacity-75 rounded-tl-lg text-white" style={{ right: featureTree.length > 0 ? "224px" : "0" }}>
-            <h3 className="font-bold">Element Info</h3>
-            <p>ID: {selectedObjectRef.current}</p>
-            {selectedElement && (
+            {/* Sketch info in status bar */}
+            {mode === "sketch" && activeSketch && (
               <>
-                <p>
-                  Position:{" "}
-                  {`X: ${selectedElement.position.x.toFixed(2)},
-                   Y: ${selectedElement.position.y.toFixed(2)},
-                   Z: ${selectedElement.position.z.toFixed(2)}`}
-                </p>
-                <p>
-                  Vertices:{" "}
-                  {selectedElement.brep.vertices?.length || 0}
-                </p>
-                <p>
-                  Edges:{" "}
-                  {selectedElement.brep.edges?.length || 0}
-                </p>
-                <p>
-                  Faces:{" "}
-                  {selectedElement.brep.faces?.length || 0}
-                </p>
+                <div className="flex-none w-px h-4 bg-gray-600 mx-2" />
+                <span className="flex-none text-blue-400">
+                  {activeSketch.plane.type}
+                </span>
+                <div className="flex-none w-px h-4 bg-gray-600 mx-2" />
+                <span className="flex-none">
+                  DOF:{" "}
+                  <span
+                    className={
+                      activeSketch.dof === 0
+                        ? "text-green-400"
+                        : "text-yellow-400"
+                    }
+                  >
+                    {activeSketch.dof}
+                  </span>
+                </span>
+                <div className="flex-none w-px h-4 bg-gray-600 mx-2" />
+                <span
+                  className={`flex-none ${
+                    activeSketch.status === "fully_constrained"
+                      ? "text-green-400"
+                      : activeSketch.status === "overconstrained"
+                        ? "text-red-400"
+                        : "text-yellow-400"
+                  }`}
+                >
+                  {activeSketch.status === "fully_constrained"
+                    ? "Constrained"
+                    : activeSketch.status === "overconstrained"
+                      ? "Over"
+                      : "Under"}
+                </span>
+                <div className="flex-none w-px h-4 bg-gray-600 mx-2" />
+                <span className="flex-none">
+                  {activeSketch.primitives.length}P{" "}
+                  {activeSketch.constraints.length}C
+                </span>
               </>
             )}
-          </div>
-        );
-      })()}
 
-      {/* Feature Tree Sidebar */}
-      <div className="absolute top-0 right-0 w-56 h-full bg-gray-800 bg-opacity-90 border-l border-gray-700 z-10 overflow-auto">
-        <div className="p-3 border-b border-gray-700">
-          <h2 className="text-white font-bold text-sm">Feature Tree</h2>
+            {/* Element info on the right */}
+            {selectedObjectRef.current &&
+              (() => {
+                const selectedElement = elements.find(
+                  (el) => el.nodeId === selectedObjectRef.current,
+                );
+                return selectedElement ? (
+                  <span className="ml-auto flex-none truncate">
+                    {selectedObjectRef.current} (
+                    {selectedElement.position.x.toFixed(1)},{" "}
+                    {selectedElement.position.y.toFixed(1)},{" "}
+                    {selectedElement.position.z.toFixed(1)})
+                  </span>
+                ) : null;
+              })()}
+          </div>
         </div>
-        <FeatureTree
-          nodes={featureTree}
-          onToggleVisibility={toggleNodeVisibility}
-          onToggleExpanded={toggleNodeExpanded}
-        />
       </div>
+      {/* end center column */}
     </div>
   );
 };

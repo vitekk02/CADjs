@@ -486,16 +486,9 @@ describe("difference-operations", () => {
         objectsMap
       );
 
-      // Nested compounds may fail with real OpenCascade
-      if (result) {
-        expect(result.nextIdCounter).toBe(6);
-        const newElement = result.updatedElements.find(
-          (el) => el.nodeId === "node_6"
-        );
-        expect(newElement?.brep).toBeInstanceOf(CompoundBrep);
-      } else {
-        expect(result).toBeNull();
-      }
+      // Nested compounds with inner CompoundBrep as children fail in difference:
+      // CompoundBrep-as-child has no vertices/faces for brepToOCShape to process
+      expect(result).toBeNull();
     });
   });
 
@@ -712,8 +705,9 @@ describe("difference-operations", () => {
         objectsMap
       );
 
-      // Empty breps cannot be processed by OpenCascade, operation returns null
-      expect(result).toBeNull();
+      // OCC difference with empty tool succeeds: base shape is unchanged
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
     });
 
     test("handles selection of same element twice (deduplication)", async () => {
@@ -793,7 +787,7 @@ describe("difference-operations", () => {
       expect(result).toBeNull();
     });
 
-    test("returns null when tool element has empty brep", async () => {
+    test("succeeds when tool element has empty brep", async () => {
       // Tool (second selected) element has empty brep
       elements[1].brep = new Brep([], [], []);
 
@@ -805,7 +799,9 @@ describe("difference-operations", () => {
         objectsMap
       );
 
-      expect(result).toBeNull();
+      // OCC difference with empty tool succeeds: base shape is unchanged
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
     });
 
     test("returns null when all elements have empty breps", async () => {
@@ -858,8 +854,9 @@ describe("difference-operations", () => {
         objectsMap
       );
 
-      // May return null if result is empty, or may succeed with empty geometry
-      expect(result === null || typeof result === "object").toBeTruthy();
+      // When tool completely contains base, OCC difference produces empty geometry
+      // which fails during tessellation/conversion, returning null
+      expect(result).toBeNull();
     });
 
     test("handles NaN in base position", async () => {
@@ -873,7 +870,8 @@ describe("difference-operations", () => {
         objectsMap
       );
 
-      expect(result === null || typeof result === "object").toBeTruthy();
+      // NaN in position produces invalid OCC transforms, expect failure
+      expect(result).toBeNull();
     });
 
     test("handles Infinity in tool position", async () => {
@@ -887,7 +885,8 @@ describe("difference-operations", () => {
         objectsMap
       );
 
-      expect(result === null || typeof result === "object").toBeTruthy();
+      // Infinity in position produces invalid OCC transforms, expect failure
+      expect(result).toBeNull();
     });
 
     test("returns unchanged state when elements array is empty", async () => {

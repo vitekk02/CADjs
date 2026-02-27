@@ -26,11 +26,13 @@ const ValueInputModal: FC<ValueInputModalProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
+      e.stopPropagation();
       const numValue = parseFloat(value);
       if (!isNaN(numValue) && numValue > 0) {
         onConfirm(numValue);
       }
     } else if (e.key === "Escape") {
+      e.stopPropagation();
       onCancel();
     }
   };

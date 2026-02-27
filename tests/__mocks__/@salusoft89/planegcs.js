@@ -425,6 +425,14 @@ class MockGcsWrapper {
   has_gcs_redundant_constraints() {
     return false;
   }
+
+  get_gcs_conflicting_constraints() {
+    return [];
+  }
+
+  get_gcs_redundant_constraints() {
+    return [];
+  }
 }
 
 async function make_gcs_wrapper() {

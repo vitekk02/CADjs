@@ -10,7 +10,7 @@
 import type { OpenCascadeInstance, TopoDS_Edge, TopoDS_Wire, TopoDS_Face } from "opencascade.js";
 import { Brep } from "../geometry";
 import { OpenCascadeService } from "./OpenCascadeService";
-import type { Sketch, SketchPrimitive, SketchLine, SketchCircle, SketchArc, SketchConversionResult } from "../types/sketch-types";
+import type { Sketch, SketchPrimitive, SketchLine, SketchCircle, SketchArc, SketchConversionResult, SketchPlaneType } from "../types/sketch-types";
 
 /**
  * Singleton service that converts sketches to BRep using OpenCascade.
@@ -86,14 +86,19 @@ export class SketchToBrepService {
     const oc = await ocService.getOC();
 
     try {
-      const pointMap = this.buildPointMap(sketch.primitives);
+      // Filter out construction primitives before conversion
+      const nonConstructionPrimitives = sketch.primitives.filter(
+        p => !(p as any).construction
+      );
+
+      const pointMap = this.buildPointMap(sketch.primitives); // Keep all points for reference
 
       // Validate sketch geometry
-      if (!this.validateSketch(sketch.primitives, pointMap)) {
+      if (!this.validateSketch(nonConstructionPrimitives, pointMap)) {
         console.warn("[SketchToBrepService] Sketch validation failed - invalid geometry detected");
         return new Brep([], [], []);
       }
-      const { circleEdges, otherEdges } = this.buildEdges(oc, sketch.primitives, pointMap);
+      const { circleEdges, otherEdges } = this.buildEdges(oc, nonConstructionPrimitives, pointMap);
 
       console.log(`[SketchToBrepService] Created ${circleEdges.length} circle edges and ${otherEdges.length} other edges`);
 
@@ -104,7 +109,11 @@ export class SketchToBrepService {
         return new Brep([], [], []);
       }
 
-      const resultShape = this.unionFaces(oc, faces);
+      let resultShape = this.unionFaces(oc, faces);
+
+      // Transform from XY to the target sketch plane
+      resultShape = this.transformShapeToPlane(oc, resultShape, sketch.plane.type);
+
       const brep = await ocService.ocShapeToBRep(resultShape);
 
       console.log(`[SketchToBrepService] Built BRep with ${brep.faces.length} faces, ${brep.vertices.length} vertices`);
@@ -140,15 +149,20 @@ export class SketchToBrepService {
     const oc = await ocService.getOC();
 
     try {
-      const pointMap = this.buildPointMap(sketch.primitives);
+      // Filter out construction primitives before conversion
+      const nonConstructionPrimitives = sketch.primitives.filter(
+        p => !(p as any).construction
+      );
+
+      const pointMap = this.buildPointMap(sketch.primitives); // Keep all points for reference
 
       // Validate sketch geometry
-      if (!this.validateSketch(sketch.primitives, pointMap)) {
+      if (!this.validateSketch(nonConstructionPrimitives, pointMap)) {
         console.warn("[SketchToBrepService] Sketch validation failed");
         return { profiles: [], success: false };
       }
 
-      const { circleEdges, otherEdges } = this.buildEdges(oc, sketch.primitives, pointMap);
+      const { circleEdges, otherEdges } = this.buildEdges(oc, nonConstructionPrimitives, pointMap);
       console.log(`[SketchToBrepService] Created ${circleEdges.length} circle edges and ${otherEdges.length} other edges`);
 
       // Combine ALL edges for intersection detection
@@ -180,6 +194,14 @@ export class SketchToBrepService {
       if (finalFaces.length === 0) {
         console.warn("[SketchToBrepService] No faces created");
         return { profiles: [], success: false };
+      }
+
+      // Transform faces from XY to the target sketch plane
+      if (sketch.plane.type !== "XY") {
+        finalFaces = finalFaces.map(face => {
+          const transformed = this.transformShapeToPlane(oc, face, sketch.plane.type);
+          return oc.TopoDS.Face_1(transformed);
+        });
       }
 
       // Convert each face to a separate profile
@@ -218,17 +240,13 @@ export class SketchToBrepService {
           continue;
         }
 
-        // Convert face to Brep - centered at origin with center position returned
-        const brep = await ocService.faceToBrep(face, true);
+        // Convert face to centered Brep + center offset in a single pass
+        const { brep, center } = await ocService.faceToBrepWithCenter(face);
 
         if (brep.faces.length === 0) {
           console.warn(`[SketchToBrepService] Face ${i} produced empty Brep`);
           continue;
         }
-
-        // Get the absolute center from the original face (before centering)
-        const absoluteBrep = await ocService.faceToBrep(face, false);
-        const center = this.calculateBrepCenter(absoluteBrep);
 
         profiles.push({
           id: `${sketchId}_profile_${i}`,
@@ -247,33 +265,6 @@ export class SketchToBrepService {
     return profiles;
   }
 
-  /**
-   * Calculate the center of a BRep from its bounding box.
-   */
-  private calculateBrepCenter(brep: Brep): { x: number; y: number; z: number } {
-    if (brep.vertices.length === 0) {
-      return { x: 0, y: 0, z: 0 };
-    }
-
-    let minX = Infinity, maxX = -Infinity;
-    let minY = Infinity, maxY = -Infinity;
-    let minZ = Infinity, maxZ = -Infinity;
-
-    for (const v of brep.vertices) {
-      minX = Math.min(minX, v.x);
-      maxX = Math.max(maxX, v.x);
-      minY = Math.min(minY, v.y);
-      maxY = Math.max(maxY, v.y);
-      minZ = Math.min(minZ, v.z);
-      maxZ = Math.max(maxZ, v.z);
-    }
-
-    return {
-      x: (minX + maxX) / 2,
-      y: (minY + maxY) / 2,
-      z: (minZ + maxZ) / 2
-    };
-  }
 
   /**
    * Build a map of point IDs to coordinates.
@@ -877,6 +868,55 @@ export class SketchToBrepService {
       axis.delete();
       gpCircle.delete();
       builder?.delete();
+    }
+  }
+
+  /**
+   * Transform an OCC shape from XY plane to the target sketch plane.
+   * Sketch geometry is always built in XY; this rotates it to XZ or YZ as needed.
+   */
+  private transformShapeToPlane(
+    oc: OpenCascadeInstance,
+    shape: any,
+    planeType: SketchPlaneType
+  ): any {
+    if (planeType === "XY") return shape;
+
+    const trsf = new oc.gp_Trsf_1();
+
+    if (planeType === "XZ") {
+      // Rotate -90° around X axis: (x,y,0) → (x,0,y)
+      const axis = new oc.gp_Ax1_2(
+        new oc.gp_Pnt_3(0, 0, 0),
+        new oc.gp_Dir_4(1, 0, 0)
+      );
+      trsf.SetRotation_1(axis, -Math.PI / 2);
+      axis.delete();
+    } else if (planeType === "YZ") {
+      // Rotate 90° around Z axis then -90° around X axis: (x,y,0) → (0,x,y)
+      // Use SetValues to set the full rotation matrix directly
+      trsf.SetValues(
+        0, 0, 1, 0,
+        1, 0, 0, 0,
+        0, 1, 0, 0
+      );
+    }
+
+    let transformer: any = null;
+    try {
+      transformer = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
+      if (transformer.IsDone()) {
+        const result = transformer.Shape();
+        return result;
+      }
+      console.warn("[SketchToBrepService] Plane transform failed, using original shape");
+      return shape;
+    } catch (error) {
+      console.warn("[SketchToBrepService] Plane transform error:", error);
+      return shape;
+    } finally {
+      trsf.delete();
+      transformer?.delete();
     }
   }
 

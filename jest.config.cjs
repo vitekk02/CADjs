@@ -36,4 +36,5 @@ module.exports = {
   ],
   moduleFileExtensions: ["ts", "tsx", "js", "jsx", "json", "node"],
   testTimeout: 60000,
+  maxWorkers: 1,
 };

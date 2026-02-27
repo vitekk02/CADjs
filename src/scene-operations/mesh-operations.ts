@@ -42,6 +42,46 @@ export function createMeshFromBrep(brep: Brep): THREE.Group {
   }
 }
 
+/**
+ * Create a Three.js Group from pre-built BufferGeometry (e.g. from OCC direct tessellation).
+ * Produces the same Group structure as createMeshFromBrep: Mesh + edge overlay LineSegments.
+ * If edgeGeometry is provided (from OCC topological edges), it is used for the edge overlay;
+ * otherwise falls back to EdgesGeometry with a 30° threshold.
+ */
+export function createMeshFromGeometry(
+  geometry: THREE.BufferGeometry,
+  edgeGeometry?: THREE.BufferGeometry,
+): THREE.Group {
+  const group = new THREE.Group();
+  const material = new THREE.MeshStandardMaterial({
+    color: BODY.default,
+    side: THREE.DoubleSide,
+    roughness: 0.6,
+    metalness: 0.2,
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  group.add(mesh);
+
+  const edgeMaterial = new THREE.LineBasicMaterial({
+    color: BODY.edge,
+    linewidth: 1,
+  });
+
+  if (edgeGeometry) {
+    const edgeLines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+    edgeLines.userData.isEdgeOverlay = true;
+    group.add(edgeLines);
+  } else {
+    const edges = new THREE.EdgesGeometry(geometry, 30);
+    const edgeLines = new THREE.LineSegments(edges, edgeMaterial);
+    edgeLines.userData.isEdgeOverlay = true;
+    group.add(edgeLines);
+  }
+
+  return group;
+}
+
 export function getAllFaces(brep: Brep): Face[] {
   if ("children" in brep && Array.isArray((brep as any).children)) {
     const compoundBrep = brep as unknown as CompoundBrep;
@@ -74,6 +114,19 @@ export function findChildMesh(obj: THREE.Object3D): THREE.Mesh | null {
   return found;
 }
 
+/**
+ * Check if a Three.js object is a descendant (child, grandchild, etc.) of another object.
+ * Walks up the parent chain from child to see if it reaches parent.
+ */
+export function isDescendantOf(child: THREE.Object3D, parent: THREE.Object3D): boolean {
+  let current: THREE.Object3D | null = child;
+  while (current) {
+    if (current === parent) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
 export function getObject(
   objectsMap: Map<string, THREE.Object3D>,
   nodeId: string,
@@ -85,4 +138,33 @@ export function getAllObjects(
   objectsMap: Map<string, THREE.Object3D>,
 ): Map<string, THREE.Object3D> {
   return objectsMap;
+}
+
+/**
+ * Collect only the pickable Mesh children from scene elements,
+ * skipping edge overlays and helpers that inflate the hit area.
+ * The Raycaster's default Line.threshold (1 world unit) makes
+ * LineSegments (EdgesGeometry) hit-test far beyond the visible body.
+ * By returning only Mesh leaves we avoid that inflation.
+ */
+export function collectPickableMeshes(
+  elements: { nodeId: string }[],
+  getObject: (nodeId: string) => THREE.Object3D | undefined,
+): THREE.Object3D[] {
+  const meshes: THREE.Object3D[] = [];
+  elements.forEach((el) => {
+    const obj = getObject(el.nodeId);
+    if (obj) {
+      obj.traverse((child) => {
+        if (
+          child instanceof THREE.Mesh &&
+          !child.userData.isEdgeOverlay &&
+          !child.userData.isHelper
+        ) {
+          meshes.push(child);
+        }
+      });
+    }
+  });
+  return meshes;
 }

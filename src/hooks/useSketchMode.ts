@@ -1,8 +1,12 @@
 import { useCallback, useRef, useState, useEffect } from "react";
 import * as THREE from "three";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
 import {
+  Sketch,
   SketchPoint,
   SketchLine,
   SketchCircle,
@@ -10,6 +14,7 @@ import {
   SketchPrimitive,
   SketchConstraint,
   ConstraintType,
+  ConstraintResultStatus,
   SketchPlaneType,
   isSketchPoint,
   isSketchLine,
@@ -72,6 +77,8 @@ interface UseSketchModeResult {
   cleanupSketchGrid: () => void;
   handlePlaneSelectionMouseMove: (event: MouseEvent) => void;
   handlePlaneSelectionClick: (event: MouseEvent) => void;
+  // Constraint feedback (redundant/conflicting rollback)
+  constraintFeedback: { message: string; type: "redundant" | "conflicting" } | null;
 }
 
 /**
@@ -82,18 +89,82 @@ const SKETCH_CONFIG = {
   /** Distance in world units to snap to existing points when drawing */
   SNAP_DISTANCE: 0.3,
   /** Visual size of point primitives in world units */
-  POINT_SIZE: 0.15,
+  POINT_SIZE: 0.08,
   /** Maximum number of primitives that can be selected at once */
   MAX_SELECTION: 2,
   /** Distance in world units to snap to inference points (endpoints, midpoints, etc.) */
   INFERENCE_SNAP_DISTANCE: 0.4,
-  /** Tolerance in radians for detecting horizontal/vertical alignment (~8.6 degrees) */
-  ALIGNMENT_TOLERANCE: 0.15,
+  /** Tolerance in radians for detecting horizontal/vertical alignment (~3.4 degrees) */
+  ALIGNMENT_TOLERANCE: 0.06,
   /** Time threshold in milliseconds for detecting double-click */
   DOUBLE_CLICK_THRESHOLD: 300,
+  /** Screen-space pixel radius for point selection (proximity check) */
+  POINT_HIT_RADIUS_PX: 12,
+  /** Extra pixels of tolerance for Line2 screen-space raycast */
+  LINE_HIT_THRESHOLD: 8,
 } as const;
 
 import { SKETCH as SKETCH_THEME, INFERENCE, SKETCH_PLANE as PLANE_THEME, BODY as BODY_THEME } from "../theme";
+
+/** Helper: create a Line2 with LineMaterial for consistent thin-line rendering */
+function createLine2FromPoints(
+  positions: number[],
+  color: number,
+  linewidth: number,
+  dashed: boolean = false,
+): Line2 {
+  const geometry = new LineGeometry();
+  geometry.setPositions(positions);
+  const material = new LineMaterial({
+    color,
+    linewidth,
+    dashed,
+    ...(dashed ? { dashSize: 0.15, gapSize: 0.1 } : {}),
+    resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
+  });
+  if (dashed) {
+    material.defines.USE_DASH = "";
+  }
+  const line = new Line2(geometry, material);
+  line.computeLineDistances();
+  return line;
+}
+
+/** Helper: create a constraint glyph sprite at a given position */
+function createConstraintGlyph(
+  text: string,
+  position: THREE.Vector3,
+): THREE.Sprite {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d")!;
+
+  // Dark circle background
+  ctx.beginPath();
+  ctx.arc(32, 32, 28, 0, Math.PI * 2);
+  ctx.fillStyle = "#333333";
+  ctx.fill();
+
+  // Gold text
+  ctx.fillStyle = "#ddaa00";
+  ctx.font = "bold 32px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 32, 33);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.position.copy(position);
+  sprite.scale.set(0.3, 0.3, 0.3);
+  sprite.renderOrder = 1001;
+  return sprite;
+}
 
 /** Colors for sketch visualization (hex values) — Fusion 360 style */
 const COLORS = {
@@ -127,6 +198,7 @@ export function useSketchMode(): UseSketchModeResult {
     mode,
     elements,
     getObject,
+    pushSketchUndo,
   } = useCadCore();
 
   const {
@@ -138,6 +210,7 @@ export function useSketchMode(): UseSketchModeResult {
     toggleGroundPlane,
     sceneReady,
     setCameraRotationEnabled,
+    setDrawingPlane,
   } = useCadVisualizer();
 
   const [sketchSubMode, setSketchSubMode] = useState<SketchSubMode>("line");
@@ -157,6 +230,9 @@ export function useSketchMode(): UseSketchModeResult {
   const [guidelines, setGuidelines] = useState<Guideline[]>([]);
   const inferenceObjectsRef = useRef<THREE.Object3D[]>([]);
   const guidelineObjectsRef = useRef<THREE.Object3D[]>([]);
+
+  // Ctrl-key override: when held, suppress all inference (snapping, guidelines, auto H/V)
+  const ctrlHeldRef = useRef(false);
 
   // Body dimming state - stores original material properties for restoration
   const dimmedMaterialsRef = useRef<Map<string, { color: number; opacity: number; transparent: boolean }>>(new Map());
@@ -248,6 +324,8 @@ export function useSketchMode(): UseSketchModeResult {
         -((event.clientY - rect.top) / rect.height) * 2 + 1
       );
       raycasterRef.current.setFromCamera(mouse, camera);
+      raycasterRef.current.camera = camera; // Required for Line2 screen-space raycast
+      raycasterRef.current.params.Line2 = { threshold: SKETCH_CONFIG.LINE_HIT_THRESHOLD };
       return raycasterRef.current.intersectObjects(objects, recursive);
     },
     [renderer, camera]
@@ -257,6 +335,7 @@ export function useSketchMode(): UseSketchModeResult {
   const [isChaining, setIsChaining] = useState(false);
   const chainStartPointRef = useRef<THREE.Vector3 | null>(null);
   const chainStartPointIdRef = useRef<string | null>(null);
+  const chainStartIsExistingRef = useRef<boolean>(false);
   const lastClickTimeRef = useRef<number>(0);
 
   // Pending line dimension (for showing dimension input after line creation)
@@ -271,10 +350,15 @@ export function useSketchMode(): UseSketchModeResult {
     primitiveTypes: [],
   });
 
+  // Constraint feedback state (for redundant/conflicting rollback)
+  const [constraintFeedback, setConstraintFeedback] = useState<{ message: string; type: "redundant" | "conflicting" } | null>(null);
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Plane selection state (Fusion 360 style)
   const [isSelectingPlane, setIsSelectingPlane] = useState(false);
   const [hoveredPlane, setHoveredPlane] = useState<SketchPlaneType | null>(null);
   const planeObjectsRef = useRef<THREE.Object3D[]>([]);
+  const sketchHidGroundPlaneRef = useRef(false);
 
   // Drag-to-move state for primitives
   const isDraggingRef = useRef(false);
@@ -285,6 +369,26 @@ export function useSketchMode(): UseSketchModeResult {
   // Ref to prevent stale closure issues with activeSketch during drag
   const activeSketchRef = useRef(activeSketch);
 
+  // sketchTo3D converts 2D sketch coords to 3D — defined in render effect,
+  // exposed via ref so click handler can project points to screen space
+  const sketchTo3DRef = useRef<(x: number, y: number, zOffset?: number) => THREE.Vector3>(
+    (x, y, zOffset = 0) => new THREE.Vector3(x, y, zOffset)
+  );
+
+  // Helper: show constraint feedback toast with auto-dismiss
+  const showConstraintFeedback = useCallback((status: ConstraintResultStatus) => {
+    if (status === "applied" || status === "failed") return;
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    const message = status === "redundant"
+      ? "Constraint already satisfied"
+      : "Constraint conflicts with existing constraints";
+    setConstraintFeedback({ message, type: status });
+    feedbackTimerRef.current = setTimeout(() => {
+      setConstraintFeedback(null);
+      feedbackTimerRef.current = null;
+    }, 3000);
+  }, []);
+
   // Use config constants
   const { INFERENCE_SNAP_DISTANCE, ALIGNMENT_TOLERANCE, DOUBLE_CLICK_THRESHOLD, SNAP_DISTANCE } = SKETCH_CONFIG;
 
@@ -292,6 +396,27 @@ export function useSketchMode(): UseSketchModeResult {
   useEffect(() => {
     activeSketchRef.current = activeSketch;
   }, [activeSketch]);
+
+  // Track Ctrl key for inference override (hold Ctrl to suppress snapping/guidelines/auto-constraints)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Control") ctrlHeldRef.current = true;
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "Control") ctrlHeldRef.current = false;
+    };
+    const onBlur = () => {
+      ctrlHeldRef.current = false;
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
 
   // Generate unique IDs for primitives
   const generateId = useCallback((prefix: string) => {
@@ -310,6 +435,22 @@ export function useSketchMode(): UseSketchModeResult {
       return point;
     },
     [showGroundPlane]
+  );
+
+  // Convert a 3D world point to 2D sketch coordinates (inverse of sketchTo3D)
+  const worldToSketch2D = useCallback(
+    (point3D: THREE.Vector3, planeType: SketchPlaneType): THREE.Vector3 => {
+      switch (planeType) {
+        case "XZ":
+          return new THREE.Vector3(point3D.x, point3D.z, 0);
+        case "YZ":
+          return new THREE.Vector3(point3D.y, point3D.z, 0);
+        case "XY":
+        default:
+          return new THREE.Vector3(point3D.x, point3D.y, 0);
+      }
+    },
+    []
   );
 
   // Calculate distance from a point to a line segment (for pointOnLine constraint)
@@ -374,10 +515,10 @@ export function useSketchMode(): UseSketchModeResult {
 
   // Create or get point at location
   const getOrCreatePoint = useCallback(
-    (point: THREE.Vector3, fixed: boolean = false): string => {
+    (point: THREE.Vector3, fixed: boolean = false): { id: string; isExisting: boolean } => {
       const nearbyPoint = findNearbyPoint(point);
       if (nearbyPoint) {
-        return nearbyPoint.id;
+        return { id: nearbyPoint.id, isExisting: true };
       }
 
       const newPoint: SketchPoint = {
@@ -387,22 +528,21 @@ export function useSketchMode(): UseSketchModeResult {
         y: point.y,
         fixed,
       };
+      pushSketchUndo();
       addPrimitive(newPoint);
-      return newPoint.id;
+      return { id: newPoint.id, isExisting: false };
     },
-    [findNearbyPoint, addPrimitive, generateId]
+    [findNearbyPoint, addPrimitive, generateId, pushSketchUndo]
   );
 
   // Cleanup preview objects
   const cleanupSketchPreview = useCallback(() => {
     if (previewObjectRef.current && scene) {
       scene.remove(previewObjectRef.current);
-      if (previewObjectRef.current instanceof THREE.Line) {
-        previewObjectRef.current.geometry.dispose();
-        (previewObjectRef.current.material as THREE.Material).dispose();
-      } else if (previewObjectRef.current instanceof THREE.Mesh) {
-        previewObjectRef.current.geometry.dispose();
-        (previewObjectRef.current.material as THREE.Material).dispose();
+      const obj = previewObjectRef.current;
+      if (obj instanceof Line2 || obj instanceof THREE.Line || obj instanceof THREE.Mesh) {
+        obj.geometry.dispose();
+        (obj.material as THREE.Material).dispose();
       }
       previewObjectRef.current = null;
     }
@@ -413,16 +553,19 @@ export function useSketchMode(): UseSketchModeResult {
     if (scene) {
       inferenceObjectsRef.current.forEach((obj) => {
         scene.remove(obj);
-        if (obj instanceof THREE.Mesh) {
+        if (obj instanceof THREE.Mesh || obj instanceof Line2 || obj instanceof THREE.Line) {
           obj.geometry.dispose();
           (obj.material as THREE.Material).dispose();
+        } else if (obj instanceof THREE.Sprite) {
+          (obj.material as THREE.SpriteMaterial).map?.dispose();
+          obj.material.dispose();
         }
       });
       inferenceObjectsRef.current = [];
 
       guidelineObjectsRef.current.forEach((obj) => {
         scene.remove(obj);
-        if (obj instanceof THREE.Line) {
+        if (obj instanceof Line2 || obj instanceof THREE.Line) {
           obj.geometry.dispose();
           (obj.material as THREE.Material).dispose();
         }
@@ -444,43 +587,43 @@ export function useSketchMode(): UseSketchModeResult {
 
       switch (inferencePoint.type) {
         case "endpoint":
-          // Square glyph for endpoints
-          geometry = new THREE.BoxGeometry(0.15, 0.15, 0.05);
+          // Square glyph for endpoints (smaller)
+          geometry = new THREE.BoxGeometry(0.09, 0.09, 0.02);
           color = INFERENCE.endpoint;
           break;
         case "midpoint":
-          // Triangle glyph for midpoints
+          // Triangle glyph for midpoints (smaller)
           const triangleShape = new THREE.Shape();
-          triangleShape.moveTo(0, 0.1);
-          triangleShape.lineTo(-0.08, -0.05);
-          triangleShape.lineTo(0.08, -0.05);
-          triangleShape.lineTo(0, 0.1);
+          triangleShape.moveTo(0, 0.06);
+          triangleShape.lineTo(-0.05, -0.03);
+          triangleShape.lineTo(0.05, -0.03);
+          triangleShape.lineTo(0, 0.06);
           geometry = new THREE.ShapeGeometry(triangleShape);
           color = INFERENCE.midpoint;
           break;
         case "center":
-          // Circle glyph for centers
-          geometry = new THREE.CircleGeometry(0.08, 16);
+          // Circle glyph for centers (smaller)
+          geometry = new THREE.CircleGeometry(0.05, 16);
           color = INFERENCE.center;
           break;
         case "quadrant":
-          // Diamond glyph for quadrants
+          // Diamond glyph for quadrants (smaller)
           const diamondShape = new THREE.Shape();
-          diamondShape.moveTo(0, 0.08);
-          diamondShape.lineTo(-0.08, 0);
-          diamondShape.lineTo(0, -0.08);
-          diamondShape.lineTo(0.08, 0);
-          diamondShape.lineTo(0, 0.08);
+          diamondShape.moveTo(0, 0.05);
+          diamondShape.lineTo(-0.05, 0);
+          diamondShape.lineTo(0, -0.05);
+          diamondShape.lineTo(0.05, 0);
+          diamondShape.lineTo(0, 0.05);
           geometry = new THREE.ShapeGeometry(diamondShape);
           color = INFERENCE.quadrant;
           break;
         case "intersection":
-          // X glyph for intersections
-          geometry = new THREE.BoxGeometry(0.12, 0.12, 0.05);
+          // X glyph for intersections (smaller)
+          geometry = new THREE.BoxGeometry(0.07, 0.07, 0.02);
           color = INFERENCE.intersection;
           break;
         default:
-          geometry = new THREE.CircleGeometry(0.06, 8);
+          geometry = new THREE.CircleGeometry(0.04, 8);
           color = INFERENCE.default;
       }
 
@@ -491,8 +634,9 @@ export function useSketchMode(): UseSketchModeResult {
         depthTest: false,
       });
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.copy(inferencePoint.position);
-      mesh.position.z = 0.2; // Above sketch elements
+      // Convert 2D inference position to 3D world coordinates
+      const pos3D = sketchTo3DRef.current(inferencePoint.position.x, inferencePoint.position.y, 0.2);
+      mesh.position.copy(pos3D);
       mesh.renderOrder = 1000;
 
       scene.add(mesh);
@@ -509,7 +653,7 @@ export function useSketchMode(): UseSketchModeResult {
       // Clear old guidelines (but keep inference glyphs)
       guidelineObjectsRef.current.forEach((obj) => {
         scene.remove(obj);
-        if (obj instanceof THREE.Line) {
+        if (obj instanceof Line2 || obj instanceof THREE.Line) {
           obj.geometry.dispose();
           (obj.material as THREE.Material).dispose();
         }
@@ -517,20 +661,17 @@ export function useSketchMode(): UseSketchModeResult {
       guidelineObjectsRef.current = [];
 
       for (const guideline of currentGuidelines) {
-        const geometry = new THREE.BufferGeometry().setFromPoints([
-          guideline.start,
-          guideline.end,
-        ]);
-        const material = new THREE.LineDashedMaterial({
-          color: guideline.color,
-          dashSize: 0.1,
-          gapSize: 0.05,
-          transparent: true,
-          opacity: 0.7,
-          depthTest: false,
-        });
-        const line = new THREE.Line(geometry, material);
-        line.computeLineDistances(); // Required for dashed lines
+        // Convert 2D guideline positions to 3D world coordinates
+        const s3d = sketchTo3DRef.current(guideline.start.x, guideline.start.y, 0.01);
+        const e3d = sketchTo3DRef.current(guideline.end.x, guideline.end.y, 0.01);
+        const positions = [
+          s3d.x, s3d.y, s3d.z,
+          e3d.x, e3d.y, e3d.z,
+        ];
+        const line = createLine2FromPoints(positions, guideline.color, 1.0, true);
+        line.material.transparent = true;
+        line.material.opacity = 0.6;
+        line.material.depthTest = false;
         line.renderOrder = 999;
 
         scene.add(line);
@@ -541,88 +682,71 @@ export function useSketchMode(): UseSketchModeResult {
   );
 
 
-  // Create line preview
+  // Create line preview using Line2 (inputs are 2D sketch coords, converted to 3D for rendering)
   const createLinePreview = useCallback(
-    (start: THREE.Vector3, end: THREE.Vector3): THREE.Line => {
-      const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
-      const material = new THREE.LineBasicMaterial({
-        color: COLORS.preview,
-        linewidth: 2,
-      });
-      return new THREE.Line(geometry, material);
+    (start: THREE.Vector3, end: THREE.Vector3): Line2 => {
+      const s3d = sketchTo3DRef.current(start.x, start.y, 0.01);
+      const e3d = sketchTo3DRef.current(end.x, end.y, 0.01);
+      const positions = [s3d.x, s3d.y, s3d.z, e3d.x, e3d.y, e3d.z];
+      const line = createLine2FromPoints(positions, COLORS.preview, 1.5);
+      return line;
     },
     []
   );
 
-  // Create circle preview
+  // Create circle preview using Line2 (center is 2D sketch coords, converted to 3D for rendering)
   const createCirclePreview = useCallback(
-    (center: THREE.Vector3, radius: number): THREE.Line => {
+    (center: THREE.Vector3, radius: number): Line2 => {
       const segments = 64;
-      const points: THREE.Vector3[] = [];
+      const positions: number[] = [];
       for (let i = 0; i <= segments; i++) {
         const angle = (i / segments) * Math.PI * 2;
-        points.push(
-          new THREE.Vector3(
-            center.x + Math.cos(angle) * radius,
-            center.y + Math.sin(angle) * radius,
-            center.z
-          )
-        );
+        const sx = center.x + Math.cos(angle) * radius;
+        const sy = center.y + Math.sin(angle) * radius;
+        const p3d = sketchTo3DRef.current(sx, sy, 0.01);
+        positions.push(p3d.x, p3d.y, p3d.z);
       }
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      const material = new THREE.LineBasicMaterial({
-        color: COLORS.preview,
-        linewidth: 2,
-      });
-      return new THREE.Line(geometry, material);
+      return createLine2FromPoints(positions, COLORS.preview, 1.5);
     },
     []
   );
 
-  // Create arc preview
+  // Create arc preview using Line2 (inputs are 2D sketch coords, converted to 3D for rendering)
   const createArcPreview = useCallback(
     (
       center: THREE.Vector3,
       start: THREE.Vector3,
       end: THREE.Vector3
-    ): THREE.Line => {
+    ): Line2 => {
       const radius = center.distanceTo(start);
       const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
       const endAngle = Math.atan2(end.y - center.y, end.x - center.x);
 
       const segments = 32;
-      const points: THREE.Vector3[] = [];
-      let angle = startAngle;
+      const positions: number[] = [];
       const angleDiff = endAngle - startAngle;
       const normalizedDiff = angleDiff > 0 ? angleDiff : angleDiff + Math.PI * 2;
 
       for (let i = 0; i <= segments; i++) {
         const t = i / segments;
         const currentAngle = startAngle + normalizedDiff * t;
-        points.push(
-          new THREE.Vector3(
-            center.x + Math.cos(currentAngle) * radius,
-            center.y + Math.sin(currentAngle) * radius,
-            center.z
-          )
-        );
+        const sx = center.x + Math.cos(currentAngle) * radius;
+        const sy = center.y + Math.sin(currentAngle) * radius;
+        const p3d = sketchTo3DRef.current(sx, sy, 0.01);
+        positions.push(p3d.x, p3d.y, p3d.z);
       }
 
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      const material = new THREE.LineBasicMaterial({
-        color: COLORS.preview,
-        linewidth: 2,
-      });
-      return new THREE.Line(geometry, material);
+      return createLine2FromPoints(positions, COLORS.preview, 1.5);
     },
     []
   );
 
   // Auto-apply horizontal or vertical constraint if line is nearly aligned
+  // Returns the post-solve sketch so callers can read final point positions
   const autoApplyHVConstraint = useCallback(
-    async (lineId: string, p1: THREE.Vector3, p2: THREE.Vector3) => {
-      const horizontalTolerance = 0.15; // radians, ~8.6 degrees
-      const verticalTolerance = 0.15;
+    async (lineId: string, p1: THREE.Vector3, p2: THREE.Vector3): Promise<Sketch | null> => {
+      const horizontalTolerance = SKETCH_CONFIG.ALIGNMENT_TOLERANCE;
+      const verticalTolerance = SKETCH_CONFIG.ALIGNMENT_TOLERANCE;
 
       const dx = p2.x - p1.x;
       const dy = p2.y - p1.y;
@@ -636,9 +760,13 @@ export function useSketchMode(): UseSketchModeResult {
           primitiveIds: [lineId],
           driving: true,
         };
-        await addConstraintAndSolve(constraint);
-        console.log("Auto-applied horizontal constraint to line", lineId);
-        return true;
+        const result = await addConstraintAndSolve(constraint);
+        if (result.status === "applied") {
+          console.log("Auto-applied horizontal constraint to line", lineId);
+          return result.sketch;
+        }
+        // Redundant/conflicting = silently skip (auto-constraints are best-effort)
+        return null;
       }
 
       // Check for vertical (angle near π/2 or -π/2)
@@ -649,12 +777,16 @@ export function useSketchMode(): UseSketchModeResult {
           primitiveIds: [lineId],
           driving: true,
         };
-        await addConstraintAndSolve(constraint);
-        console.log("Auto-applied vertical constraint to line", lineId);
-        return true;
+        const result = await addConstraintAndSolve(constraint);
+        if (result.status === "applied") {
+          console.log("Auto-applied vertical constraint to line", lineId);
+          return result.sketch;
+        }
+        // Redundant/conflicting = silently skip (auto-constraints are best-effort)
+        return null;
       }
 
-      return false;
+      return null;
     },
     [generateId, addConstraintAndSolve]
   );
@@ -674,6 +806,7 @@ export function useSketchMode(): UseSketchModeResult {
             setIsChaining(false);
             chainStartPointRef.current = null;
             chainStartPointIdRef.current = null;
+            chainStartIsExistingRef.current = false;
             lastClickTimeRef.current = 0;
             return;
           }
@@ -683,13 +816,28 @@ export function useSketchMode(): UseSketchModeResult {
 
         if (!isChaining) {
           // First click: start the chain
-          chainStartPointRef.current = point.clone();
-          chainStartPointIdRef.current = getOrCreatePoint(point);
+          pushSketchUndo();
+          const { id: p1Id, isExisting: p1IsExisting } = getOrCreatePoint(point);
+          // Use actual snapped coordinates (not raw cursor position)
+          const p1Prim = activeSketch?.primitives.find(p => p.id === p1Id);
+          const actualP1 = (p1Prim && isSketchPoint(p1Prim))
+            ? new THREE.Vector3(p1Prim.x, p1Prim.y, 0)
+            : point.clone();
+          chainStartPointRef.current = actualP1;
+          chainStartPointIdRef.current = p1Id;
+          chainStartIsExistingRef.current = p1IsExisting;
           setIsChaining(true);
         } else if (chainStartPointRef.current) {
           // Subsequent click: create line and continue chain
+          pushSketchUndo();
           const startPoint = chainStartPointRef.current.clone();
-          const p2Id = getOrCreatePoint(point);
+          const { id: p2Id, isExisting: p2IsExisting } = getOrCreatePoint(point);
+
+          // Look up actual snapped coordinates (not raw cursor position)
+          const p2Prim = activeSketch?.primitives.find(p => p.id === p2Id);
+          const actualP2 = (p2Prim && isSketchPoint(p2Prim))
+            ? new THREE.Vector3(p2Prim.x, p2Prim.y, 0)
+            : point.clone();
 
           // Only create line if not clicking the same point
           if (p2Id !== chainStartPointIdRef.current) {
@@ -702,27 +850,46 @@ export function useSketchMode(): UseSketchModeResult {
             };
             addPrimitive(line);
 
-            // Auto-apply H/V constraint if nearly aligned
-            await autoApplyHVConstraint(lineId, startPoint, point);
+            // Auto-apply H/V constraint using actual snapped position
+            // Suppressed when Ctrl held OR when either endpoint is an existing point
+            // (connecting to existing geometry = user wants coincidence, not H/V straightening)
+            const suppressHV = ctrlHeldRef.current || p2IsExisting || chainStartIsExistingRef.current;
+            const hvSketch = suppressHV
+              ? null
+              : await autoApplyHVConstraint(lineId, startPoint, actualP2);
 
-            await solveSketch();
+            const solvedSketch = await solveSketch();
 
-            // Set pending line dimension for dimension input
-            const lineLength = startPoint.distanceTo(point);
-            const midpoint = new THREE.Vector3()
-              .addVectors(startPoint, point)
+            // Use post-solve sketch to get final point position
+            // (H/V constraint or other constraints may have moved the point)
+            const finalSketch = solvedSketch || hvSketch;
+            let finalP2 = actualP2.clone();
+            if (finalSketch) {
+              const solvedPoint = finalSketch.primitives.find(p => p.id === p2Id);
+              if (solvedPoint && isSketchPoint(solvedPoint)) {
+                finalP2 = new THREE.Vector3(solvedPoint.x, solvedPoint.y, 0);
+              }
+            }
+
+            // Set pending line dimension for dimension input using post-solve positions
+            const lineLength = startPoint.distanceTo(finalP2);
+            // Midpoint needs to be in 3D world coords for screen projection
+            const mid2D = new THREE.Vector3()
+              .addVectors(startPoint, finalP2)
               .multiplyScalar(0.5);
+            const midpoint = sketchTo3DRef.current(mid2D.x, mid2D.y, 0);
             setPendingLineDimension({
               lineId,
               p1: startPoint.clone(),
-              p2: point.clone(),
+              p2: finalP2.clone(),
               length: lineLength,
               midpoint,
             });
 
-            // Continue chain from the new point
-            chainStartPointRef.current = point.clone();
+            // Continue chain from POST-SOLVE position
+            chainStartPointRef.current = finalP2.clone();
             chainStartPointIdRef.current = p2Id;
+            chainStartIsExistingRef.current = p2IsExisting;
           }
         }
       } else if (event.type === "mousemove") {
@@ -748,6 +915,8 @@ export function useSketchMode(): UseSketchModeResult {
       generateId,
       isChaining,
       autoApplyHVConstraint,
+      activeSketch,
+      pushSketchUndo,
     ]
   );
 
@@ -775,7 +944,8 @@ export function useSketchMode(): UseSketchModeResult {
         const radius = centerPointRef.current.distanceTo(point);
         if (radius > 0.1) {
           // Create circle primitive
-          const centerId = getOrCreatePoint(centerPointRef.current);
+          pushSketchUndo();
+          const { id: centerId } = getOrCreatePoint(centerPointRef.current);
 
           const circle: SketchCircle = {
             id: generateId("cir"),
@@ -800,6 +970,7 @@ export function useSketchMode(): UseSketchModeResult {
       addPrimitive,
       solveSketch,
       generateId,
+      pushSketchUndo,
     ]
   );
 
@@ -837,15 +1008,21 @@ export function useSketchMode(): UseSketchModeResult {
     []
   );
 
-  // Create 3-point arc preview
+  // Create 3-point arc preview using Line2 (inputs are 2D sketch coords, converted to 3D for rendering)
   const create3PointArcPreview = useCallback(
-    (start: THREE.Vector3, end: THREE.Vector3, bulge: THREE.Vector3): THREE.Line | null => {
+    (start: THREE.Vector3, end: THREE.Vector3, bulge: THREE.Vector3): Line2 | null => {
       const result = calculateArcFromThreePoints(start, end, bulge);
       if (!result) {
         // Fallback to line preview if points are collinear
-        const geometry = new THREE.BufferGeometry().setFromPoints([start, bulge, end]);
-        const material = new THREE.LineBasicMaterial({ color: COLORS.preview, linewidth: 2 });
-        return new THREE.Line(geometry, material);
+        const s3d = sketchTo3DRef.current(start.x, start.y, 0.01);
+        const b3d = sketchTo3DRef.current(bulge.x, bulge.y, 0.01);
+        const e3d = sketchTo3DRef.current(end.x, end.y, 0.01);
+        const positions = [
+          s3d.x, s3d.y, s3d.z,
+          b3d.x, b3d.y, b3d.z,
+          e3d.x, e3d.y, e3d.z,
+        ];
+        return createLine2FromPoints(positions, COLORS.preview, 1.5);
       }
 
       const { center, radius } = result;
@@ -869,22 +1046,17 @@ export function useSketchMode(): UseSketchModeResult {
       const sweepAngle = useShortArc ? angleDiff : -(Math.PI * 2 - angleDiff);
 
       const segments = 32;
-      const points: THREE.Vector3[] = [];
+      const positions: number[] = [];
       for (let i = 0; i <= segments; i++) {
         const t = i / segments;
         const angle = startAngle + sweepAngle * t;
-        points.push(
-          new THREE.Vector3(
-            center.x + Math.cos(angle) * radius,
-            center.y + Math.sin(angle) * radius,
-            0
-          )
-        );
+        const sx = center.x + Math.cos(angle) * radius;
+        const sy = center.y + Math.sin(angle) * radius;
+        const p3d = sketchTo3DRef.current(sx, sy, 0.01);
+        positions.push(p3d.x, p3d.y, p3d.z);
       }
 
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      const material = new THREE.LineBasicMaterial({ color: COLORS.preview, linewidth: 2 });
-      return new THREE.Line(geometry, material);
+      return createLine2FromPoints(positions, COLORS.preview, 1.5);
     },
     [calculateArcFromThreePoints]
   );
@@ -912,10 +1084,11 @@ export function useSketchMode(): UseSketchModeResult {
             );
 
             if (result) {
+              pushSketchUndo();
               const { center, radius } = result;
-              const centerId = getOrCreatePoint(center);
-              const startId = getOrCreatePoint(arcStartPointRef.current);
-              const endId = getOrCreatePoint(arcEndPointRef.current);
+              const { id: centerId } = getOrCreatePoint(center);
+              const { id: startId } = getOrCreatePoint(arcStartPointRef.current);
+              const { id: endId } = getOrCreatePoint(arcEndPointRef.current);
 
               const arc: SketchArc = {
                 id: generateId("arc"),
@@ -965,6 +1138,7 @@ export function useSketchMode(): UseSketchModeResult {
       addPrimitive,
       solveSketch,
       generateId,
+      pushSketchUndo,
     ]
   );
 
@@ -972,6 +1146,7 @@ export function useSketchMode(): UseSketchModeResult {
   const handlePointDraw = useCallback(
     async (event: MouseEvent, point: THREE.Vector3) => {
       if (event.type === "mousedown") {
+        pushSketchUndo();
         const newPoint: SketchPoint = {
           id: generateId("pt"),
           type: "point",
@@ -983,7 +1158,7 @@ export function useSketchMode(): UseSketchModeResult {
         await solveSketch();
       }
     },
-    [addPrimitive, solveSketch, generateId]
+    [addPrimitive, solveSketch, generateId, pushSketchUndo]
   );
 
   // Cancel current drawing operation (Escape key)
@@ -995,6 +1170,7 @@ export function useSketchMode(): UseSketchModeResult {
       setIsChaining(false);
       chainStartPointRef.current = null;
       chainStartPointIdRef.current = null;
+      chainStartIsExistingRef.current = false;
       lastClickTimeRef.current = 0;
     }
 
@@ -1505,6 +1681,7 @@ export function useSketchMode(): UseSketchModeResult {
       // Hide the default ground plane to prevent overlap with sketch grid
       if (showGroundPlane) {
         toggleGroundPlane();
+        sketchHidGroundPlaneRef.current = true;
       }
 
       // Disable camera rotation in sketch mode (only allow pan/zoom)
@@ -1513,6 +1690,10 @@ export function useSketchMode(): UseSketchModeResult {
       // Dim existing 3D bodies so sketch stands out
       dimSceneBodies();
 
+      // Set the drawing plane for raycasting based on plane type
+      const plane = createSketchPlane(planeType);
+      setDrawingPlane(plane.normal);
+
       // Orient camera to the plane
       orientCameraToPlane(planeType);
 
@@ -1520,10 +1701,9 @@ export function useSketchMode(): UseSketchModeResult {
       createSketchGrid(planeType);
 
       // Start sketch on selected plane
-      const plane = createSketchPlane(planeType);
       startSketch(plane);
     },
-    [removeSelectionPlanes, orientCameraToPlane, createSketchGrid, startSketch, showGroundPlane, toggleGroundPlane, setCameraRotationEnabled, dimSceneBodies]
+    [removeSelectionPlanes, orientCameraToPlane, createSketchGrid, startSketch, showGroundPlane, toggleGroundPlane, setCameraRotationEnabled, dimSceneBodies, setDrawingPlane]
   );
 
   // Start new sketch - enters plane selection mode
@@ -1599,9 +1779,22 @@ export function useSketchMode(): UseSketchModeResult {
           setSketchSubMode("select");
           event.preventDefault();
           break;
+
+        case "x":
+          // X: Toggle construction mode on selected primitives
+          if (activeSketch && selectedPrimitives.length > 0) {
+            for (const primId of selectedPrimitives) {
+              const prim = activeSketch.primitives.find(p => p.id === primId);
+              if (prim && (isSketchLine(prim) || isSketchCircle(prim) || isSketchArc(prim))) {
+                updatePrimitive(primId, { construction: !(prim as any).construction });
+              }
+            }
+          }
+          event.preventDefault();
+          break;
       }
     },
-    [mode, isChaining, isSelectingPlane, cancelCurrentOperation, cancelPlaneSelection, setSketchSubMode]
+    [mode, isChaining, isSelectingPlane, cancelCurrentOperation, cancelPlaneSelection, setSketchSubMode, activeSketch, selectedPrimitives, updatePrimitive]
   );
 
   // Find all primitives connected to a given primitive (sharing points)
@@ -1699,8 +1892,13 @@ export function useSketchMode(): UseSketchModeResult {
         return;
       }
 
+      pushSketchUndo();
+
       // Get the actual primitive objects for type checking
       const getPrimitive = (id: string) => activeSketch.primitives.find(p => p.id === id);
+
+      // Track last constraint result for feedback
+      let lastResult: { status: ConstraintResultStatus } = { status: "applied" };
 
       // Single-primitive constraints that should be applied to each selected primitive
       const singlePrimitiveConstraints: ConstraintType[] = [
@@ -1719,7 +1917,8 @@ export function useSketchMode(): UseSketchModeResult {
             driving: true,
           };
           console.log("Applying constraint:", constraint);
-          await addConstraintAndSolve(constraint);
+          const result = await addConstraintAndSolve(constraint);
+          if (result.status !== "applied") lastResult = result;
         }
       } else if (type === "pointOnLine" && selectedPrimitives.length > 2) {
         // Special case: pointOnLine with multiple primitives
@@ -1779,7 +1978,7 @@ export function useSketchMode(): UseSketchModeResult {
             driving: true,
           };
           console.log("Applying pointOnLine constraint:", constraint);
-          await addConstraintAndSolve(constraint);
+          lastResult = await addConstraintAndSolve(constraint);
         } else {
           console.warn("Could not find point/circle and line for pointOnLine constraint");
         }
@@ -1808,7 +2007,7 @@ export function useSketchMode(): UseSketchModeResult {
             driving: true,
           };
           console.log("Applying pointOnCircle constraint:", constraint);
-          await addConstraintAndSolve(constraint);
+          lastResult = await addConstraintAndSolve(constraint);
         } else {
           console.warn("Could not find point and circle for pointOnCircle constraint");
         }
@@ -1837,7 +2036,7 @@ export function useSketchMode(): UseSketchModeResult {
             driving: true,
           };
           console.log("Applying tangent constraint:", constraint);
-          await addConstraintAndSolve(constraint);
+          lastResult = await addConstraintAndSolve(constraint);
         } else {
           console.warn("Could not find line and circle for tangent constraint");
         }
@@ -1851,12 +2050,15 @@ export function useSketchMode(): UseSketchModeResult {
           driving: true,
         };
         console.log("Applying constraint:", constraint);
-        await addConstraintAndSolve(constraint);
+        lastResult = await addConstraintAndSolve(constraint);
       }
+
+      // Show feedback for redundant/conflicting constraints
+      showConstraintFeedback(lastResult.status);
 
       clearSelection();
     },
-    [selectedPrimitives, activeSketch, generateId, addConstraintAndSolve, clearSelection]
+    [selectedPrimitives, activeSketch, generateId, addConstraintAndSolve, clearSelection, pushSketchUndo, showConstraintFeedback]
   );
 
   // Clear pending line dimension (called when user cancels or submits)
@@ -1867,6 +2069,7 @@ export function useSketchMode(): UseSketchModeResult {
   // Apply length constraint to a specific line
   const applyLineLengthConstraint = useCallback(
     async (lineId: string, length: number) => {
+      pushSketchUndo();
       const constraint: SketchConstraint = {
         id: generateId("const"),
         type: "distance",
@@ -1875,10 +2078,11 @@ export function useSketchMode(): UseSketchModeResult {
         driving: true,
       };
       console.log("Applying length constraint to line:", lineId, "length:", length);
-      await addConstraintAndSolve(constraint);
+      const result = await addConstraintAndSolve(constraint);
+      showConstraintFeedback(result.status);
       clearPendingLineDimension();
     },
-    [generateId, addConstraintAndSolve, clearPendingLineDimension]
+    [generateId, addConstraintAndSolve, clearPendingLineDimension, pushSketchUndo, showConstraintFeedback]
   );
 
   // Close context menu
@@ -1901,6 +2105,11 @@ export function useSketchMode(): UseSketchModeResult {
         return;
       }
 
+      pushSketchUndo();
+
+      // Track last constraint result for feedback
+      let lastResult: { status: ConstraintResultStatus } = { status: "applied" };
+
       // Single-primitive constraints that should be applied to each primitive separately
       const singlePrimitiveConstraints: ConstraintType[] = [
         "horizontal", "vertical", "radius", "diameter"
@@ -1917,7 +2126,8 @@ export function useSketchMode(): UseSketchModeResult {
             value,
             driving: true,
           };
-          await addConstraintAndSolve(constraint);
+          const result = await addConstraintAndSolve(constraint);
+          if (result.status !== "applied") lastResult = result;
         }
       } else {
         // Apply constraint to all primitives together
@@ -1929,12 +2139,15 @@ export function useSketchMode(): UseSketchModeResult {
           driving: true,
         };
         console.log("Applying constraint from context menu:", constraint);
-        await addConstraintAndSolve(constraint);
+        lastResult = await addConstraintAndSolve(constraint);
       }
+
+      // Show feedback for redundant/conflicting constraints
+      showConstraintFeedback(lastResult.status);
 
       closeContextMenu();
     },
-    [contextMenu.primitiveIds, generateId, addConstraintAndSolve, closeContextMenu]
+    [contextMenu.primitiveIds, generateId, addConstraintAndSolve, closeContextMenu, pushSketchUndo, showConstraintFeedback]
   );
 
   // Handle dragging primitives in select mode
@@ -1944,29 +2157,13 @@ export function useSketchMode(): UseSketchModeResult {
       const currentSketch = activeSketchRef.current;
       if (!isDraggingRef.current || !dragStartPointRef.current || !currentSketch) return;
 
-      const point = getMouseIntersection(event);
-      if (!point) return;
+      const point3D = getMouseIntersection(event);
+      if (!point3D) return;
 
-      // Calculate delta from drag start
-      const delta = new THREE.Vector3().subVectors(point, dragStartPointRef.current);
-
-      // Get delta in sketch coordinates based on plane type
-      let deltaX: number, deltaY: number;
-      switch (currentSketch.plane.type) {
-        case "XZ":
-          deltaX = delta.x;
-          deltaY = delta.z;
-          break;
-        case "YZ":
-          deltaX = delta.y;
-          deltaY = delta.z;
-          break;
-        case "XY":
-        default:
-          deltaX = delta.x;
-          deltaY = delta.y;
-          break;
-      }
+      // Convert to 2D sketch coords — dragStartPointRef is already in sketch coords
+      const point = worldToSketch2D(point3D, currentSketch.plane.type);
+      const deltaX = point.x - dragStartPointRef.current.x;
+      const deltaY = point.y - dragStartPointRef.current.y;
 
       // Batch update: collect all position updates
       const updates: Map<string, { x: number; y: number }> = new Map();
@@ -1983,7 +2180,7 @@ export function useSketchMode(): UseSketchModeResult {
       // Apply all updates and solve in one go
       updatePrimitivesAndSolve(updates);
     },
-    [getMouseIntersection, updatePrimitivesAndSolve]
+    [getMouseIntersection, worldToSketch2D, updatePrimitivesAndSolve]
   );
 
   const handleDragEnd = useCallback(async () => {
@@ -2007,8 +2204,11 @@ export function useSketchMode(): UseSketchModeResult {
     (event: MouseEvent, primitiveIds: string[]) => {
       if (!activeSketch) return;
 
-      const point = getMouseIntersection(event);
-      if (!point) return;
+      const point3D = getMouseIntersection(event);
+      if (!point3D) return;
+
+      // Store drag start in 2D sketch coordinates
+      const point = worldToSketch2D(point3D, activeSketch.plane.type);
 
       // Collect all points that need to be moved
       const pointsToMove: string[] = [];
@@ -2062,11 +2262,12 @@ export function useSketchMode(): UseSketchModeResult {
         }
       }
 
+      pushSketchUndo();
       isDraggingRef.current = true;
       dragStartPointRef.current = point.clone();
       draggedPrimitiveIdsRef.current = pointsToMove;
     },
-    [activeSketch, getMouseIntersection, updatePrimitive]
+    [activeSketch, getMouseIntersection, worldToSketch2D, updatePrimitive, pushSketchUndo]
   );
 
   // Handle select mode - raycast to find clicked primitive
@@ -2094,61 +2295,85 @@ export function useSketchMode(): UseSketchModeResult {
         return;
       }
 
-      // Use shared raycasting utility
+      // Helper: handle a found primitive (right-click context menu, drag, or select)
+      const handleFoundPrimitive = (primitiveId: string, primitiveType: string) => {
+        if (isRightClick) {
+          let primitiveIds: string[];
+          let primitiveTypes: string[];
+
+          if (selectedPrimitives.includes(primitiveId)) {
+            primitiveIds = [...selectedPrimitives];
+            primitiveTypes = primitiveIds.map((id) => {
+              const prim = activeSketch?.primitives.find((p) => p.id === id);
+              return prim?.type || "unknown";
+            });
+          } else {
+            primitiveIds = [primitiveId];
+            primitiveTypes = [primitiveType];
+          }
+
+          setContextMenu({
+            visible: true,
+            x: event.clientX,
+            y: event.clientY,
+            primitiveIds,
+            primitiveTypes,
+          });
+          return;
+        }
+
+        const addToSelection = event.shiftKey;
+
+        if (selectedPrimitives.includes(primitiveId) && !addToSelection) {
+          const connectedPrimitives = findConnectedPrimitives(primitiveId);
+          startDrag(event, connectedPrimitives);
+          return;
+        }
+
+        selectPrimitive(primitiveId, addToSelection);
+      };
+
+      // Screen-space point proximity check — points are too small for mesh
+      // raycasting when Line2's threshold makes lines dominate. Project each
+      // point to screen pixels and check distance to click position.
+      if (renderer && camera && activeSketch) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        const clickX = event.clientX - rect.left;
+        const clickY = event.clientY - rect.top;
+        let closestPointId: string | null = null;
+        let closestDist = SKETCH_CONFIG.POINT_HIT_RADIUS_PX;
+
+        for (const primitive of activeSketch.primitives) {
+          if (!isSketchPoint(primitive)) continue;
+          const pos3D = sketchTo3DRef.current(primitive.x, primitive.y, 0.1);
+          const projected = pos3D.project(camera);
+          const screenX = (projected.x * 0.5 + 0.5) * rect.width;
+          const screenY = (-projected.y * 0.5 + 0.5) * rect.height;
+          const dist = Math.hypot(screenX - clickX, screenY - clickY);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestPointId = primitive.id;
+          }
+        }
+
+        if (closestPointId) {
+          handleFoundPrimitive(closestPointId, "point");
+          return;
+        }
+      }
+
+      // Raycast for lines/circles/arcs (Line2 screen-space raycasting)
       const intersects = raycastToObjects(event, objects, true);
 
       if (intersects.length > 0) {
-        // Find the first intersected object with a primitiveId
         for (const intersect of intersects) {
           let obj: THREE.Object3D | null = intersect.object;
           while (obj) {
             if (obj.userData.primitiveId) {
-              const primitiveId = obj.userData.primitiveId as string;
-              const primitiveType = obj.userData.type as string;
-
-              if (isRightClick) {
-                // Right-click: open context menu
-                // If the primitive is already selected, use all selected primitives
-                // Otherwise, use just this primitive
-                let primitiveIds: string[];
-                let primitiveTypes: string[];
-
-                if (selectedPrimitives.includes(primitiveId)) {
-                  // Use all selected primitives
-                  primitiveIds = [...selectedPrimitives];
-                  primitiveTypes = primitiveIds.map((id) => {
-                    const prim = activeSketch?.primitives.find((p) => p.id === id);
-                    return prim?.type || "unknown";
-                  });
-                } else {
-                  // Use just the clicked primitive
-                  primitiveIds = [primitiveId];
-                  primitiveTypes = [primitiveType];
-                }
-
-                setContextMenu({
-                  visible: true,
-                  x: event.clientX,
-                  y: event.clientY,
-                  primitiveIds,
-                  primitiveTypes,
-                });
-                return;
-              }
-
-              // Left-click: select primitive or start dragging
-              const addToSelection = event.shiftKey;
-
-              // If clicking on already selected primitive, start dragging
-              if (selectedPrimitives.includes(primitiveId) && !addToSelection) {
-                // Find all connected primitives for dragging (moves the whole shape)
-                const connectedPrimitives = findConnectedPrimitives(primitiveId);
-                startDrag(event, connectedPrimitives);
-                return;
-              }
-
-              // Otherwise, select the primitive
-              selectPrimitive(primitiveId, addToSelection);
+              handleFoundPrimitive(
+                obj.userData.primitiveId as string,
+                obj.userData.type as string,
+              );
               return;
             }
             obj = obj.parent;
@@ -2158,14 +2383,12 @@ export function useSketchMode(): UseSketchModeResult {
 
       // Clicked on empty space
       if (isRightClick) {
-        // Close context menu on right-click empty space
         closeContextMenu();
       } else if (!event.shiftKey) {
-        // Clear selection on left-click empty space (unless shift is held)
         clearSelection();
       }
     },
-    [raycastToObjects, selectPrimitive, clearSelection, closeContextMenu, selectedPrimitives, activeSketch, startDrag, handleDragMove, handleDragEnd, findConnectedPrimitives]
+    [raycastToObjects, selectPrimitive, clearSelection, closeContextMenu, selectedPrimitives, activeSketch, startDrag, handleDragMove, handleDragEnd, findConnectedPrimitives, renderer, camera]
   );
 
   // Main event handler
@@ -2189,40 +2412,53 @@ export function useSketchMode(): UseSketchModeResult {
       // Only handle left-click for drawing
       if (event.button !== 0) return;
 
-      let point = getMouseIntersection(event);
-      if (!point) return;
+      const point3D = getMouseIntersection(event);
+      if (!point3D) return;
+
+      // Convert 3D world intersection to 2D sketch coordinates
+      let point = activeSketch
+        ? worldToSketch2D(point3D, activeSketch.plane.type)
+        : point3D.clone();
 
       // Apply grid snapping first
       point = snapToGrid(point);
 
-      // Calculate inference points for snapping
+      // Calculate inference points for snapping (suppressed when Ctrl held)
       if (activeSketch && event.type === "mousemove") {
-        const inferencePoints = findInferencePoints(activeSketch);
-        const nearestSnap = findNearestSnap(point, inferencePoints, INFERENCE_SNAP_DISTANCE);
-
-        if (nearestSnap) {
-          // Snap to inference point
-          point = nearestSnap.position.clone();
-          setCurrentInferencePoint(nearestSnap);
-          renderInferencePoint(nearestSnap);
-        } else {
+        if (ctrlHeldRef.current) {
+          // Ctrl held: clear any visible inference objects and skip snapping
           setCurrentInferencePoint(null);
           cleanupInferenceObjects();
-        }
+          setGuidelines([]);
+          renderGuidelines([]);
+        } else {
+          const inferencePoints = findInferencePoints(activeSketch);
+          const nearestSnap = findNearestSnap(point, inferencePoints, INFERENCE_SNAP_DISTANCE);
 
-        // Calculate guidelines for horizontal/vertical alignment
-        const currentGuidelines = findGuidelines(
-          point,
-          activeSketch,
-          chainStartPointRef.current,
-          ALIGNMENT_TOLERANCE
-        );
-        setGuidelines(currentGuidelines);
-        renderGuidelines(currentGuidelines);
+          if (nearestSnap) {
+            // Snap to inference point
+            point = nearestSnap.position.clone();
+            setCurrentInferencePoint(nearestSnap);
+            renderInferencePoint(nearestSnap);
+          } else {
+            setCurrentInferencePoint(null);
+            cleanupInferenceObjects();
+          }
+
+          // Calculate guidelines for horizontal/vertical alignment
+          const currentGuidelines = findGuidelines(
+            point,
+            activeSketch,
+            chainStartPointRef.current,
+            ALIGNMENT_TOLERANCE
+          );
+          setGuidelines(currentGuidelines);
+          renderGuidelines(currentGuidelines);
+        }
       }
 
-      // On mousedown, also check for snap
-      if (activeSketch && event.type === "mousedown") {
+      // On mousedown, also check for snap (suppressed when Ctrl held)
+      if (activeSketch && event.type === "mousedown" && !ctrlHeldRef.current) {
         const inferencePoints = findInferencePoints(activeSketch);
         const nearestSnap = findNearestSnap(point, inferencePoints, INFERENCE_SNAP_DISTANCE);
         if (nearestSnap) {
@@ -2254,6 +2490,7 @@ export function useSketchMode(): UseSketchModeResult {
       sketchSubMode,
       activeSketch,
       getMouseIntersection,
+      worldToSketch2D,
       snapToGrid,
       handleLineDraw,
       handleCircleDraw,
@@ -2276,12 +2513,12 @@ export function useSketchMode(): UseSketchModeResult {
     const cleanupObjects = () => {
       sketchObjectsRef.current.forEach((obj) => {
         scene?.remove(obj);
-        if (obj instanceof THREE.Line) {
+        if (obj instanceof Line2 || obj instanceof THREE.Line || obj instanceof THREE.Mesh) {
           obj.geometry.dispose();
           (obj.material as THREE.Material).dispose();
-        } else if (obj instanceof THREE.Mesh) {
-          obj.geometry.dispose();
-          (obj.material as THREE.Material).dispose();
+        } else if (obj instanceof THREE.Sprite) {
+          (obj.material as THREE.SpriteMaterial).map?.dispose();
+          obj.material.dispose();
         }
       });
       sketchObjectsRef.current = [];
@@ -2298,11 +2535,17 @@ export function useSketchMode(): UseSketchModeResult {
 
     const newObjects: THREE.Object3D[] = [];
 
-    // Get color based on status
+    // Get color based on status, with construction line support
     const getColor = (primitiveId: string) => {
+      const prim = activeSketch.primitives.find(p => p.id === primitiveId);
+      const isConstruction = prim && (prim as any).construction;
+
       // Selected primitives get highlight color
       if (selectedPrimitives.includes(primitiveId)) {
-        return COLORS.selected;
+        return isConstruction ? SKETCH_THEME.constructionSelected : COLORS.selected;
+      }
+      if (isConstruction) {
+        return SKETCH_THEME.construction;
       }
       // Otherwise use status color
       return activeSketch.status === "fully_constrained"
@@ -2310,6 +2553,12 @@ export function useSketchMode(): UseSketchModeResult {
         : activeSketch.status === "overconstrained"
         ? COLORS.overconstrained
         : COLORS.underconstrained;
+    };
+
+    // Check if a primitive is a construction element
+    const isConstruction = (primitiveId: string): boolean => {
+      const prim = activeSketch.primitives.find(p => p.id === primitiveId);
+      return !!(prim && (prim as any).construction);
     };
 
     // Convert 2D sketch coordinates to 3D based on plane type
@@ -2325,6 +2574,7 @@ export function useSketchMode(): UseSketchModeResult {
           return new THREE.Vector3(x, y, zOffset);
       }
     };
+    sketchTo3DRef.current = sketchTo3D;
 
     // Get point positions
     const getPointPosition = (pointId: string): THREE.Vector3 | null => {
@@ -2337,17 +2587,27 @@ export function useSketchMode(): UseSketchModeResult {
       return null;
     };
 
+    // Build point map for profile detection
+    const pointMap = new Map<string, { x: number; y: number }>();
+
     // Render each primitive
     for (const primitive of activeSketch.primitives) {
       const isSelected = selectedPrimitives.includes(primitive.id);
       const color = getColor(primitive.id);
+      const constructionFlag = isConstruction(primitive.id);
 
       if (isSketchPoint(primitive)) {
-        // Render point as larger sphere for visibility
-        const size = isSelected ? 0.25 : 0.2; // Bigger when selected
-        const geometry = new THREE.SphereGeometry(size, 16, 16);
+        // Store point position for profile detection
+        pointMap.set(primitive.id, { x: primitive.x, y: primitive.y });
+
+        // Render point as small flat circle (Fusion 360 style)
+        const size = isSelected ? 0.1 : 0.07;
+        const geometry = new THREE.CircleGeometry(size, 16);
         const pointColor = isSelected ? COLORS.selectedPoint : COLORS.point;
-        const material = new THREE.MeshBasicMaterial({ color: pointColor });
+        const material = new THREE.MeshBasicMaterial({
+          color: pointColor,
+          depthTest: false,
+        });
         const mesh = new THREE.Mesh(geometry, material);
         const pos = sketchTo3D(primitive.x, primitive.y, 0.1);
         mesh.position.copy(pos);
@@ -2372,28 +2632,15 @@ export function useSketchMode(): UseSketchModeResult {
             p2.z = 0.05;
           }
 
-          // Create a tube geometry for the line (more visible than Line)
-          const direction = new THREE.Vector3().subVectors(p2, p1);
-          const length = direction.length();
-          const midpoint = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
-
-          const thickness = isSelected ? 0.08 : 0.05; // Thicker when selected
-          const tubeGeometry = new THREE.CylinderGeometry(thickness, thickness, length, 8);
+          // Create Line2 for thin, crisp lines
+          const positions = [p1.x, p1.y, p1.z, p2.x, p2.y, p2.z];
           const lineColor = isSelected ? COLORS.selectedLine : color;
-          const tubeMaterial = new THREE.MeshBasicMaterial({ color: lineColor });
-          const tube = new THREE.Mesh(tubeGeometry, tubeMaterial);
-
-          // Position and rotate the tube
-          tube.position.copy(midpoint);
-          tube.quaternion.setFromUnitVectors(
-            new THREE.Vector3(0, 1, 0),
-            direction.clone().normalize()
-          );
-
-          tube.renderOrder = 999;
-          tube.userData = { primitiveId: primitive.id, type: "line", isSketchPrimitive: true };
-          scene.add(tube);
-          newObjects.push(tube);
+          const lineWidth = isSelected ? 3.0 : 1.5;
+          const line = createLine2FromPoints(positions, lineColor, lineWidth, constructionFlag);
+          line.renderOrder = 999;
+          line.userData = { primitiveId: primitive.id, type: "line", isSketchPrimitive: true };
+          scene.add(line);
+          newObjects.push(line);
         } else {
           console.warn("Could not find points for line:", primitive.p1Id, primitive.p2Id);
         }
@@ -2403,16 +2650,16 @@ export function useSketchMode(): UseSketchModeResult {
         ) as SketchPoint | undefined;
         if (centerPt) {
           const segments = 64;
-          const points: THREE.Vector3[] = [];
+          const positions: number[] = [];
           for (let i = 0; i <= segments; i++) {
             const angle = (i / segments) * Math.PI * 2;
             const localX = centerPt.x + Math.cos(angle) * primitive.radius;
             const localY = centerPt.y + Math.sin(angle) * primitive.radius;
-            points.push(sketchTo3D(localX, localY, 0.01));
+            const pt = sketchTo3D(localX, localY, 0.01);
+            positions.push(pt.x, pt.y, pt.z);
           }
-          const geometry = new THREE.BufferGeometry().setFromPoints(points);
-          const material = new THREE.LineBasicMaterial({ color, linewidth: 2 });
-          const line = new THREE.Line(geometry, material);
+          const lineWidth = isSelected ? 3.0 : 1.5;
+          const line = createLine2FromPoints(positions, color, lineWidth, constructionFlag);
           line.renderOrder = 999;
           line.userData = { primitiveId: primitive.id, type: "circle", isSketchPrimitive: true };
           scene.add(line);
@@ -2433,21 +2680,18 @@ export function useSketchMode(): UseSketchModeResult {
             angleDiff > 0 ? angleDiff : angleDiff + Math.PI * 2;
 
           const segments = 32;
-          const arcPoints: THREE.Vector3[] = [];
+          const positions: number[] = [];
           for (let i = 0; i <= segments; i++) {
             const t = i / segments;
             const currentAngle = startAngle + normalizedDiff * t;
-            arcPoints.push(
-              new THREE.Vector3(
-                center.x + Math.cos(currentAngle) * radius,
-                center.y + Math.sin(currentAngle) * radius,
-                0.05 // Z offset to avoid z-fighting
-              )
+            positions.push(
+              center.x + Math.cos(currentAngle) * radius,
+              center.y + Math.sin(currentAngle) * radius,
+              0.05
             );
           }
-          const geometry = new THREE.BufferGeometry().setFromPoints(arcPoints);
-          const material = new THREE.LineBasicMaterial({ color, linewidth: 2 });
-          const line = new THREE.Line(geometry, material);
+          const lineWidth = isSelected ? 3.0 : 1.5;
+          const line = createLine2FromPoints(positions, color, lineWidth, constructionFlag);
           line.userData = { primitiveId: primitive.id, type: "arc", isSketchPrimitive: true };
           scene.add(line);
           newObjects.push(line);
@@ -2455,8 +2699,320 @@ export function useSketchMode(): UseSketchModeResult {
       }
     }
 
+    // ── Tier 3: Constraint glyphs on geometry ──
+    const constraintGlyphMap: Record<string, string> = {
+      horizontal: "H",
+      vertical: "V",
+      perpendicular: "\u27c2",
+      parallel: "//",
+      equal: "=",
+      tangent: "T",
+      midpoint: "M",
+      coincident: "\u25cf",
+      concentric: "\u25ce",
+      symmetric: "S",
+      pointOnLine: "\u25cf",
+      pointOnCircle: "\u25cf",
+      distance: "D",
+      distanceX: "Dx",
+      distanceY: "Dy",
+      angle: "\u2220",
+      radius: "R",
+      diameter: "\u2300",
+    };
+
+    // Track glyph offset per primitive to stagger overlapping glyphs
+    const glyphCountPerPrimitive = new Map<string, number>();
+
+    for (const constraint of activeSketch.constraints) {
+      const glyphText = constraintGlyphMap[constraint.type] || "?";
+      const firstPrimId = constraint.primitiveIds[0];
+      if (!firstPrimId) continue;
+
+      const prim = activeSketch.primitives.find(p => p.id === firstPrimId);
+      if (!prim) continue;
+
+      // Calculate glyph position at the midpoint of the first referenced primitive
+      let glyphPos: THREE.Vector3 | null = null;
+      let perpOffset = new THREE.Vector3(0, 0, 0);
+
+      if (isSketchLine(prim)) {
+        const pt1 = pointMap.get(prim.p1Id);
+        const pt2 = pointMap.get(prim.p2Id);
+        if (pt1 && pt2) {
+          const midX = (pt1.x + pt2.x) / 2;
+          const midY = (pt1.y + pt2.y) / 2;
+          glyphPos = sketchTo3D(midX, midY, 0.15);
+          // Perpendicular offset direction
+          const dx = pt2.x - pt1.x;
+          const dy = pt2.y - pt1.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 0) {
+            perpOffset = sketchTo3D(-dy / len * 0.25, dx / len * 0.25, 0);
+          }
+        }
+      } else if (isSketchCircle(prim)) {
+        const cp = pointMap.get(prim.centerId);
+        if (cp) {
+          glyphPos = sketchTo3D(cp.x + prim.radius * 0.7, cp.y + prim.radius * 0.7, 0.15);
+        }
+      } else if (isSketchPoint(prim)) {
+        glyphPos = sketchTo3D(prim.x, prim.y, 0.15);
+        perpOffset = sketchTo3D(0.2, 0.2, 0);
+      }
+
+      if (glyphPos) {
+        // Stagger multiple glyphs on same primitive
+        const count = glyphCountPerPrimitive.get(firstPrimId) || 0;
+        glyphCountPerPrimitive.set(firstPrimId, count + 1);
+        glyphPos.add(perpOffset.multiplyScalar(count === 0 ? 1 : 1));
+        glyphPos.y += count * 0.35;
+
+        const sprite = createConstraintGlyph(glyphText, glyphPos);
+        scene.add(sprite);
+        newObjects.push(sprite);
+      }
+    }
+
+    // ── Tier 6A: Dimension display with extension lines ──
+    const dimensionTypes = new Set(["distance", "distanceX", "distanceY", "angle", "radius", "diameter"]);
+    for (const constraint of activeSketch.constraints) {
+      if (!dimensionTypes.has(constraint.type) || constraint.value === undefined) continue;
+
+      const firstPrimId = constraint.primitiveIds[0];
+      const prim = activeSketch.primitives.find(p => p.id === firstPrimId);
+      if (!prim) continue;
+
+      if (constraint.type === "distance" && isSketchLine(prim)) {
+        // Line distance: show extension lines + dimension line with value
+        const pt1 = pointMap.get(prim.p1Id);
+        const pt2 = pointMap.get(prim.p2Id);
+        if (!pt1 || !pt2) continue;
+
+        const dx = pt2.x - pt1.x;
+        const dy = pt2.y - pt1.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 0.01) continue;
+
+        // Perpendicular direction for offset
+        const perpX = -dy / len;
+        const perpY = dx / len;
+        const offset = 0.5; // Distance from geometry to dimension line
+
+        // Extension line endpoints
+        const ext1Start = sketchTo3D(pt1.x, pt1.y, 0.12);
+        const ext1End = sketchTo3D(pt1.x + perpX * offset, pt1.y + perpY * offset, 0.12);
+        const ext2Start = sketchTo3D(pt2.x, pt2.y, 0.12);
+        const ext2End = sketchTo3D(pt2.x + perpX * offset, pt2.y + perpY * offset, 0.12);
+
+        // Extension lines (thin)
+        const dimColor = SKETCH_THEME.constraintGlyph;
+        const ext1 = createLine2FromPoints(
+          [ext1Start.x, ext1Start.y, ext1Start.z, ext1End.x, ext1End.y, ext1End.z],
+          dimColor, 0.8
+        );
+        ext1.renderOrder = 1000;
+        scene.add(ext1);
+        newObjects.push(ext1);
+
+        const ext2 = createLine2FromPoints(
+          [ext2Start.x, ext2Start.y, ext2Start.z, ext2End.x, ext2End.y, ext2End.z],
+          dimColor, 0.8
+        );
+        ext2.renderOrder = 1000;
+        scene.add(ext2);
+        newObjects.push(ext2);
+
+        // Dimension line between extension line ends
+        const dimLine = createLine2FromPoints(
+          [ext1End.x, ext1End.y, ext1End.z, ext2End.x, ext2End.y, ext2End.z],
+          dimColor, 1.0
+        );
+        dimLine.renderOrder = 1000;
+        scene.add(dimLine);
+        newObjects.push(dimLine);
+
+        // Arrowheads at both ends of dimension line (small triangles)
+        const arrowSize = 0.12;
+        const dirX = dx / len;
+        const dirY = dy / len;
+        for (const [base, sign] of [[ext1End, 1], [ext2End, -1]] as [THREE.Vector3, number][]) {
+          const tipX = base.x + sign * dirX * arrowSize;
+          const tipY = base.y + sign * dirY * arrowSize;
+          const wing1X = base.x - sign * dirX * 0.02 + perpX * arrowSize * 0.3;
+          const wing1Y = base.y - sign * dirY * 0.02 + perpY * arrowSize * 0.3;
+          const wing2X = base.x - sign * dirX * 0.02 - perpX * arrowSize * 0.3;
+          const wing2Y = base.y - sign * dirY * 0.02 - perpY * arrowSize * 0.3;
+
+          const arrowShape = new THREE.Shape();
+          arrowShape.moveTo(tipX, tipY);
+          arrowShape.lineTo(wing1X, wing1Y);
+          arrowShape.lineTo(wing2X, wing2Y);
+          arrowShape.closePath();
+          const arrowGeo = new THREE.ShapeGeometry(arrowShape);
+          const arrowMat = new THREE.MeshBasicMaterial({ color: dimColor, depthTest: false });
+          const arrowMesh = new THREE.Mesh(arrowGeo, arrowMat);
+          arrowMesh.renderOrder = 1001;
+          scene.add(arrowMesh);
+          newObjects.push(arrowMesh);
+        }
+
+        // Value text sprite at midpoint of dimension line
+        const dimMidX = (ext1End.x + ext2End.x) / 2;
+        const dimMidY = (ext1End.y + ext2End.y) / 2;
+        const dimMidZ = (ext1End.z + ext2End.z) / 2;
+        const valueText = constraint.value.toFixed(2);
+        const valueSprite = createConstraintGlyph(valueText, new THREE.Vector3(dimMidX, dimMidY + 0.2, dimMidZ));
+        valueSprite.scale.set(0.4, 0.4, 0.4);
+        scene.add(valueSprite);
+        newObjects.push(valueSprite);
+      } else if ((constraint.type === "radius" || constraint.type === "diameter") && isSketchCircle(prim)) {
+        // Radius/diameter: show leader line from center to edge with value
+        const cp = pointMap.get(prim.centerId);
+        if (!cp) continue;
+
+        const edgeX = cp.x + prim.radius;
+        const edgeY = cp.y;
+        const dimColor = SKETCH_THEME.constraintGlyph;
+
+        const leaderStart = sketchTo3D(cp.x, cp.y, 0.12);
+        const leaderEnd = sketchTo3D(edgeX, edgeY, 0.12);
+        const leader = createLine2FromPoints(
+          [leaderStart.x, leaderStart.y, leaderStart.z, leaderEnd.x, leaderEnd.y, leaderEnd.z],
+          dimColor, 1.0
+        );
+        leader.renderOrder = 1000;
+        scene.add(leader);
+        newObjects.push(leader);
+
+        // Value label
+        const labelPos = sketchTo3D((cp.x + edgeX) / 2, cp.y + 0.25, 0.15);
+        const prefix = constraint.type === "radius" ? "R" : "\u2300";
+        const valueSprite = createConstraintGlyph(`${prefix}${constraint.value.toFixed(2)}`, labelPos);
+        valueSprite.scale.set(0.4, 0.4, 0.4);
+        scene.add(valueSprite);
+        newObjects.push(valueSprite);
+      }
+    }
+
+    // ── Tier 5: Closed profile fill detection ──
+    // Build adjacency from non-construction lines
+    const edges: Array<{ p1: string; p2: string; p1Coords: { x: number; y: number }; p2Coords: { x: number; y: number } }> = [];
+    for (const prim of activeSketch.primitives) {
+      if (isSketchLine(prim) && !(prim as any).construction) {
+        const pt1 = pointMap.get(prim.p1Id);
+        const pt2 = pointMap.get(prim.p2Id);
+        if (pt1 && pt2) {
+          edges.push({ p1: prim.p1Id, p2: prim.p2Id, p1Coords: pt1, p2Coords: pt2 });
+        }
+      }
+    }
+
+    // Simple closed-loop finder: for each edge, try to find a cycle
+    if (edges.length >= 3) {
+      const adjacency = new Map<string, Array<{ to: string; coords: { x: number; y: number } }>>();
+      for (const e of edges) {
+        if (!adjacency.has(e.p1)) adjacency.set(e.p1, []);
+        if (!adjacency.has(e.p2)) adjacency.set(e.p2, []);
+        adjacency.get(e.p1)!.push({ to: e.p2, coords: e.p2Coords });
+        adjacency.get(e.p2)!.push({ to: e.p1, coords: e.p1Coords });
+      }
+
+      // Find minimal cycles using DFS (simplified approach)
+      const foundCycles: string[][] = [];
+      const cycleSignatures = new Set<string>();
+
+      for (const startNode of adjacency.keys()) {
+        const stack: Array<{ node: string; path: string[] }> = [{ node: startNode, path: [startNode] }];
+        while (stack.length > 0) {
+          const { node, path } = stack.pop()!;
+          if (path.length > 10) continue; // Limit cycle length
+
+          const neighbors = adjacency.get(node) || [];
+          for (const { to: neighbor } of neighbors) {
+            if (neighbor === startNode && path.length >= 3) {
+              // Found a cycle
+              const sorted = [...path].sort().join(",");
+              if (!cycleSignatures.has(sorted)) {
+                cycleSignatures.add(sorted);
+                foundCycles.push([...path]);
+              }
+            } else if (!path.includes(neighbor)) {
+              stack.push({ node: neighbor, path: [...path, neighbor] });
+            }
+          }
+        }
+      }
+
+      // Render each detected closed profile with translucent fill
+      for (const cycle of foundCycles) {
+        const shapePoints: THREE.Vector2[] = [];
+        for (const ptId of cycle) {
+          const coords = pointMap.get(ptId);
+          if (coords) {
+            shapePoints.push(new THREE.Vector2(coords.x, coords.y));
+          }
+        }
+        if (shapePoints.length >= 3) {
+          // Check area to filter out degenerate/outer-boundary cycles
+          let area = 0;
+          for (let i = 0; i < shapePoints.length; i++) {
+            const j = (i + 1) % shapePoints.length;
+            area += shapePoints[i].x * shapePoints[j].y;
+            area -= shapePoints[j].x * shapePoints[i].y;
+          }
+          area = Math.abs(area) / 2;
+          if (area < 0.01) continue; // Skip tiny areas
+
+          const shape = new THREE.Shape(shapePoints);
+          const shapeGeometry = new THREE.ShapeGeometry(shape);
+          const shapeMaterial = new THREE.MeshBasicMaterial({
+            color: SKETCH_THEME.profileFill,
+            transparent: true,
+            opacity: SKETCH_THEME.profileFillOpacity,
+            depthTest: false,
+            side: THREE.DoubleSide,
+          });
+          const shapeMesh = new THREE.Mesh(shapeGeometry, shapeMaterial);
+          // Position on the sketch plane
+          const planeType = activeSketch.plane.type;
+          if (planeType === "XZ") {
+            shapeMesh.rotation.x = -Math.PI / 2;
+          } else if (planeType === "YZ") {
+            shapeMesh.rotation.y = Math.PI / 2;
+          }
+          shapeMesh.renderOrder = 997;
+          scene.add(shapeMesh);
+          newObjects.push(shapeMesh);
+        }
+      }
+    }
+
     sketchObjectsRef.current = newObjects;
   }, [activeSketch, scene, sceneReady, selectedPrimitives]);
+
+  // Update LineMaterial resolution on window resize for correct line widths
+  useEffect(() => {
+    if (mode !== "sketch") return;
+
+    const handleResize = () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      sketchObjectsRef.current.forEach((obj) => {
+        if (obj instanceof Line2) {
+          (obj.material as LineMaterial).resolution.set(w, h);
+        }
+      });
+      guidelineObjectsRef.current.forEach((obj) => {
+        if (obj instanceof Line2) {
+          (obj.material as LineMaterial).resolution.set(w, h);
+        }
+      });
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [mode]);
 
   // Clear selection when switching sub-modes or leaving sketch mode
   useEffect(() => {
@@ -2486,15 +3042,28 @@ export function useSketchMode(): UseSketchModeResult {
       // Restore dimmed bodies
       restoreSceneBodies();
 
-      // Restore ground plane if it was hidden
-      if (!showGroundPlane) {
+      // Restore ground plane if sketch mode was the one that hid it
+      if (sketchHidGroundPlaneRef.current) {
         toggleGroundPlane();
+        sketchHidGroundPlaneRef.current = false;
+      }
+
+      // Restore original camera position and orientation
+      if (camera && originalCameraPositionRef.current && originalCameraUpRef.current) {
+        camera.position.copy(originalCameraPositionRef.current);
+        camera.up.copy(originalCameraUpRef.current);
+        camera.lookAt(0, 0, 0);
+        originalCameraPositionRef.current = null;
+        originalCameraUpRef.current = null;
       }
 
       // Re-enable camera rotation when leaving sketch mode
       setCameraRotationEnabled(true);
+
+      // Reset drawing plane to default XY
+      setDrawingPlane(new THREE.Vector3(0, 0, 1));
     }
-  }, [mode, cleanupInferenceObjects, cleanupSketchGrid, removeSelectionPlanes, showGroundPlane, toggleGroundPlane, setCameraRotationEnabled, restoreSceneBodies]);
+  }, [mode, camera, cleanupInferenceObjects, cleanupSketchGrid, removeSelectionPlanes, toggleGroundPlane, setCameraRotationEnabled, restoreSceneBodies, setDrawingPlane]);
 
   return {
     sketchSubMode,
@@ -2529,5 +3098,7 @@ export function useSketchMode(): UseSketchModeResult {
     cleanupSketchGrid,
     handlePlaneSelectionMouseMove,
     handlePlaneSelectionClick,
+    // Constraint feedback (redundant/conflicting rollback)
+    constraintFeedback,
   };
 }

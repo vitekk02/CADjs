@@ -29,17 +29,6 @@ const Navbar: FC = () => {
               <div className="flex flex-col">
                 <button
                   onClick={() => {
-                    setMode("draw");
-                    setActiveMenu(null);
-                  }}
-                  className={`px-4 py-2 rounded hover:bg-gray-700 focus:outline-none transition ${
-                    mode === "draw" ? "bg-gray-700" : ""
-                  }`}
-                >
-                  Draw Sketches
-                </button>
-                <button
-                  onClick={() => {
                     setMode("move");
                     setActiveMenu(null);
                   }}
@@ -47,7 +36,7 @@ const Navbar: FC = () => {
                     mode === "move" ? "bg-gray-700" : ""
                   }`}
                 >
-                  Move Sketches
+                  Move
                 </button>
                 <button
                   onClick={() => {

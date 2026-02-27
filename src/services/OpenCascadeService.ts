@@ -136,10 +136,14 @@ export class OpenCascadeService {
     }
 
     try {
-      const zValues = workingBrep.vertices.map((v) => v.z);
-      const minZ = Math.min(...zValues);
-      const maxZ = Math.max(...zValues);
-      const is3D = Math.abs(maxZ - minZ) > 0.01;
+      const xs = workingBrep.vertices.map((v) => v.x);
+      const ys = workingBrep.vertices.map((v) => v.y);
+      const zs = workingBrep.vertices.map((v) => v.z);
+      const rangeX = Math.max(...xs) - Math.min(...xs);
+      const rangeY = Math.max(...ys) - Math.min(...ys);
+      const rangeZ = Math.max(...zs) - Math.min(...zs);
+      const thickAxes = (rangeX > 0.01 ? 1 : 0) + (rangeY > 0.01 ? 1 : 0) + (rangeZ > 0.01 ? 1 : 0);
+      const is3D = thickAxes >= 2;
 
       if (is3D) {
         return await this.createSolidFromBrep(oc, workingBrep);
@@ -221,6 +225,55 @@ export class OpenCascadeService {
     }
   }
 
+  /**
+   * Detect if a face's vertices describe a circle (polygon approximation).
+   * Returns center and radius if vertices lie on a circle, null otherwise.
+   */
+  private isCircularFace(vertices: Vertex[]): { center: { x: number; y: number; z: number }; radius: number; normal: { x: number; y: number; z: number } } | null {
+    if (vertices.length < 8) return null;
+
+    // Detect which plane the circle lies in by finding the flat axis
+    const xs = vertices.map(v => v.x);
+    const ys = vertices.map(v => v.y);
+    const zs = vertices.map(v => v.z);
+    const rangeX = Math.max(...xs) - Math.min(...xs);
+    const rangeY = Math.max(...ys) - Math.min(...ys);
+    const rangeZ = Math.max(...zs) - Math.min(...zs);
+
+    let u: "x" | "y" | "z", v: "x" | "y" | "z";
+    let normal: { x: number; y: number; z: number };
+
+    if (rangeX < 0.01) {
+      // YZ plane — flat along X
+      u = "y"; v = "z";
+      normal = { x: 1, y: 0, z: 0 };
+    } else if (rangeY < 0.01) {
+      // XZ plane — flat along Y
+      u = "x"; v = "z";
+      normal = { x: 0, y: 1, z: 0 };
+    } else if (rangeZ < 0.01) {
+      // XY plane — flat along Z
+      u = "x"; v = "y";
+      normal = { x: 0, y: 0, z: 1 };
+    } else {
+      return null; // Not flat, not a 2D circle
+    }
+
+    const cx = vertices.reduce((s, vert) => s + vert.x, 0) / vertices.length;
+    const cy = vertices.reduce((s, vert) => s + vert.y, 0) / vertices.length;
+    const cz = vertices.reduce((s, vert) => s + vert.z, 0) / vertices.length;
+    const center = { x: cx, y: cy, z: cz };
+
+    const distances = vertices.map(vert =>
+      Math.sqrt((vert[u] - center[u]) ** 2 + (vert[v] - center[v]) ** 2)
+    );
+    const avgRadius = distances.reduce((s, d) => s + d, 0) / distances.length;
+    if (avgRadius < 1e-6) return null;
+    const allOnCircle = distances.every(d => Math.abs(d - avgRadius) / avgRadius < 0.01);
+    if (!allOnCircle) return null;
+    return { center, radius: avgRadius, normal };
+  }
+
   private async createShellFromBrep(
     oc: OpenCascadeInstance,
     brep: Brep,
@@ -228,8 +281,46 @@ export class OpenCascadeService {
     const builder = new oc.BRep_Builder();
     const compound = new oc.TopoDS_Compound();
     builder.MakeCompound(compound);
+    let faceCount = 0;
+    let lastFace: TopoDS_Face | null = null;
 
     try {
+      // Check if the entire BRep represents a single circle
+      // Collect all unique vertices across all faces to detect circular shapes
+      const allUniqueVerts = new Map<string, Vertex>();
+      for (const face of brep.faces) {
+        for (const v of face.vertices) {
+          const key = `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+          allUniqueVerts.set(key, v);
+        }
+      }
+      const circleInfo = this.isCircularFace(Array.from(allUniqueVerts.values()));
+
+      if (circleInfo) {
+        // Build an analytic circle instead of a polygon
+        const centerPnt = new oc.gp_Pnt_3(circleInfo.center.x, circleInfo.center.y, circleInfo.center.z);
+        const dir = new oc.gp_Dir_4(circleInfo.normal.x, circleInfo.normal.y, circleInfo.normal.z);
+        const axis = new oc.gp_Ax2_3(centerPnt, dir);
+        const circ = new oc.gp_Circ_2(axis, circleInfo.radius);
+        const edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_8(circ);
+        const edge = edgeBuilder.Edge();
+        const wireBuilder = new oc.BRepBuilderAPI_MakeWire_2(edge);
+        const wire = wireBuilder.Wire();
+        const faceBuilder = new oc.BRepBuilderAPI_MakeFace_15(wire, true);
+
+        if (faceBuilder.IsDone()) {
+          centerPnt.delete();
+          dir.delete();
+          axis.delete();
+          return faceBuilder.Face();
+        }
+
+        // Cleanup on failure, fall through to polygon path
+        centerPnt.delete();
+        dir.delete();
+        axis.delete();
+      }
+
       for (const face of brep.faces) {
         const vertices = face.vertices;
         if (vertices.length < 3) continue;
@@ -276,6 +367,8 @@ export class OpenCascadeService {
         if (faceBuilder.IsDone()) {
           const ocFace = faceBuilder.Face();
           builder.Add(compound, ocFace);
+          lastFace = ocFace;
+          faceCount++;
         } else {
           console.warn("Failed to create face from wire and plane");
         }
@@ -285,6 +378,11 @@ export class OpenCascadeService {
         v2.delete();
         normalVec.delete();
         pln.delete();
+      }
+
+      // Return the face directly if there's only one, avoiding unnecessary compound wrapper
+      if (faceCount === 1 && lastFace) {
+        return lastFace;
       }
 
       return compound;
@@ -513,36 +611,41 @@ export class OpenCascadeService {
     const oc = await this.getOC();
 
     try {
+      const progressRange = new oc.Message_ProgressRange_1();
+
       const fixer1 = new oc.ShapeFix_Shape_2(shape1);
-      fixer1.SetPrecision(1e-9);
-      const progressRange2 = new oc.Message_ProgressRange_1();
-      fixer1.Perform(progressRange2);
+      fixer1.SetPrecision(1e-6);
+      fixer1.Perform(progressRange);
       const fixedShape1 = fixer1.Shape();
 
       const fixer2 = new oc.ShapeFix_Shape_2(shape2);
-      fixer2.SetPrecision(1e-9);
-      fixer2.Perform(progressRange2);
+      fixer2.SetPrecision(1e-6);
+      fixer2.Perform(progressRange);
       const fixedShape2 = fixer2.Shape();
 
-      const booleanOperation = new oc.BRepAlgoAPI_Fuse_3(
-        fixedShape1,
-        fixedShape2,
-        progressRange2,
-      );
+      // Use no-arg constructor so SetFuzzyValue etc. take effect before Build
+      const op = new oc.BRepAlgoAPI_Fuse_1();
+      op.SetFuzzyValue(1e-5);
+      op.SetNonDestructive(true);
+      op.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueOff);
+      op.SetCheckInverted(true);
 
-      booleanOperation.SetFuzzyValue(0);
-      booleanOperation.SetNonDestructive(true);
-      booleanOperation.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueShift);
-      booleanOperation.SetCheckInverted(true);
+      const args = new oc.TopTools_ListOfShape_1();
+      args.Append_1(fixedShape1);
+      op.SetArguments(args);
 
-      await this.runOperation(booleanOperation);
+      const tools = new oc.TopTools_ListOfShape_1();
+      tools.Append_1(fixedShape2);
+      op.SetTools(tools);
 
-      if (booleanOperation.IsDone()) {
-        const resultShape = booleanOperation.Shape();
+      op.Build(progressRange);
+
+      if (op.IsDone()) {
+        const resultShape = op.Shape();
 
         const finalFixer = new oc.ShapeFix_Shape_2(resultShape);
-        finalFixer.SetPrecision(1e-9);
-        finalFixer.Perform(progressRange2);
+        finalFixer.SetPrecision(1e-6);
+        finalFixer.Perform(progressRange);
 
         try {
           oc.BRepLib.OrientClosedSolid(resultShape);
@@ -640,6 +743,95 @@ export class OpenCascadeService {
     return geometry;
   }
 
+  /**
+   * Extract true topological edges from an OCC shape as line segments.
+   * Returns a BufferGeometry suitable for THREE.LineSegments rendering.
+   * Curves are sampled at the given deflection to produce smooth polylines.
+   */
+  async shapeToEdgeLineSegments(
+    shape: TopoDS_Shape,
+    linearDeflection: number = 0.05,
+  ): Promise<THREE.BufferGeometry> {
+    const oc = await this.getOC();
+
+    // Ensure the shape is meshed (needed for polygon extraction on edges)
+    new oc.BRepMesh_IncrementalMesh_2(
+      shape,
+      linearDeflection,
+      false,
+      0.5,
+      false,
+    );
+
+    const positions: number[] = [];
+
+    const edgeExplorer = new oc.TopExp_Explorer_2(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_EDGE,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE,
+    );
+
+    while (edgeExplorer.More()) {
+      const edge = oc.TopoDS.Edge_1(edgeExplorer.Current());
+      const curve = new oc.BRepAdaptor_Curve_2(edge);
+
+      const curveType = curve.GetType();
+      const first = curve.FirstParameter();
+      const last = curve.LastParameter();
+
+      // For straight lines, just emit start→end
+      if (curveType === oc.GeomAbs_CurveType.GeomAbs_Line) {
+        const p1 = curve.Value(first);
+        const p2 = curve.Value(last);
+        positions.push(p1.X(), p1.Y(), p1.Z());
+        positions.push(p2.X(), p2.Y(), p2.Z());
+      } else {
+        // For curves (circles, arcs, splines, etc.), sample along the parameter range
+        const gcpu = new oc.GCPnts_UniformDeflection_4(
+          curve,
+          linearDeflection,
+          first,
+          last,
+          false,
+        );
+
+        if (gcpu.IsDone()) {
+          const nbPoints = gcpu.NbPoints();
+          for (let i = 1; i < nbPoints; i++) {
+            const p1 = gcpu.Value(i);
+            const p2 = gcpu.Value(i + 1);
+            positions.push(p1.X(), p1.Y(), p1.Z());
+            positions.push(p2.X(), p2.Y(), p2.Z());
+          }
+        } else {
+          // Fallback: uniform parameter sampling
+          const numSegments = 32;
+          const step = (last - first) / numSegments;
+          for (let i = 0; i < numSegments; i++) {
+            const t1 = first + i * step;
+            const t2 = first + (i + 1) * step;
+            const p1 = curve.Value(t1);
+            const p2 = curve.Value(t2);
+            positions.push(p1.X(), p1.Y(), p1.Z());
+            positions.push(p2.X(), p2.Y(), p2.Z());
+          }
+        }
+      }
+
+      edgeExplorer.Next();
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(positions, 3),
+    );
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    return geometry;
+  }
+
   async booleanDifference(
     baseShape: TopoDS_Shape,
     toolShape: TopoDS_Shape,
@@ -647,35 +839,40 @@ export class OpenCascadeService {
     const oc = await this.getOC();
 
     try {
-      const fixer1 = new oc.ShapeFix_Shape_2(baseShape);
-      fixer1.SetPrecision(1e-9);
       const progressRange = new oc.Message_ProgressRange_1();
+
+      const fixer1 = new oc.ShapeFix_Shape_2(baseShape);
+      fixer1.SetPrecision(1e-6);
       fixer1.Perform(progressRange);
       const fixedBaseShape = fixer1.Shape();
 
       const fixer2 = new oc.ShapeFix_Shape_2(toolShape);
-      fixer2.SetPrecision(1e-9);
+      fixer2.SetPrecision(1e-6);
       fixer2.Perform(progressRange);
       const fixedToolShape = fixer2.Shape();
 
-      const booleanOperation = new oc.BRepAlgoAPI_Cut_3(
-        fixedBaseShape,
-        fixedToolShape,
-        progressRange,
-      );
+      // Use no-arg constructor so SetFuzzyValue etc. take effect before Build
+      const op = new oc.BRepAlgoAPI_Cut_1();
+      op.SetFuzzyValue(1e-5);
+      op.SetNonDestructive(true);
+      op.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueOff);
+      op.SetCheckInverted(true);
 
-      booleanOperation.SetFuzzyValue(1e-7);
-      booleanOperation.SetNonDestructive(true);
-      booleanOperation.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueOff);
-      booleanOperation.SetCheckInverted(true);
+      const args = new oc.TopTools_ListOfShape_1();
+      args.Append_1(fixedBaseShape);
+      op.SetArguments(args);
 
-      await this.runOperation(booleanOperation);
+      const tools = new oc.TopTools_ListOfShape_1();
+      tools.Append_1(fixedToolShape);
+      op.SetTools(tools);
 
-      if (booleanOperation.IsDone()) {
-        const resultShape = booleanOperation.Shape();
+      op.Build(progressRange);
+
+      if (op.IsDone()) {
+        const resultShape = op.Shape();
 
         const finalFixer = new oc.ShapeFix_Shape_2(resultShape);
-        finalFixer.SetPrecision(1e-9);
+        finalFixer.SetPrecision(1e-6);
         finalFixer.Perform(progressRange);
 
         try {
@@ -698,13 +895,15 @@ export class OpenCascadeService {
    * Extrude a face/shell into a solid using BRepPrimAPI_MakePrism
    * @param shape - The shape to extrude (should contain at least one face)
    * @param depth - Extrusion depth (absolute value used)
-   * @param direction - Extrusion direction: 1 for +Z, -1 for -Z (default: 1)
+   * @param direction - Extrusion direction: 1 for positive, -1 for negative (default: 1)
+   * @param normalVec - Optional normal vector for extrusion direction (default: Z axis)
    * @returns The extruded solid shape (not centered - stays at extrusion position)
    */
   async extrudeShape(
     shape: TopoDS_Shape,
     depth: number,
     direction: number = 1,
+    normalVec?: { x: number; y: number; z: number },
   ): Promise<TopoDS_Shape> {
     const oc = await this.getOC();
 
@@ -732,8 +931,10 @@ export class OpenCascadeService {
 
       console.log(`Extruding ${faces.length} faces`);
 
-      // Create extrusion vector in Z direction
-      const extrusionVec = new oc.gp_Vec_4(0, 0, direction * Math.abs(depth));
+      // Create extrusion vector along the specified normal (default: Z)
+      const n = normalVec || { x: 0, y: 0, z: 1 };
+      const d = direction * Math.abs(depth);
+      const extrusionVec = new oc.gp_Vec_4(n.x * d, n.y * d, n.z * d);
 
       // If there's only one face, extrude it directly
       // If there are multiple faces, we need to create a shell/compound and extrude that
@@ -811,6 +1012,13 @@ export class OpenCascadeService {
       if (shape.IsNull()) {
         console.warn("[OpenCascadeService] BRep conversion produced null shape");
         return null;
+      }
+
+      // If brepToOCShape already returned a single face (e.g. analytic circle),
+      // it's already a clean planar face — no boundary extraction needed.
+      if (shape.ShapeType() === oc.TopAbs_ShapeEnum.TopAbs_FACE) {
+        console.log("[OpenCascadeService] Shape is already a single face, returning directly");
+        return shape;
       }
 
       // Use ShapeAnalysis_FreeBounds to find the outer boundary
@@ -1077,35 +1285,40 @@ export class OpenCascadeService {
     const oc = await this.getOC();
 
     try {
-      const fixer1 = new oc.ShapeFix_Shape_2(shape1);
-      fixer1.SetPrecision(1e-9);
       const progressRange = new oc.Message_ProgressRange_1();
+
+      const fixer1 = new oc.ShapeFix_Shape_2(shape1);
+      fixer1.SetPrecision(1e-6);
       fixer1.Perform(progressRange);
       const fixedShape1 = fixer1.Shape();
 
       const fixer2 = new oc.ShapeFix_Shape_2(shape2);
-      fixer2.SetPrecision(1e-9);
+      fixer2.SetPrecision(1e-6);
       fixer2.Perform(progressRange);
       const fixedShape2 = fixer2.Shape();
 
-      const booleanOperation = new oc.BRepAlgoAPI_Common_3(
-        fixedShape1,
-        fixedShape2,
-        progressRange,
-      );
+      // Use no-arg constructor so SetFuzzyValue etc. take effect before Build
+      const op = new oc.BRepAlgoAPI_Common_1();
+      op.SetFuzzyValue(1e-5);
+      op.SetNonDestructive(true);
+      op.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueOff);
+      op.SetCheckInverted(true);
 
-      booleanOperation.SetFuzzyValue(1e-7);
-      booleanOperation.SetNonDestructive(true);
-      booleanOperation.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueOff);
-      booleanOperation.SetCheckInverted(true);
+      const args = new oc.TopTools_ListOfShape_1();
+      args.Append_1(fixedShape1);
+      op.SetArguments(args);
 
-      await this.runOperation(booleanOperation);
+      const tools = new oc.TopTools_ListOfShape_1();
+      tools.Append_1(fixedShape2);
+      op.SetTools(tools);
 
-      if (booleanOperation.IsDone()) {
-        const resultShape = booleanOperation.Shape();
+      op.Build(progressRange);
+
+      if (op.IsDone()) {
+        const resultShape = op.Shape();
 
         const finalFixer = new oc.ShapeFix_Shape_2(resultShape);
-        finalFixer.SetPrecision(1e-9);
+        finalFixer.SetPrecision(1e-6);
         finalFixer.Perform(progressRange);
 
         try {
@@ -1525,6 +1738,239 @@ export class OpenCascadeService {
     } catch (error) {
       console.error("[OpenCascadeService] Face to BRep conversion failed:", error);
       return new Brep([], [], []);
+    }
+  }
+
+  /**
+   * Convert a TopoDS_Face to a centered Brep AND return its center offset.
+   * Single tessellation pass — avoids redundant dual calls to faceToBrep().
+   */
+  async faceToBrepWithCenter(face: TopoDS_Face): Promise<{ brep: Brep; center: { x: number; y: number; z: number } }> {
+    const absoluteBrep = await this.faceToBrep(face, false);
+
+    if (absoluteBrep.vertices.length === 0) {
+      return { brep: absoluteBrep, center: { x: 0, y: 0, z: 0 } };
+    }
+
+    const bounds = this.calculateBrepBounds(absoluteBrep);
+    const center = {
+      x: (bounds.minX + bounds.maxX) / 2,
+      y: (bounds.minY + bounds.maxY) / 2,
+      z: (bounds.minZ + bounds.maxZ) / 2
+    };
+
+    const centerPos = new THREE.Vector3(center.x, center.y, center.z);
+    const origin = new THREE.Vector3(0, 0, 0);
+    const brep = transformBrepVertices(absoluteBrep, centerPos, origin);
+
+    return { brep, center };
+  }
+
+  /**
+   * Build an indexed map of unique edges from a shape.
+   * Returns 1-based indexed edge map (stable indices for fillet/chamfer operations).
+   */
+  async getEdgeMap(shape: TopoDS_Shape): Promise<{ edgeMap: any; count: number }> {
+    const oc = await this.getOC();
+    const edgeMap = new oc.TopTools_IndexedMapOfShape_1();
+    oc.TopExp.MapShapes_1(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, edgeMap);
+    return { edgeMap, count: edgeMap.Size() };
+  }
+
+  /**
+   * Get per-edge tessellated line segments from a shape.
+   * Each edge is tessellated individually, enabling mapping raycast hits to edge indices.
+   * Returns array of { edgeIndex, segments (Float32Array), midpoint }.
+   */
+  async getEdgeLineSegmentsPerEdge(
+    shape: TopoDS_Shape,
+    linearDeflection: number = 0.05,
+  ): Promise<Array<{ edgeIndex: number; segments: Float32Array; midpoint: { x: number; y: number; z: number } }>> {
+    const oc = await this.getOC();
+
+    // Ensure the shape is meshed
+    new oc.BRepMesh_IncrementalMesh_2(shape, linearDeflection, false, 0.5, false);
+
+    const { edgeMap, count } = await this.getEdgeMap(shape);
+    const result: Array<{ edgeIndex: number; segments: Float32Array; midpoint: { x: number; y: number; z: number } }> = [];
+
+    for (let i = 1; i <= count; i++) {
+      const edgeShape = edgeMap.FindKey(i);
+      const edge = oc.TopoDS.Edge_1(edgeShape);
+      const curve = new oc.BRepAdaptor_Curve_2(edge);
+
+      const curveType = curve.GetType();
+      const first = curve.FirstParameter();
+      const last = curve.LastParameter();
+
+      const positions: number[] = [];
+
+      if (curveType === oc.GeomAbs_CurveType.GeomAbs_Line) {
+        const p1 = curve.Value(first);
+        const p2 = curve.Value(last);
+        positions.push(p1.X(), p1.Y(), p1.Z());
+        positions.push(p2.X(), p2.Y(), p2.Z());
+      } else {
+        const gcpu = new oc.GCPnts_UniformDeflection_4(
+          curve, linearDeflection, first, last, false,
+        );
+
+        if (gcpu.IsDone()) {
+          const nbPoints = gcpu.NbPoints();
+          for (let j = 1; j < nbPoints; j++) {
+            const p1 = gcpu.Value(j);
+            const p2 = gcpu.Value(j + 1);
+            positions.push(p1.X(), p1.Y(), p1.Z());
+            positions.push(p2.X(), p2.Y(), p2.Z());
+          }
+        } else {
+          const numSegments = 32;
+          const step = (last - first) / numSegments;
+          for (let j = 0; j < numSegments; j++) {
+            const t1 = first + j * step;
+            const t2 = first + (j + 1) * step;
+            const p1 = curve.Value(t1);
+            const p2 = curve.Value(t2);
+            positions.push(p1.X(), p1.Y(), p1.Z());
+            positions.push(p2.X(), p2.Y(), p2.Z());
+          }
+        }
+      }
+
+      // Calculate midpoint from edge's midpoint parameter
+      const midParam = (first + last) / 2;
+      const midPt = curve.Value(midParam);
+      const midpoint = { x: midPt.X(), y: midPt.Y(), z: midPt.Z() };
+
+      result.push({
+        edgeIndex: i,
+        segments: new Float32Array(positions),
+        midpoint,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Apply fillet (rounding) to specified edges of a shape.
+   * Uses BRepFilletAPI_MakeFillet with constant radius.
+   */
+  async filletEdges(
+    shape: TopoDS_Shape,
+    edgeIndices: number[],
+    radius: number,
+  ): Promise<TopoDS_Shape> {
+    const oc = await this.getOC();
+
+    try {
+      const progressRange = new oc.Message_ProgressRange_1();
+
+      // Fix input shape
+      const fixer = new oc.ShapeFix_Shape_2(shape);
+      fixer.SetPrecision(1e-6);
+      fixer.Perform(progressRange);
+      const fixedShape = fixer.Shape();
+
+      // Build edge map
+      const edgeMap = new oc.TopTools_IndexedMapOfShape_1();
+      oc.TopExp.MapShapes_1(fixedShape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, edgeMap);
+
+      // Create fillet operation
+      const fillet = new oc.BRepFilletAPI_MakeFillet(fixedShape, oc.ChFi3d_FilletShape.ChFi3d_Rational as any);
+
+      for (const idx of edgeIndices) {
+        if (idx >= 1 && idx <= edgeMap.Size()) {
+          const edgeShape = edgeMap.FindKey(idx);
+          const edge = oc.TopoDS.Edge_1(edgeShape);
+          fillet.Add_2(radius, edge);
+        }
+      }
+
+      fillet.Build(progressRange);
+
+      if (!fillet.IsDone()) {
+        throw new Error("Fillet operation failed — radius may be too large for the geometry");
+      }
+
+      const resultShape = fillet.Shape();
+
+      // Fix result
+      const finalFixer = new oc.ShapeFix_Shape_2(resultShape);
+      finalFixer.SetPrecision(1e-6);
+      finalFixer.Perform(progressRange);
+
+      try {
+        oc.BRepLib.OrientClosedSolid(resultShape);
+      } catch (e) {
+        // not a closed solid
+      }
+
+      return finalFixer.Shape();
+    } catch (error) {
+      console.error("Fillet operation failed:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Apply chamfer (beveling) to specified edges of a shape.
+   * Uses BRepFilletAPI_MakeChamfer with symmetric distance.
+   */
+  async chamferEdges(
+    shape: TopoDS_Shape,
+    edgeIndices: number[],
+    distance: number,
+  ): Promise<TopoDS_Shape> {
+    const oc = await this.getOC();
+
+    try {
+      const progressRange = new oc.Message_ProgressRange_1();
+
+      // Fix input shape
+      const fixer = new oc.ShapeFix_Shape_2(shape);
+      fixer.SetPrecision(1e-6);
+      fixer.Perform(progressRange);
+      const fixedShape = fixer.Shape();
+
+      // Build edge map
+      const edgeMap = new oc.TopTools_IndexedMapOfShape_1();
+      oc.TopExp.MapShapes_1(fixedShape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, edgeMap);
+
+      // Create chamfer operation
+      const chamfer = new oc.BRepFilletAPI_MakeChamfer(fixedShape);
+
+      for (const idx of edgeIndices) {
+        if (idx >= 1 && idx <= edgeMap.Size()) {
+          const edgeShape = edgeMap.FindKey(idx);
+          const edge = oc.TopoDS.Edge_1(edgeShape);
+          chamfer.Add_2(distance, edge);
+        }
+      }
+
+      chamfer.Build(progressRange);
+
+      if (!chamfer.IsDone()) {
+        throw new Error("Chamfer operation failed — distance may be too large for the geometry");
+      }
+
+      const resultShape = chamfer.Shape();
+
+      // Fix result
+      const finalFixer = new oc.ShapeFix_Shape_2(resultShape);
+      finalFixer.SetPrecision(1e-6);
+      finalFixer.Perform(progressRange);
+
+      try {
+        oc.BRepLib.OrientClosedSolid(resultShape);
+      } catch (e) {
+        // not a closed solid
+      }
+
+      return finalFixer.Shape();
+    } catch (error) {
+      console.error("Chamfer operation failed:", error);
+      throw error;
     }
   }
 

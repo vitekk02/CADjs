@@ -90,9 +90,19 @@ export class SketchSolverService {
     // Update sketch with solution
     const updatedSketch = this.applyGcsSolution(sketch, gcs);
 
+    // Detect redundant and conflicting constraints separately
+    const redundantIds: string[] = gcs.get_gcs_redundant_constraints?.()
+      ? (gcs.get_gcs_redundant_constraints() as string[])
+      : [];
+    const conflictingIds: string[] = gcs.get_gcs_conflicting_constraints?.()
+      ? (gcs.get_gcs_conflicting_constraints() as string[])
+      : [];
+
     // Determine status
+    // Only conflicting constraints (actual contradictions) trigger overconstrained.
+    // Redundant constraints (already satisfied by existing constraints) are harmless.
     let sketchStatus: "underconstrained" | "fully_constrained" | "overconstrained";
-    if (gcs.has_gcs_conflicting_constraints() || gcs.has_gcs_redundant_constraints()) {
+    if (conflictingIds.length > 0) {
       sketchStatus = "overconstrained";
     } else if (dof === 0) {
       sketchStatus = "fully_constrained";
@@ -109,6 +119,8 @@ export class SketchSolverService {
       },
       dof,
       status: sketchStatus,
+      redundantConstraintIds: redundantIds.length > 0 ? redundantIds : undefined,
+      conflictingConstraintIds: conflictingIds.length > 0 ? conflictingIds : undefined,
     };
   }
 

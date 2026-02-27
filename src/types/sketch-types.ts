@@ -27,6 +27,7 @@ export interface SketchLine {
   type: "line";
   p1Id: string; // Reference to point
   p2Id: string;
+  construction?: boolean; // Construction line (orange dashed, excluded from BRep)
 }
 
 export interface SketchCircle {
@@ -34,6 +35,7 @@ export interface SketchCircle {
   type: "circle";
   centerId: string; // Reference to center point
   radius: number;
+  construction?: boolean; // Construction circle
 }
 
 export interface SketchArc {
@@ -43,6 +45,7 @@ export interface SketchArc {
   startId: string;
   endId: string;
   radius: number;
+  construction?: boolean; // Construction arc
 }
 
 export interface SketchEllipse {
@@ -115,6 +118,16 @@ export interface SolveResult {
   sketch: Sketch; // Updated with solved positions
   dof: number;
   status: SketchStatus;
+  redundantConstraintIds?: string[];
+  conflictingConstraintIds?: string[];
+}
+
+// Result of adding a constraint and solving
+export type ConstraintResultStatus = "applied" | "redundant" | "conflicting" | "failed";
+
+export interface ConstraintResult {
+  sketch: Sketch | null;
+  status: ConstraintResultStatus;
 }
 
 // Helper function to create default sketch planes
@@ -208,9 +221,14 @@ export interface SketchConversionResult {
 }
 
 /**
+ * Operation types for feature tree nodes.
+ */
+export type OperationType = "union" | "difference" | "intersection" | "extrude" | "fillet" | "chamfer";
+
+/**
  * Feature tree node types for hierarchical display.
  */
-export type FeatureNodeType = "sketch" | "profile" | "body" | "folder";
+export type FeatureNodeType = "sketch" | "profile" | "body" | "folder" | "operation";
 
 /**
  * A node in the feature tree hierarchy.
@@ -226,4 +244,31 @@ export interface FeatureNode {
   sourceSketchId?: string;  // For profiles/bodies: which sketch they came from
   elementId?: string;       // Link to SceneElement.nodeId for bodies
   profileId?: string;       // For bodies: which profile they came from
+  operationType?: OperationType;  // For operation nodes: which operation type
+}
+
+// ── Browser Panel types (Fusion 360-style categorical view) ─────────
+
+export type BrowserSectionType = "origin" | "bodies" | "sketches";
+export type BrowserItemType = "body" | "sketch" | "profile" | "operation" | "plane" | "axis" | "origin-point";
+
+export interface BrowserSection {
+  id: string;
+  label: string;
+  sectionType: BrowserSectionType;
+  expanded: boolean;
+  count: number;
+  items: BrowserItem[];
+}
+
+export interface BrowserItem {
+  id: string;
+  label: string;
+  itemType: BrowserItemType;
+  visible: boolean;
+  expanded?: boolean;
+  elementId?: string;
+  sourceNodeId?: string;
+  children?: BrowserItem[];
+  operationType?: OperationType;
 }

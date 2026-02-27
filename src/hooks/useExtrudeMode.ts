@@ -7,6 +7,7 @@ import { OpenCascadeService } from "../services/OpenCascadeService";
 import {
   extrudeBRep,
 } from "../scene-operations/resize-operations";
+import { isDescendantOf, collectPickableMeshes } from "../scene-operations/mesh-operations";
 import { EXTRUDE, SKETCH as SKETCH_THEME, BODY, SELECTION } from "../theme";
 
 export type ExtrudeDirection = "up" | "down" | "symmetric";
@@ -39,6 +40,7 @@ export function useExtrudeMode() {
   });
 
   const startPointRef = useRef<THREE.Vector3 | null>(null);
+  const startScreenRef = useRef<{ x: number; y: number } | null>(null);
   const originalBrepRef = useRef<Brep | null>(null);
   const arrowHandlesRef = useRef<THREE.Object3D[]>([]);
   const previewMeshRef = useRef<THREE.Mesh | null>(null);
@@ -50,16 +52,41 @@ export function useExtrudeMode() {
   const hoverOverlayRef = useRef<THREE.Mesh | null>(null);
 
   /**
-   * Check if a BRep is flat (2D shape in XY plane)
+   * Check if a BRep is flat (2D shape — flat along any single axis)
    */
   const isFlatShape = useCallback((brep: Brep): boolean => {
     if (!brep.vertices || brep.vertices.length === 0) return false;
 
-    const zValues = brep.vertices.map((v) => v.z);
-    const minZ = Math.min(...zValues);
-    const maxZ = Math.max(...zValues);
+    const xs = brep.vertices.map((v) => v.x);
+    const ys = brep.vertices.map((v) => v.y);
+    const zs = brep.vertices.map((v) => v.z);
 
-    return Math.abs(maxZ - minZ) < 0.01;
+    const rangeX = Math.max(...xs) - Math.min(...xs);
+    const rangeY = Math.max(...ys) - Math.min(...ys);
+    const rangeZ = Math.max(...zs) - Math.min(...zs);
+
+    return rangeX < 0.01 || rangeY < 0.01 || rangeZ < 0.01;
+  }, []);
+
+  /**
+   * Get the normal direction of a flat BRep (the axis it's flat along).
+   * Returns (0,0,1) for XY-plane shapes, (0,1,0) for XZ, (1,0,0) for YZ.
+   */
+  const getFlatNormal = useCallback((brep: Brep): THREE.Vector3 => {
+    if (!brep.vertices || brep.vertices.length === 0)
+      return new THREE.Vector3(0, 0, 1);
+
+    const xs = brep.vertices.map((v) => v.x);
+    const ys = brep.vertices.map((v) => v.y);
+    const zs = brep.vertices.map((v) => v.z);
+
+    const rangeX = Math.max(...xs) - Math.min(...xs);
+    const rangeY = Math.max(...ys) - Math.min(...ys);
+    const rangeZ = Math.max(...zs) - Math.min(...zs);
+
+    if (rangeX < 0.01) return new THREE.Vector3(1, 0, 0);
+    if (rangeY < 0.01) return new THREE.Vector3(0, 1, 0);
+    return new THREE.Vector3(0, 0, 1);
   }, []);
 
   /**
@@ -181,10 +208,13 @@ export function useExtrudeMode() {
       const headRadius = 0.12;
       const headLength = 0.3;
 
+      // Determine the extrusion direction based on which axis the shape is flat along
+      const normal = getFlatNormal(element.brep);
+
       // Create up arrow (primary - full opacity)
       const upArrow = createArrow(
         center,
-        new THREE.Vector3(0, 0, 1),
+        normal.clone(),
         arrowLength,
         shaftRadius,
         headRadius,
@@ -199,7 +229,7 @@ export function useExtrudeMode() {
       // Create down arrow (secondary - half opacity)
       const downArrow = createArrow(
         center,
-        new THREE.Vector3(0, 0, -1),
+        normal.clone().negate(),
         arrowLength,
         shaftRadius,
         headRadius,
@@ -213,7 +243,7 @@ export function useExtrudeMode() {
 
       forceSceneUpdate();
     },
-    [elements, getObject, scene, forceSceneUpdate, cleanupHandles, createArrow]
+    [elements, getObject, scene, forceSceneUpdate, cleanupHandles, createArrow, getFlatNormal]
   );
 
   /**
@@ -253,8 +283,10 @@ export function useExtrudeMode() {
         const cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
         if (!cleanFace) return null;
 
-        // Extrude by unit depth=1 in +Z direction
-        const extrudedShape = await ocService.extrudeShape(cleanFace, 1, 1);
+        // Extrude by unit depth=1 along the flat normal
+        const normal = getFlatNormal(brep);
+        const normalVec = { x: normal.x, y: normal.y, z: normal.z };
+        const extrudedShape = await ocService.extrudeShape(cleanFace, 1, 1, normalVec);
 
         // Convert to Three.js geometry with coarse tessellation for speed
         const geometry = await ocService.shapeToThreeGeometry(extrudedShape, 0.1, 0.5);
@@ -264,7 +296,7 @@ export function useExtrudeMode() {
         return null;
       }
     },
-    []
+    [getFlatNormal]
   );
 
   /**
@@ -273,13 +305,14 @@ export function useExtrudeMode() {
    */
   const updatePreview = useCallback(
     (depth: number, direction: ExtrudeDirection) => {
+      console.log("[updatePreview] called", { depth, direction, selectedElement: state.selectedElement, hasOriginalBrep: !!originalBrepRef.current });
       if (!state.selectedElement || !originalBrepRef.current) return;
 
       const element = elements.find((el) => el.nodeId === state.selectedElement);
-      if (!element) return;
+      if (!element) { console.log("[updatePreview] element not found"); return; }
 
       const obj = getObject(state.selectedElement);
-      if (!obj) return;
+      if (!obj) { console.log("[updatePreview] obj not found"); return; }
 
       // Hide original mesh during preview
       if (!originalMeshRef.current) {
@@ -291,6 +324,7 @@ export function useExtrudeMode() {
       cleanupPreview();
 
       const extrusionDepth = Math.abs(depth);
+      console.log("[updatePreview] cachedPreviewGeometry:", !!cachedPreviewGeometryRef.current, "extrusionDepth:", extrusionDepth);
 
       // Use cached OCC geometry if available (correct shape with holes)
       if (cachedPreviewGeometryRef.current) {
@@ -306,9 +340,15 @@ export function useExtrudeMode() {
           })
         );
 
-        // The cached geometry is a unit extrusion (depth=1) in +Z from the centered BRep
-        // Scale Z to match the desired depth
-        previewMesh.scale.set(1, 1, extrusionDepth * directionSign);
+        // The cached geometry is a unit extrusion (depth=1) along the flat normal
+        // Scale the appropriate axis to match the desired depth
+        const normal = getFlatNormal(originalBrepRef.current);
+        const s = extrusionDepth * directionSign;
+        previewMesh.scale.set(
+          normal.x ? s : 1,
+          normal.y ? s : 1,
+          normal.z ? s : 1,
+        );
         previewMesh.position.copy(element.position);
         previewMesh.userData.isPreview = true;
 
@@ -376,7 +416,7 @@ export function useExtrudeMode() {
 
         // Update the element's BRep and position
         if (updateElementBrep) {
-          updateElementBrep(state.selectedElement, extrusionResult.brep, newPosition);
+          updateElementBrep(state.selectedElement, extrusionResult.brep, newPosition, { type: "extrude" }, extrusionResult.edgeGeometry);
         }
 
         forceSceneUpdate();
@@ -424,6 +464,7 @@ export function useExtrudeMode() {
       });
 
       const handleIntersects = raycaster.intersectObjects(handleObjects);
+      console.log("[handleMouseDown] handleObjects:", handleObjects.length, "handleIntersects:", handleIntersects.length);
       if (handleIntersects.length > 0) {
         const handle = handleIntersects[0].object;
         const direction = handle.userData.direction as "up" | "down";
@@ -441,6 +482,7 @@ export function useExtrudeMode() {
         }));
 
         startPointRef.current = getMouseIntersection(event);
+        startScreenRef.current = { x: event.clientX, y: event.clientY };
 
         // Store original BRep and build preview geometry via OCC
         const element = elements.find(
@@ -460,23 +502,15 @@ export function useExtrudeMode() {
         return;
       }
 
-      // Check if clicking on scene elements
-      const objects: THREE.Object3D[] = [];
-      elements.forEach((el) => {
-        const obj = getObject(el.nodeId);
-        if (obj) objects.push(obj);
-      });
-
-      const intersects = raycaster.intersectObjects(objects, true);
+      // Check if clicking on scene elements (mesh-only, skip edge overlays)
+      const meshes = collectPickableMeshes(elements, getObject);
+      const intersects = raycaster.intersectObjects(meshes, false);
       if (intersects.length > 0) {
         const pickedObject = intersects[0].object;
 
         for (const el of elements) {
           const obj = getObject(el.nodeId);
-          if (
-            obj === pickedObject ||
-            (pickedObject.parent && obj === pickedObject.parent)
-          ) {
+          if (obj && isDescendantOf(pickedObject, obj)) {
             // Check if it's a flat shape
             if (isFlatShape(el.brep)) {
               setState((prev) => ({
@@ -563,24 +597,15 @@ export function useExtrudeMode() {
         );
         raycaster.setFromCamera(mouse, camera);
 
-        const objects: THREE.Object3D[] = [];
-        elements.forEach((el) => {
-          const obj = getObject(el.nodeId);
-          if (obj) objects.push(obj);
-        });
-
-        const intersects = raycaster.intersectObjects(objects, true);
+        const meshes = collectPickableMeshes(elements, getObject);
+        const intersects = raycaster.intersectObjects(meshes, false);
         if (intersects.length > 0) {
           const pickedObject = intersects[0].object;
           let foundId: string | null = null;
 
           for (const el of elements) {
             const obj = getObject(el.nodeId);
-            if (
-              obj === pickedObject ||
-              (pickedObject.parent && obj === pickedObject.parent) ||
-              (pickedObject.parent?.parent && obj === pickedObject.parent.parent)
-            ) {
+            if (obj && isDescendantOf(pickedObject, obj)) {
               if (isFlatShape(el.brep)) {
                 foundId = el.nodeId;
               }
@@ -616,31 +641,62 @@ export function useExtrudeMode() {
       ) {
         return;
       }
+      console.log("[handleMouseMove] extruding, dir:", state.activeDirection);
 
       event.preventDefault();
       event.stopPropagation();
 
-      const currentPoint = getMouseIntersection(event);
-      if (!currentPoint) return;
+      if (!camera || !renderer || !startScreenRef.current) return;
 
-      // Calculate drag distance along Z axis
-      const worldDelta = currentPoint.clone().sub(startPointRef.current);
+      // Determine the extrusion normal from the selected element's BRep
+      const selectedEl = elements.find((el) => el.nodeId === state.selectedElement);
+      const normal = selectedEl ? getFlatNormal(selectedEl.brep) : new THREE.Vector3(0, 0, 1);
 
-      // Use vertical screen movement for extrusion depth
+      // Project extrusion normal to screen space to determine how mouse pixel movement maps to depth.
+      // getMouseIntersection returns points on the ground plane (Z=0), so for XY-plane shapes
+      // (normal=Z), worldDelta.z is always 0. Instead, use screen-space projection.
+      const element = selectedEl;
+      if (!element) return;
+      const origin = element.position.clone();
+      const normalEnd = origin.clone().add(normal);
+
+      // Project both points to screen pixels
+      const rect = renderer.domElement.getBoundingClientRect();
+      const originNDC = origin.clone().project(camera);
+      const normalEndNDC = normalEnd.clone().project(camera);
+      const screenDir = new THREE.Vector2(
+        (normalEndNDC.x - originNDC.x) * rect.width / 2,
+        -(normalEndNDC.y - originNDC.y) * rect.height / 2,
+      );
+      const screenDirLen = screenDir.length();
+
+      // Mouse pixel delta from drag start
+      const mouseDeltaPx = new THREE.Vector2(
+        event.clientX - startScreenRef.current.x,
+        event.clientY - startScreenRef.current.y,
+      );
+
+      let projectedDelta: number;
+      if (screenDirLen < 1) {
+        // Normal points straight at camera — use vertical screen movement as depth
+        // Negative because screen Y increases downward but "up" extrusion should be positive
+        projectedDelta = -mouseDeltaPx.y * 0.02;
+      } else {
+        // Project mouse pixel delta onto the screen-space direction of the normal
+        // Result: how many "units" the mouse moved along the extrusion direction
+        const screenDirNorm = screenDir.clone().normalize();
+        const pixelDist = mouseDeltaPx.dot(screenDirNorm);
+        projectedDelta = pixelDist / screenDirLen;
+      }
       let extrusionDepth: number;
 
       if (state.activeDirection === "up") {
-        // For up direction, use positive Z or upward screen movement
-        extrusionDepth = Math.max(0.01, -worldDelta.y + worldDelta.z);
+        extrusionDepth = Math.max(0.01, projectedDelta);
       } else if (state.activeDirection === "down") {
-        // For down direction, invert
-        extrusionDepth = Math.max(0.01, worldDelta.y - worldDelta.z);
+        extrusionDepth = Math.max(0.01, -projectedDelta);
       } else {
         // Symmetric - use absolute value
-        extrusionDepth = Math.max(
-          0.01,
-          Math.abs(worldDelta.y) + Math.abs(worldDelta.z)
-        );
+        extrusionDepth = Math.max(0.01, Math.abs(projectedDelta));
       }
 
       // Snap to grid if not holding a modifier key
@@ -655,7 +711,7 @@ export function useExtrudeMode() {
 
       updatePreview(extrusionDepth, state.activeDirection);
     },
-    [state.isExtruding, state.selectedElement, state.activeDirection, camera, renderer, elements, getObject, getMouseIntersection, updatePreview, cleanupHoverOverlay]
+    [state.isExtruding, state.selectedElement, state.activeDirection, camera, renderer, elements, getObject, getMouseIntersection, updatePreview, cleanupHoverOverlay, getFlatNormal]
   );
 
   /**
@@ -707,6 +763,7 @@ export function useExtrudeMode() {
     }));
 
     startPointRef.current = null;
+    startScreenRef.current = null;
     cleanupPreview();
     restoreOriginalMesh();
 
@@ -816,6 +873,7 @@ export function useExtrudeMode() {
       dimensionInputPosition: { x: 0, y: 0 },
     });
     startPointRef.current = null;
+    startScreenRef.current = null;
     originalBrepRef.current = null;
   }, [cleanupHandles, cleanupPreview, cleanupHoverOverlay, restoreOriginalMesh]);
 

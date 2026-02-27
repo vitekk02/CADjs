@@ -1,10 +1,12 @@
 import * as THREE from "three";
 import {
   createMeshFromBrep,
+  createMeshFromGeometry,
   findChildMesh,
   getAllFaces,
   getObject,
   getAllObjects,
+  isDescendantOf,
 } from "../../src/scene-operations/mesh-operations";
 import { Brep, CompoundBrep, Face, Vertex } from "../../src/geometry";
 import { BODY } from "../../src/theme";
@@ -119,6 +121,101 @@ describe("mesh-operations", () => {
       expect(allObjects.size).toBe(2);
       expect(allObjects.has("node_1")).toBe(true);
       expect(allObjects.has("node_2")).toBe(true);
+    });
+  });
+
+  describe("createMeshFromGeometry", () => {
+    test("creates group with mesh and auto EdgesGeometry fallback", () => {
+      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const group = createMeshFromGeometry(geometry);
+
+      expect(group).toBeInstanceOf(THREE.Group);
+      expect(group.children).toHaveLength(2);
+
+      const mesh = group.children[0] as THREE.Mesh;
+      expect(mesh).toBeInstanceOf(THREE.Mesh);
+      expect(mesh.geometry).toBe(geometry);
+      expect((mesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(
+        BODY.default
+      );
+
+      const edgeLines = group.children[1] as THREE.LineSegments;
+      expect(edgeLines).toBeInstanceOf(THREE.LineSegments);
+      expect(edgeLines.userData.isEdgeOverlay).toBe(true);
+    });
+
+    test("uses provided edgeGeometry instead of auto-generating", () => {
+      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const edgeGeometry = new THREE.BufferGeometry();
+      edgeGeometry.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute([0, 0, 0, 1, 1, 1], 3)
+      );
+
+      const group = createMeshFromGeometry(geometry, edgeGeometry);
+
+      expect(group.children).toHaveLength(2);
+      const edgeLines = group.children[1] as THREE.LineSegments;
+      expect(edgeLines).toBeInstanceOf(THREE.LineSegments);
+      expect(edgeLines.geometry).toBe(edgeGeometry);
+      expect(edgeLines.userData.isEdgeOverlay).toBe(true);
+    });
+
+    test("mesh material uses BODY.default color with correct properties", () => {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3)
+      );
+
+      const group = createMeshFromGeometry(geometry);
+      const mesh = group.children[0] as THREE.Mesh;
+      const material = mesh.material as THREE.MeshStandardMaterial;
+
+      expect(material.side).toBe(THREE.DoubleSide);
+      expect(material.roughness).toBe(0.6);
+      expect(material.metalness).toBe(0.2);
+    });
+  });
+
+  describe("isDescendantOf", () => {
+    test("direct child returns true", () => {
+      const parent = new THREE.Group();
+      const child = new THREE.Mesh();
+      parent.add(child);
+
+      expect(isDescendantOf(child, parent)).toBe(true);
+    });
+
+    test("grandchild returns true", () => {
+      const grandparent = new THREE.Group();
+      const parent = new THREE.Group();
+      const child = new THREE.Mesh();
+      grandparent.add(parent);
+      parent.add(child);
+
+      expect(isDescendantOf(child, grandparent)).toBe(true);
+    });
+
+    test("unrelated objects return false", () => {
+      const a = new THREE.Group();
+      const b = new THREE.Mesh();
+
+      expect(isDescendantOf(b, a)).toBe(false);
+    });
+
+    test("self returns true", () => {
+      const obj = new THREE.Group();
+
+      expect(isDescendantOf(obj, obj)).toBe(true);
+    });
+
+    test("parent is not descendant of child", () => {
+      const parent = new THREE.Group();
+      const child = new THREE.Mesh();
+      parent.add(child);
+
+      expect(isDescendantOf(parent, child)).toBe(false);
     });
   });
 });

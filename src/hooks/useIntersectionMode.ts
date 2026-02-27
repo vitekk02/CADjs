@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
+import { isDescendantOf, collectPickableMeshes } from "../scene-operations/mesh-operations";
+import { isElement3D } from "../scene-operations/types";
 
 interface UseIntersectionModeResult {
   handleIntersectionModeClick: (event: MouseEvent) => void;
@@ -41,23 +43,17 @@ export function useIntersectionMode(): UseIntersectionModeResult {
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(mouse, camera);
 
-    const objects: THREE.Object3D[] = [];
-    elements.forEach((el) => {
-      const obj = getObject(el.nodeId);
-      if (obj) objects.push(obj);
-    });
-
-    const intersects = raycaster.intersectObjects(objects, true);
+    const meshes = collectPickableMeshes(elements, getObject);
+    const intersects = raycaster.intersectObjects(meshes, false);
 
     if (intersects.length > 0) {
       const pickedObject = intersects[0].object;
 
       for (const el of elements) {
         const obj = getObject(el.nodeId);
-        if (
-          obj === pickedObject ||
-          (pickedObject.parent && obj === pickedObject.parent)
-        ) {
+        if (obj && isDescendantOf(pickedObject, obj)) {
+          if (!isElement3D(el)) break;
+
           if (selectedElements.includes(el.nodeId)) {
             deselectElement(el.nodeId);
             unhighlightElement(el.nodeId);

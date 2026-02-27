@@ -24,9 +24,12 @@ import { intersectionSelectedElements as intersectionSelectedElementsOp } from "
 import { SceneElement, SceneMode } from "../scene-operations/types";
 import {
   createMeshFromBrep,
+  createMeshFromGeometry,
+  getAllFaces,
   getObject,
   getAllObjects,
 } from "../scene-operations/mesh-operations";
+import { createGeometryFromBRep } from "../convertBRepToGeometry";
 import { ungroupSelectedElement } from "../scene-operations/ungroup-operations";
 import {
   Sketch,
@@ -34,7 +37,18 @@ import {
   SketchPrimitive,
   SketchConstraint,
   FeatureNode,
+  OperationType,
+  ConstraintResult,
 } from "../types/sketch-types";
+import {
+  countOperationsOfType,
+  applyBooleanOperationToTree,
+  applyExtrudeToTree,
+  applyFilletToTree,
+  applyUngroupToTree,
+  renameNode as renameNodeOp,
+  removeNodeById as removeNodeByIdOp,
+} from "../scene-operations/feature-tree-operations";
 import {
   createSketch as createSketchOp,
   addPrimitiveToSketch,
@@ -44,6 +58,13 @@ import {
 } from "../scene-operations/sketch-operations";
 import { SketchSolverService } from "../services/SketchSolverService";
 import { SketchToBrepService } from "../services/SketchToBrepService";
+import {
+  UndoableSnapshot,
+  MAX_UNDO_STEPS,
+  MAX_SKETCH_UNDO_STEPS,
+} from "../scene-operations/undo-types";
+import { ImportExportService } from "../services/ImportExportService";
+import { importElements as importElementsOp } from "../scene-operations/import-operations";
 
 export interface CadCoreContextType {
   elements: SceneElement[];
@@ -68,7 +89,7 @@ export interface CadCoreContextType {
   getAllObjects: () => Map<string, THREE.Object3D>;
   createMeshFromBrep: (brep: Brep) => THREE.Object3D;
   ungroupSelectedElement: () => void;
-  updateElementBrep: (nodeId: string, brep: Brep, newPosition?: THREE.Vector3) => void;
+  updateElementBrep: (nodeId: string, brep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType }, edgeGeometry?: THREE.BufferGeometry) => void;
 
   // Sketch-related state and methods
   activeSketch: Sketch | null;
@@ -78,17 +99,46 @@ export interface CadCoreContextType {
   updatePrimitive: (primitiveId: string, updates: Partial<SketchPrimitive>) => void;
   updatePrimitivesAndSolve: (updates: Map<string, { x: number; y: number }>) => Promise<void>;
   addConstraint: (constraint: SketchConstraint) => void;
-  addConstraintAndSolve: (constraint: SketchConstraint) => Promise<void>;
+  addConstraintAndSolve: (constraint: SketchConstraint) => Promise<ConstraintResult>;
   removePrimitive: (primitiveId: string) => void;
   removeConstraint: (constraintId: string) => void;
   finishSketch: () => Promise<void>;
   cancelSketch: () => void;
-  solveSketch: () => Promise<void>;
+  solveSketch: () => Promise<Sketch | null>;
 
   // Feature tree state and methods
   featureTree: FeatureNode[];
   toggleNodeVisibility: (nodeId: string) => void;
   toggleNodeExpanded: (nodeId: string) => void;
+  renameNode: (nodeId: string, newName: string) => void;
+  deleteNode: (nodeId: string) => void;
+  sectionExpandedState: Record<string, boolean>;
+  toggleSectionExpanded: (sectionId: string) => void;
+  originVisibility: Record<string, boolean>;
+  toggleOriginVisibility: (id: string) => void;
+
+  // Undo/redo
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  undoActionName: string | null;
+  redoActionName: string | null;
+  undoStack: UndoableSnapshot[];
+  redoStack: UndoableSnapshot[];
+  pushUndo: (actionName: string) => void;
+  pushSketchUndo: () => void;
+  undoSketch: () => void;
+  redoSketch: () => void;
+  canUndoSketch: boolean;
+  canRedoSketch: boolean;
+
+  // Import/Export
+  importFile: (file: File) => Promise<void>;
+  exportFile: (format: "step" | "stl" | "iges") => Promise<void>;
+
+  // Operation lock
+  isOperationPending: boolean;
 }
 
 export const CadCoreContext = createContext<CadCoreContextType | undefined>(
@@ -101,23 +151,211 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   const [elements, setElements] = useState<SceneElement[]>([]);
   const [selectedElements, setSelectedElements] = useState<string[]>([]);
   const [brepGraph] = useState<BrepGraph>(new BrepGraph());
-  const [mode, setMode] = useState<SceneMode>("draw");
+  const [mode, setMode] = useState<SceneMode>("move");
   const [idCounter, setIdCounter] = useState(0);
   const [objectsMap] = useState<Map<string, THREE.Object3D>>(new Map());
 
   // Sketch state
   const [activeSketch, setActiveSketch] = useState<Sketch | null>(null);
   const [sketches, setSketches] = useState<Sketch[]>([]);
-  const [previousMode, setPreviousMode] = useState<SceneMode>("draw");
+  const [previousMode, setPreviousMode] = useState<SceneMode>("move");
 
   // Feature tree state
   const [featureTree, setFeatureTree] = useState<FeatureNode[]>([]);
+  const [sectionExpandedState, setSectionExpandedState] = useState<Record<string, boolean>>({
+    "section-origin": false,
+    "section-bodies": true,
+    "section-sketches": true,
+  });
+
+  // Origin item visibility state
+  const [originVisibility, setOriginVisibility] = useState<Record<string, boolean>>({
+    "origin-xy": true,
+    "origin-xz": true,
+    "origin-yz": true,
+    "origin-x-axis": true,
+    "origin-y-axis": true,
+    "origin-z-axis": true,
+    "origin-point": true,
+  });
 
   // Ref to track solve operation version to prevent race conditions
   const solveVersionRef = useRef(0);
 
+  // Keep a ref to activeSketch for undo/redo (avoids stale closure issues)
+  const activeSketchRef = useRef<Sketch | null>(activeSketch);
+  activeSketchRef.current = activeSketch;
+
+  // ── Undo/Redo state ──────────────────────────────────────────────
+  const undoStackRef = useRef<UndoableSnapshot[]>([]);
+  const redoStackRef = useRef<UndoableSnapshot[]>([]);
+  const sketchUndoStackRef = useRef<Sketch[]>([]);
+  const sketchRedoStackRef = useRef<Sketch[]>([]);
+  const [undoRedoVersion, setUndoRedoVersion] = useState(0);
+  const isOperationPendingRef = useRef(false);
+  const [isOperationPending, setIsOperationPending] = useState(false);
+
+  const setOperationPending = useCallback((pending: boolean) => {
+    isOperationPendingRef.current = pending;
+    setIsOperationPending(pending);
+  }, []);
+
+  const captureSnapshot = useCallback(
+    (actionName: string): UndoableSnapshot => ({
+      elements: [...elements],
+      idCounter,
+      featureTree: [...featureTree],
+      sketches: [...sketches],
+      actionName,
+      timestamp: Date.now(),
+    }),
+    [elements, idCounter, featureTree, sketches]
+  );
+
+  const restoreSnapshot = useCallback(
+    (snapshot: UndoableSnapshot) => {
+      // Clear objectsMap and rebuild meshes from BReps
+      const oldEntries = Array.from(objectsMap.entries());
+      for (const [, obj] of oldEntries) {
+        if (obj.parent) {
+          obj.parent.remove(obj);
+        }
+      }
+      objectsMap.clear();
+
+      for (const el of snapshot.elements) {
+        const mesh = createMeshFromBrep(el.brep);
+        mesh.position.copy(el.position);
+        if (el.rotation) {
+          mesh.rotation.copy(el.rotation);
+        }
+        mesh.userData.nodeId = el.nodeId;
+        objectsMap.set(el.nodeId, mesh);
+      }
+
+      // Batch set React state
+      setElements(snapshot.elements);
+      setIdCounter(snapshot.idCounter);
+      setFeatureTree(snapshot.featureTree);
+      setSketches(snapshot.sketches);
+      setSelectedElements([]);
+    },
+    [objectsMap]
+  );
+
+  const pushUndo = useCallback(
+    (actionName: string) => {
+      const snapshot = captureSnapshot(actionName);
+      undoStackRef.current = [...undoStackRef.current, snapshot];
+      if (undoStackRef.current.length > MAX_UNDO_STEPS) {
+        undoStackRef.current = undoStackRef.current.slice(
+          undoStackRef.current.length - MAX_UNDO_STEPS
+        );
+      }
+      redoStackRef.current = [];
+      setUndoRedoVersion((v) => v + 1);
+    },
+    [captureSnapshot]
+  );
+
+  const undo = useCallback(() => {
+    if (isOperationPendingRef.current) return;
+    if (undoStackRef.current.length === 0) return;
+
+    const snapshot = undoStackRef.current[undoStackRef.current.length - 1];
+    undoStackRef.current = undoStackRef.current.slice(0, -1);
+
+    // Push current state to redo
+    const currentSnapshot = captureSnapshot(snapshot.actionName);
+    redoStackRef.current = [...redoStackRef.current, currentSnapshot];
+
+    restoreSnapshot(snapshot);
+    setUndoRedoVersion((v) => v + 1);
+  }, [captureSnapshot, restoreSnapshot]);
+
+  const redo = useCallback(() => {
+    if (isOperationPendingRef.current) return;
+    if (redoStackRef.current.length === 0) return;
+
+    const snapshot = redoStackRef.current[redoStackRef.current.length - 1];
+    redoStackRef.current = redoStackRef.current.slice(0, -1);
+
+    // Push current state to undo
+    const currentSnapshot = captureSnapshot(snapshot.actionName);
+    undoStackRef.current = [...undoStackRef.current, currentSnapshot];
+
+    restoreSnapshot(snapshot);
+    setUndoRedoVersion((v) => v + 1);
+  }, [captureSnapshot, restoreSnapshot]);
+
+  // Sketch-level undo/redo (within active sketch)
+  // Uses activeSketchRef to avoid stale closures — these functions are passed
+  // through context into useSketchMode callbacks that may hold old references
+  const pushSketchUndo = useCallback(() => {
+    const sketch = activeSketchRef.current;
+    if (!sketch) return;
+    sketchUndoStackRef.current = [...sketchUndoStackRef.current, sketch];
+    if (sketchUndoStackRef.current.length > MAX_SKETCH_UNDO_STEPS) {
+      sketchUndoStackRef.current = sketchUndoStackRef.current.slice(
+        sketchUndoStackRef.current.length - MAX_SKETCH_UNDO_STEPS
+      );
+    }
+    sketchRedoStackRef.current = [];
+    setUndoRedoVersion((v) => v + 1);
+  }, []);
+
+  const undoSketch = useCallback(() => {
+    if (sketchUndoStackRef.current.length === 0) return;
+
+    const snapshot = sketchUndoStackRef.current[sketchUndoStackRef.current.length - 1];
+    sketchUndoStackRef.current = sketchUndoStackRef.current.slice(0, -1);
+
+    // Push current state to redo
+    const current = activeSketchRef.current;
+    if (current) {
+      sketchRedoStackRef.current = [...sketchRedoStackRef.current, current];
+    }
+
+    setActiveSketch(snapshot);
+    setUndoRedoVersion((v) => v + 1);
+  }, []);
+
+  const redoSketch = useCallback(() => {
+    if (sketchRedoStackRef.current.length === 0) return;
+
+    const snapshot = sketchRedoStackRef.current[sketchRedoStackRef.current.length - 1];
+    sketchRedoStackRef.current = sketchRedoStackRef.current.slice(0, -1);
+
+    // Push current state to undo
+    const current = activeSketchRef.current;
+    if (current) {
+      sketchUndoStackRef.current = [...sketchUndoStackRef.current, current];
+    }
+
+    setActiveSketch(snapshot);
+    setUndoRedoVersion((v) => v + 1);
+  }, []);
+
+  // Derived undo/redo state (depends on undoRedoVersion to trigger re-renders)
+  const canUndo = undoRedoVersion >= 0 && undoStackRef.current.length > 0;
+  const canRedo = undoRedoVersion >= 0 && redoStackRef.current.length > 0;
+  const undoActionName = canUndo
+    ? undoStackRef.current[undoStackRef.current.length - 1].actionName
+    : null;
+  const redoActionName = canRedo
+    ? redoStackRef.current[redoStackRef.current.length - 1].actionName
+    : null;
+  const canUndoSketch = undoRedoVersion >= 0 && sketchUndoStackRef.current.length > 0;
+  const canRedoSketch = undoRedoVersion >= 0 && sketchRedoStackRef.current.length > 0;
+
   const handleSetMode = useCallback(
     (newMode: SceneMode) => {
+      // Block mode switch during async operations
+      if (isOperationPendingRef.current) return;
+
+      // Block leaving sketch mode without Finish/Cancel
+      if (activeSketchRef.current && mode === "sketch" && newMode !== "sketch") return;
+
       // Save previous mode when entering sketch mode for proper restoration on cancel
       if (newMode === "sketch" && mode !== "sketch") {
         setPreviousMode(mode);
@@ -130,7 +368,8 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [elements, objectsMap, mode]
   );
 
-  const addElement = useCallback(
+  // Internal add without undo push (used by finishSketch to avoid double-pushing)
+  const addElementInternal = useCallback(
     (brep: Brep, position: THREE.Vector3, object?: THREE.Object3D) => {
       const result = addElementOp(
         elements,
@@ -149,7 +388,16 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [elements, idCounter, objectsMap]
   );
 
-  const removeElement = useCallback(
+  const addElement = useCallback(
+    (brep: Brep, position: THREE.Vector3, object?: THREE.Object3D) => {
+      pushUndo("Add Shape");
+      return addElementInternal(brep, position, object);
+    },
+    [addElementInternal, pushUndo]
+  );
+
+  // Internal remove without undo push (used by deleteNodeImpl to avoid double-pushing)
+  const removeElementInternal = useCallback(
     (nodeId: string) => {
       const result = removeElementOp(
         elements,
@@ -161,6 +409,14 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setSelectedElements(result.updatedSelectedElements);
     },
     [elements, selectedElements, objectsMap]
+  );
+
+  const removeElement = useCallback(
+    (nodeId: string) => {
+      pushUndo("Delete");
+      removeElementInternal(nodeId);
+    },
+    [removeElementInternal, pushUndo]
   );
 
   const updateElementPosition = useCallback(
@@ -213,7 +469,11 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   const unionSelectedElementsImpl = useCallback(async () => {
     if (selectedElements.length < 2) return;
 
+    pushUndo("Union");
+    setOperationPending(true);
+
     try {
+      const consumedIds = [...selectedElements];
       const result = await unionSelectedElementsOp(
         elements,
         selectedElements,
@@ -222,18 +482,42 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         objectsMap
       );
 
+      if (!result) {
+        console.error("Union operation failed");
+        // Pop the undo snapshot on failure
+        undoStackRef.current = undoStackRef.current.slice(0, -1);
+        setUndoRedoVersion((v) => v + 1);
+        return;
+      }
+
       setElements(result.updatedElements);
       setSelectedElements(result.updatedSelectedElements);
       setIdCounter(result.nextIdCounter);
+
+      // Update feature tree
+      const newNodeId = `node_${result.nextIdCounter}`;
+      setFeatureTree((prev) => {
+        const name = `Union ${countOperationsOfType(prev, "union") + 1}`;
+        return applyBooleanOperationToTree(prev, consumedIds, newNodeId, "union", name);
+      });
     } catch (error) {
       console.error("Union error:", error);
+      // Pop the undo snapshot on error
+      undoStackRef.current = undoStackRef.current.slice(0, -1);
+      setUndoRedoVersion((v) => v + 1);
+    } finally {
+      setOperationPending(false);
     }
-  }, [elements, selectedElements, idCounter, brepGraph, objectsMap]);
+  }, [elements, selectedElements, idCounter, brepGraph, objectsMap, pushUndo]);
 
   const differenceSelectedElementsImpl = useCallback(async () => {
     if (selectedElements.length < 2) return;
 
+    pushUndo("Difference");
+    setOperationPending(true);
+
     try {
+      const consumedIds = [...selectedElements];
       const result = await differenceSelectedElementsOp(
         elements,
         selectedElements,
@@ -242,18 +526,40 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         objectsMap
       );
 
+      if (!result) {
+        console.error("Difference operation failed");
+        undoStackRef.current = undoStackRef.current.slice(0, -1);
+        setUndoRedoVersion((v) => v + 1);
+        return;
+      }
+
       setElements(result.updatedElements);
       setSelectedElements(result.updatedSelectedElements);
       setIdCounter(result.nextIdCounter);
+
+      // Update feature tree
+      const newNodeId = `node_${result.nextIdCounter}`;
+      setFeatureTree((prev) => {
+        const name = `Difference ${countOperationsOfType(prev, "difference") + 1}`;
+        return applyBooleanOperationToTree(prev, consumedIds, newNodeId, "difference", name);
+      });
     } catch (error) {
       console.error("Difference error:", error);
+      undoStackRef.current = undoStackRef.current.slice(0, -1);
+      setUndoRedoVersion((v) => v + 1);
+    } finally {
+      setOperationPending(false);
     }
-  }, [elements, selectedElements, idCounter, brepGraph, objectsMap]);
+  }, [elements, selectedElements, idCounter, brepGraph, objectsMap, pushUndo]);
 
   const intersectionSelectedElementsImpl = useCallback(async () => {
     if (selectedElements.length < 2) return;
 
+    pushUndo("Intersection");
+    setOperationPending(true);
+
     try {
+      const consumedIds = [...selectedElements];
       const result = await intersectionSelectedElementsOp(
         elements,
         selectedElements,
@@ -262,13 +568,31 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         objectsMap
       );
 
+      if (!result) {
+        console.error("Intersection operation failed");
+        undoStackRef.current = undoStackRef.current.slice(0, -1);
+        setUndoRedoVersion((v) => v + 1);
+        return;
+      }
+
       setElements(result.updatedElements);
       setSelectedElements(result.updatedSelectedElements);
       setIdCounter(result.nextIdCounter);
+
+      // Update feature tree
+      const newNodeId = `node_${result.nextIdCounter}`;
+      setFeatureTree((prev) => {
+        const name = `Intersection ${countOperationsOfType(prev, "intersection") + 1}`;
+        return applyBooleanOperationToTree(prev, consumedIds, newNodeId, "intersection", name);
+      });
     } catch (error) {
       console.error("Intersection error:", error);
+      undoStackRef.current = undoStackRef.current.slice(0, -1);
+      setUndoRedoVersion((v) => v + 1);
+    } finally {
+      setOperationPending(false);
     }
-  }, [elements, selectedElements, idCounter, brepGraph, objectsMap]);
+  }, [elements, selectedElements, idCounter, brepGraph, objectsMap, pushUndo]);
 
   const updateElementRotation = useCallback(
     (nodeId: string, rotation: THREE.Euler) => {
@@ -289,7 +613,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   );
 
   const updateElementBrep = useCallback(
-    (nodeId: string, newBrep: Brep, newPosition?: THREE.Vector3) => {
+    (nodeId: string, newBrep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType }, edgeGeometry?: THREE.BufferGeometry) => {
       // Get the existing element to preserve position and rotation
       const existingElement = elements.find((el) => el.nodeId === nodeId);
       if (!existingElement) {
@@ -297,11 +621,24 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         return;
       }
 
+      const undoLabel = featureUpdate?.type === "extrude" ? "Extrude"
+        : featureUpdate?.type === "fillet" ? "Fillet"
+        : featureUpdate?.type === "chamfer" ? "Chamfer"
+        : "Update Shape";
+      pushUndo(undoLabel);
+
       // Use new position if provided, otherwise keep existing
       const position = newPosition || existingElement.position;
 
-      // Create new mesh from the updated BRep
-      const mesh = createMeshFromBrep(newBrep);
+      // Create new mesh — use OCC edge geometry if available for clean edge overlay
+      let mesh: THREE.Group;
+      if (edgeGeometry) {
+        const faces = getAllFaces(newBrep);
+        const faceGeometry = createGeometryFromBRep(faces);
+        mesh = createMeshFromGeometry(faceGeometry, edgeGeometry);
+      } else {
+        mesh = createMeshFromBrep(newBrep);
+      }
       mesh.position.copy(position);
       if (existingElement.rotation) {
         mesh.rotation.copy(existingElement.rotation);
@@ -328,12 +665,32 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
           return element;
         })
       );
+
+      // Update feature tree if this is an extrude operation
+      if (featureUpdate?.type === "extrude") {
+        setFeatureTree((prev) => {
+          const name = `Extrude ${countOperationsOfType(prev, "extrude") + 1}`;
+          return applyExtrudeToTree(prev, nodeId, name);
+        });
+      }
+
+      // Update feature tree if this is a fillet or chamfer operation
+      if (featureUpdate?.type === "fillet" || featureUpdate?.type === "chamfer") {
+        setFeatureTree((prev) => {
+          const opType = featureUpdate.type as "fillet" | "chamfer";
+          const label = opType === "fillet" ? "Fillet" : "Chamfer";
+          const name = `${label} ${countOperationsOfType(prev, opType) + 1}`;
+          return applyFilletToTree(prev, nodeId, name, opType);
+        });
+      }
     },
-    [elements, objectsMap]
+    [elements, objectsMap, pushUndo]
   );
 
   const ungroupSelectedElementImpl = useCallback(() => {
     if (selectedElements.length !== 1) return;
+
+    pushUndo("Ungroup");
 
     const nodeId = selectedElements[0];
 
@@ -348,7 +705,17 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     setElements(result.updatedElements);
     setSelectedElements(result.updatedSelectedElements);
     setIdCounter(result.nextIdCounter);
-  }, [elements, selectedElements, idCounter, brepGraph, objectsMap]);
+
+    // Update feature tree
+    const numChildren = result.updatedElements.length - elements.length + 1;
+    if (numChildren > 0) {
+      const newChildIds: string[] = [];
+      for (let i = 0; i < numChildren; i++) {
+        newChildIds.push(`node_${idCounter + i + 1}`);
+      }
+      setFeatureTree((prev) => applyUngroupToTree(prev, nodeId, newChildIds));
+    }
+  }, [elements, selectedElements, idCounter, brepGraph, objectsMap, pushUndo]);
 
   const getObjectImpl = useCallback(
     (nodeId: string) => {
@@ -494,9 +861,13 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [activeSketch, idCounter]
   );
 
-  // Atomic add constraint and solve - uses functional update to avoid stale closure issues
+  // Atomic add constraint and solve with rollback for redundant/conflicting constraints.
+  // Returns a ConstraintResult indicating whether the constraint was applied, redundant, conflicting, or failed.
   const addConstraintAndSolve = useCallback(
-    async (constraint: SketchConstraint) => {
+    async (constraint: SketchConstraint): Promise<ConstraintResult> => {
+      // Capture pre-constraint sketch for potential rollback
+      let preConstraintSketch: Sketch | null = null;
+
       // We need to capture the sketch with the constraint added for solving
       // Use a Promise to get the value from inside the functional update
       const sketchPromise = new Promise<{ sketch: Sketch; nextId: number } | null>((resolve) => {
@@ -507,6 +878,9 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
             return null;
           }
 
+          // Save pre-constraint state for rollback
+          preConstraintSketch = currentSketch;
+
           const addResult = addConstraintToSketch(currentSketch, constraint, idCounter);
           console.log("Added constraint:", constraint.type, "to sketch with", addResult.sketch.primitives.length, "primitives");
 
@@ -516,7 +890,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       });
 
       const result = await sketchPromise;
-      if (!result) return;
+      if (!result) return { sketch: null, status: "failed" };
 
       const { sketch: sketchToSolve, nextId } = result;
 
@@ -530,13 +904,36 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         const solveResult = await solver.solve(sketchToSolve);
 
         if (solveResult.success) {
+          // Check for overconstrained status (redundant or conflicting)
+          if (solveResult.status === "overconstrained") {
+            const isRedundant = (solveResult.redundantConstraintIds?.length ?? 0) > 0;
+            const isConflicting = (solveResult.conflictingConstraintIds?.length ?? 0) > 0;
+            const status = isConflicting ? "conflicting" as const : "redundant" as const;
+
+            console.warn(
+              `Constraint ${constraint.type} is ${status}. Rolling back.`,
+              isRedundant ? `Redundant IDs: ${solveResult.redundantConstraintIds}` : "",
+              isConflicting ? `Conflicting IDs: ${solveResult.conflictingConstraintIds}` : "",
+            );
+
+            // Roll back to pre-constraint state
+            if (preConstraintSketch) {
+              setActiveSketch(preConstraintSketch);
+            }
+
+            return { sketch: null, status };
+          }
+
           console.log("Solve succeeded, DOF:", solveResult.dof);
           setActiveSketch(solveResult.sketch);
+          return { sketch: solveResult.sketch, status: "applied" };
         } else {
           console.warn("Sketch solve failed, keeping constraint anyway");
+          return { sketch: null, status: "failed" };
         }
       } catch (error) {
         console.error("Sketch solve error:", error);
+        return { sketch: null, status: "failed" };
       }
     },
     [idCounter]
@@ -568,7 +965,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [activeSketch]
   );
 
-  const solveSketch = useCallback(async () => {
+  const solveSketch = useCallback(async (): Promise<Sketch | null> => {
     // Get latest sketch state
     let sketchToSolve: Sketch | null = null;
     setActiveSketch((current) => {
@@ -578,7 +975,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
     if (!sketchToSolve) {
       console.warn("No active sketch to solve");
-      return;
+      return null;
     }
 
     try {
@@ -589,11 +986,14 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       if (result.success) {
         console.log("Solve succeeded, DOF:", result.dof);
         setActiveSketch(result.sketch);
+        return result.sketch;
       } else {
         console.warn("Sketch solve failed");
+        return null;
       }
     } catch (error) {
       console.error("Sketch solve error:", error);
+      return null;
     }
   }, []);
 
@@ -602,6 +1002,13 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       console.warn("No active sketch to finish");
       return;
     }
+
+    pushUndo("Finish Sketch");
+    setOperationPending(true);
+
+    // Clear sketch undo stacks
+    sketchUndoStackRef.current = [];
+    sketchRedoStackRef.current = [];
 
     // Solve one more time before finishing
     try {
@@ -643,8 +1050,13 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
             currentIdCounter++;
             const nodeId = `node_${currentIdCounter}`;
 
-            // Use the profile's center position (BRep is centered at origin, position is world coords)
-            const position = new THREE.Vector3(profile.center.x, profile.center.y, profile.center.z);
+            // Use exact center position — grid snapping here would introduce
+            // up to ±0.25 error per profile, breaking relative alignment
+            const position = new THREE.Vector3(
+              profile.center.x,
+              profile.center.y,
+              profile.center.z
+            );
 
             // Create mesh from brep
             const mesh = createMeshFromBrep(profile.brep);
@@ -691,7 +1103,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
         if (brep.vertices.length > 0 || brep.edges.length > 0 || brep.faces.length > 0) {
           const position = new THREE.Vector3(0, 0, 0);
-          const nodeId = addElement(brep, position);
+          const nodeId = addElementInternal(brep, position);
           console.log("Added sketch as single BRep element, vertices:", brep.vertices.length, "faces:", brep.faces.length);
 
           // Add to feature tree as single body
@@ -720,15 +1132,23 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       // Clear active sketch and return to previous mode
       setActiveSketch(null);
       setMode(previousMode);
+      setOperationPending(false);
     } catch (error) {
       console.error("Error finishing sketch:", error);
+      // Pop the undo snapshot on error
+      undoStackRef.current = undoStackRef.current.slice(0, -1);
+      setUndoRedoVersion((v) => v + 1);
       // Still clear the sketch on error
       setActiveSketch(null);
       setMode(previousMode);
+      setOperationPending(false);
     }
-  }, [activeSketch, previousMode, addElement, sketches.length]);
+  }, [activeSketch, previousMode, addElementInternal, sketches.length, pushUndo]);
 
   const cancelSketch = useCallback(() => {
+    // Clear sketch undo stacks
+    sketchUndoStackRef.current = [];
+    sketchRedoStackRef.current = [];
     setActiveSketch(null);
     setMode(previousMode);
   }, [previousMode]);
@@ -793,6 +1213,120 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     setFeatureTree((prev) => updateNode(prev));
   }, []);
 
+  const renameNodeImpl = useCallback((nodeId: string, newName: string) => {
+    setFeatureTree((prev) => renameNodeOp(prev, nodeId, newName));
+  }, []);
+
+  const deleteNodeImpl = useCallback((nodeId: string) => {
+    pushUndo("Delete");
+
+    // Find the node to get its elementId before removing
+    function findNode(nodes: FeatureNode[]): FeatureNode | null {
+      for (const node of nodes) {
+        if (node.id === nodeId) return node;
+        if (node.children) {
+          const found = findNode(node.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    const node = findNode(featureTree);
+    if (!node) return;
+
+    // Remove the element from the scene if it has one
+    if (node.elementId) {
+      removeElementInternal(node.elementId);
+    }
+
+    // Also remove children's elements
+    if (node.children) {
+      for (const child of node.children) {
+        if (child.elementId) {
+          removeElementInternal(child.elementId);
+        }
+      }
+    }
+
+    // Remove from feature tree
+    setFeatureTree((prev) => removeNodeByIdOp(prev, nodeId).updatedTree);
+  }, [featureTree, removeElementInternal, pushUndo]);
+
+  const toggleSectionExpanded = useCallback((sectionId: string) => {
+    setSectionExpandedState((prev) => ({
+      ...prev,
+      [sectionId]: !prev[sectionId],
+    }));
+  }, []);
+
+  const toggleOriginVisibility = useCallback((id: string) => {
+    setOriginVisibility((prev) => ({
+      ...prev,
+      [id]: !prev[id],
+    }));
+  }, []);
+
+  // ── Import/Export ──────────────────────────────────────────────────
+
+  const importFile = useCallback(async (file: File) => {
+    const ieService = ImportExportService.getInstance();
+    const buffer = await file.arrayBuffer();
+    const ext = file.name.split(".").pop()?.toLowerCase();
+
+    let results;
+    if (ext === "step" || ext === "stp") {
+      results = await ieService.importSTEP(buffer);
+    } else if (ext === "stl") {
+      results = await ieService.importSTL(buffer);
+    } else {
+      throw new Error(`Unsupported file format: .${ext}`);
+    }
+
+    pushUndo("Import");
+
+    const result = importElementsOp(elements, results, idCounter, objectsMap);
+    setElements(result.updatedElements);
+    setIdCounter(result.nextId);
+
+    // Add feature tree nodes for imported bodies
+    const importNodes: FeatureNode[] = result.nodeIds.map((nodeId, i) => ({
+      id: `import_${nodeId}`,
+      type: "body" as const,
+      name: results.length === 1 ? file.name : `${file.name} [${i + 1}]`,
+      visible: true,
+      elementId: nodeId,
+    }));
+    setFeatureTree((prev) => [...prev, ...importNodes]);
+  }, [elements, idCounter, objectsMap, pushUndo]);
+
+  const exportFile = useCallback(async (format: "step" | "stl" | "iges") => {
+    if (elements.length === 0) return;
+
+    const ieService = ImportExportService.getInstance();
+
+    let blob: Blob;
+    let filename: string;
+    if (format === "step") {
+      blob = await ieService.exportSTEP(elements);
+      filename = "export.step";
+    } else if (format === "stl") {
+      blob = await ieService.exportSTL(elements);
+      filename = "export.stl";
+    } else {
+      blob = await ieService.exportIGES(elements);
+      filename = "export.iges";
+    }
+
+    // Trigger browser download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [elements]);
+
   return (
     <CadCoreContext.Provider
       value={{
@@ -836,6 +1370,32 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         featureTree,
         toggleNodeVisibility,
         toggleNodeExpanded,
+        renameNode: renameNodeImpl,
+        deleteNode: deleteNodeImpl,
+        sectionExpandedState,
+        toggleSectionExpanded,
+        originVisibility,
+        toggleOriginVisibility,
+        // Undo/redo
+        undo,
+        redo,
+        canUndo,
+        canRedo,
+        undoActionName,
+        redoActionName,
+        undoStack: undoStackRef.current,
+        redoStack: redoStackRef.current,
+        pushUndo,
+        pushSketchUndo,
+        undoSketch,
+        redoSketch,
+        canUndoSketch,
+        canRedoSketch,
+        // Import/Export
+        importFile,
+        exportFile,
+        // Operation lock
+        isOperationPending,
       }}
     >
       {children}

@@ -5,3 +5,5 @@ export * from "./selection-operations";
 export * from "./union-operations";
 export * from "./difference-operations";
 export * from "./intersection-operations";
+export * from "./import-operations";
+export * from "./fillet-operations";

@@ -280,17 +280,13 @@ describe("union-operations", () => {
         objectsMap
       );
 
-      // Nested compounds may fail with real OpenCascade due to invalid structure
-      // The function returns null on error, which is acceptable for this edge case
-      if (result) {
-        expect(result.nextIdCounter).toBe(6);
-        const newElement = result.updatedElements.find(
-          (el: SceneElement) => el.nodeId === "node_6"
-        );
-        expect(newElement?.brep).toBeInstanceOf(CompoundBrep);
-      } else {
-        expect(result).toBeNull();
-      }
+      // Nested compounds produce valid flat children for OCC union
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
+      const newElement = result!.updatedElements.find(
+        (el: SceneElement) => el.nodeId === "node_6"
+      );
+      expect(newElement?.brep).toBeInstanceOf(CompoundBrep);
     });
   });
 
@@ -595,8 +591,9 @@ describe("union-operations", () => {
         objectsMap
       );
 
-      // Empty breps cannot be processed by OpenCascade, so operation returns null
-      expect(result).toBeNull();
+      // OCC union with one empty brep succeeds: valid brep dominates the result
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
     });
 
     test("handles duplicate selection", async () => {
@@ -665,9 +662,10 @@ describe("union-operations", () => {
         objectsMap
       );
 
-      // Degenerate geometry should either fail (null) or succeed
-      // OpenCascade behavior is unpredictable for edge cases
-      expect(result === null || typeof result === "object").toBeTruthy();
+      // OCC processes degenerate face as edge/wire; union with valid brep2 succeeds
+      // but the degenerate element contributes no meaningful geometry
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
     });
 
     test("preserves objectsMap on failure", async () => {
@@ -704,28 +702,20 @@ describe("union-operations", () => {
         objectsMap
       );
 
-      // Should return null because one element cannot be processed
-      expect(result).toBeNull();
+      // OCC union with one empty brep succeeds: valid brep dominates the result
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
     });
 
     test("handles elements with undefined position gracefully", async () => {
       // Set position to undefined (edge case)
       elements[0].position = undefined as any;
 
-      try {
-        const result = await unionSelectedElements(
-          elements,
-          selectedElements,
-          idCounter,
-          brepGraph,
-          objectsMap
-        );
-        // Either succeeds with default position or fails gracefully
-        expect(result === null || result.nextIdCounter).toBeTruthy();
-      } catch (error) {
-        // Throwing is also acceptable
-        expect(error).toBeDefined();
-      }
+      // Undefined position causes position.clone() to throw TypeError
+      // The throw occurs before the try/catch block in unionSelectedElements
+      await expect(
+        unionSelectedElements(elements, selectedElements, idCounter, brepGraph, objectsMap)
+      ).rejects.toThrow(TypeError);
     });
 
     test("handles extremely large coordinates", async () => {
@@ -745,9 +735,9 @@ describe("union-operations", () => {
         objectsMap
       );
 
-      // Large coordinates may cause OpenCascade issues
-      // The function should handle this gracefully (either fail or succeed)
-      expect(result === null || typeof result === "object").toBeTruthy();
+      // OCC handles large coordinates (1e10) successfully
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
     });
 
     test("handles collinear vertices (zero-area face)", async () => {
@@ -766,9 +756,9 @@ describe("union-operations", () => {
         objectsMap
       );
 
-      // Zero-area faces may cause failure or unexpected results
-      // OpenCascade behavior is unpredictable for edge cases
-      expect(result === null || typeof result === "object").toBeTruthy();
+      // OCC processes collinear face as degenerate wire; union with valid brep2 succeeds
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
     });
 
     test("handles negative coordinate values", async () => {
@@ -819,8 +809,8 @@ describe("union-operations", () => {
         objectsMap
       );
 
-      // NaN in position should cause failure or be handled gracefully
-      expect(result === null || typeof result === "object").toBeTruthy();
+      // NaN in position produces invalid OCC transforms, expect failure
+      expect(result).toBeNull();
     });
 
     test("handles elements with Infinity in position", async () => {
@@ -834,8 +824,8 @@ describe("union-operations", () => {
         objectsMap
       );
 
-      // Infinity in position should cause failure or be handled gracefully
-      expect(result === null || typeof result === "object").toBeTruthy();
+      // Infinity in position produces invalid OCC transforms, expect failure
+      expect(result).toBeNull();
     });
   });
 });

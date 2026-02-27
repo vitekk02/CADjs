@@ -75,7 +75,7 @@ describe("selection-operations", () => {
         (mesh.material as THREE.MeshStandardMaterial).color.set(SELECTION.selected);
       });
 
-      handleSetMode(elements, "draw", objectsMap);
+      handleSetMode(elements, "move", objectsMap);
 
       elements.forEach((el) => {
         const mesh = objectsMap.get(el.nodeId) as THREE.Mesh;

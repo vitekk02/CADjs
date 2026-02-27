@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { Brep, BrepGraph, CompoundBrep } from "../geometry";
 import { SceneElement } from "./types";
-import { createMeshFromBrep } from "./mesh-operations";
+import { createMeshFromGeometry } from "./mesh-operations";
 import { OpenCascadeService } from "../services/OpenCascadeService";
 
 // boolean intersection - returns common volume of all shapes
@@ -115,7 +115,14 @@ export async function intersectionSelectedElements(
       });
     });
 
-    const resultMesh = createMeshFromBrep(resultBrep);
+    // Build mesh directly from OCC shape for smooth tessellation (indexed geometry + true edges)
+    const resultGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.05, 0.3);
+    const resultEdgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.05);
+    // Center geometry to match BRep centering pattern
+    resultGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
+    resultEdgeGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
+
+    const resultMesh = createMeshFromGeometry(resultGeometry, resultEdgeGeometry);
     resultMesh.position.set(0, 0, 0);
 
     const resultGroup = new THREE.Group();

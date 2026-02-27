@@ -10,8 +10,16 @@ export function handleSetMode(
 ): { updatedElements: SceneElement[]; mode: SceneMode } {
   const updatedElements = elements.map((element) => {
     const object = objectsMap.get(element.nodeId);
-    if (object instanceof THREE.Mesh) {
-      (object.material as THREE.MeshStandardMaterial).color.set(BODY.default);
+    if (object) {
+      if (object instanceof THREE.Mesh) {
+        (object.material as THREE.MeshStandardMaterial).color.set(BODY.default);
+      } else if (object instanceof THREE.Group) {
+        object.traverse((child) => {
+          if (child instanceof THREE.Mesh && !child.userData.isEdgeOverlay && !child.userData.isHelper) {
+            (child.material as THREE.MeshStandardMaterial).color.set(BODY.default);
+          }
+        });
+      }
     }
     return { ...element, selected: false };
   });

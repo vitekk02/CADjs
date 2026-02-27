@@ -64,7 +64,7 @@ export const SceneProvider: React.FC<{ children: ReactNode }> = ({
   const [elements, setElements] = useState<SceneElement[]>([]);
   const [selectedElements, setSelectedElements] = useState<string[]>([]);
   const [brepGraph] = useState<BrepGraph>(new BrepGraph());
-  const [mode, setMode] = useState<SceneMode>("draw");
+  const [mode, setMode] = useState<SceneMode>("move");
   const [idCounter, setIdCounter] = useState(0);
   const [currentShape, setCurrentShape] = useState<
     "rectangle" | "triangle" | "circle"

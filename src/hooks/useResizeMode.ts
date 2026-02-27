@@ -2,13 +2,30 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
-import { transformBrepVertices } from "../convertBRepToGeometry";
 import { Brep } from "../geometry";
 import {
   extrudeBRep,
   extrudeThreeJsObject,
 } from "../scene-operations/resize-operations";
+import { isDescendantOf, collectPickableMeshes } from "../scene-operations/mesh-operations";
 import { RESIZE } from "../theme";
+
+/**
+ * Detect which axis a BRep is flat along (range < threshold).
+ * Returns "x", "y", or "z". Defaults to "z" if none or multiple are flat.
+ */
+function getFlatAxis(brep: Brep): "x" | "y" | "z" {
+  if (!brep.vertices || brep.vertices.length === 0) return "z";
+  const xs = brep.vertices.map((v) => v.x);
+  const ys = brep.vertices.map((v) => v.y);
+  const zs = brep.vertices.map((v) => v.z);
+  const rangeX = Math.max(...xs) - Math.min(...xs);
+  const rangeY = Math.max(...ys) - Math.min(...ys);
+  const rangeZ = Math.max(...zs) - Math.min(...zs);
+  if (rangeX < 0.01) return "x";
+  if (rangeY < 0.01) return "y";
+  return "z";
+}
 
 export function useResizeMode() {
   const { elements, getObject, updateElementPosition, objectsMap } =
@@ -141,22 +158,14 @@ export function useResizeMode() {
         return;
       }
 
-      const objects: THREE.Object3D[] = [];
-      elements.forEach((el) => {
-        const obj = getObject(el.nodeId);
-        if (obj) objects.push(obj);
-      });
-
-      const intersects = raycaster.intersectObjects(objects, true);
+      const meshes = collectPickableMeshes(elements, getObject);
+      const intersects = raycaster.intersectObjects(meshes, false);
       if (intersects.length > 0) {
         const pickedObject = intersects[0].object;
 
         for (const el of elements) {
           const obj = getObject(el.nodeId);
-          if (
-            obj === pickedObject ||
-            (pickedObject.parent && obj === pickedObject.parent)
-          ) {
+          if (obj && isDescendantOf(pickedObject, obj)) {
             if (selectedElement !== el.nodeId) {
               setSelectedElement(el.nodeId);
             }
@@ -231,50 +240,31 @@ export function useResizeMode() {
         objRef.userData.originalScale = objRef.scale.clone();
       }
 
-      const originalMin = objRef.userData.originalBoxMin;
-      const originalMax = objRef.userData.originalBoxMax;
+      const originalMin = objRef.userData.originalBoxMin as THREE.Vector3;
+      const originalMax = objRef.userData.originalBoxMax as THREE.Vector3;
       const sensitivity = 0.05;
 
-      if (activeHandle === "x") {
-        const rawDragAmount = delta.x;
-        const dragAmount = direction * rawDragAmount;
-        const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
+      // Detect flat axis from the original BRep
+      const flatAxis = getFlatAxis(originalBrepRef.current);
 
-        objRef.scale.x = scaleFactor * objRef.userData.originalScale.x;
-
-        const originalWidth = originalMax.x - originalMin.x;
-        const newWidth = originalWidth * scaleFactor;
-
-        const positionOffset = (newWidth - originalWidth) / 2;
-        objRef.position.x =
-          objRef.userData.originalPosition.x + direction * positionOffset;
-      } else if (activeHandle === "y") {
-        const rawDragAmount = delta.y;
-        const dragAmount = direction * rawDragAmount;
-        const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
-
-        objRef.scale.y = scaleFactor * objRef.userData.originalScale.y;
-
-        const originalHeight = originalMax.y - originalMin.y;
-        const newHeight = originalHeight * scaleFactor;
-
-        const positionOffset = (newHeight - originalHeight) / 2;
-        objRef.position.y =
-          objRef.userData.originalPosition.y + direction * positionOffset;
-      } else if (activeHandle === "z") {
-        // check if flat (2D shape)
-        const isFlat = Math.abs(originalMax.z - originalMin.z) < 0.11;
+      // Check if the handle being dragged is along the flat axis
+      if (activeHandle === flatAxis) {
+        // Extrusion / flat-axis handling
+        const axisRange = (originalMax as any)[flatAxis] - (originalMin as any)[flatAxis];
+        const isFlat = Math.abs(axisRange) < 0.11;
 
         const worldDelta = currentPoint.clone().sub(startPointRef.current);
-        const extrusionVector = new THREE.Vector3(
-          0,
-          0,
-          direction
-        ).applyQuaternion(camera.quaternion);
-        const dragDistance = worldDelta.dot(extrusionVector);
+        const dirVec = new THREE.Vector3(
+          flatAxis === "x" ? direction : 0,
+          flatAxis === "y" ? direction : 0,
+          flatAxis === "z" ? direction : 0
+        ).applyQuaternion(camera!.quaternion);
+        const dragDistance = worldDelta.dot(dirVec);
         const extrusionDepth = Math.max(0.1, Math.abs(dragDistance));
 
-        if (isFlat && objRef.userData.originalScale.z === 1) {
+        if (isFlat && (objRef.userData.originalScale as THREE.Vector3).getComponent(
+          flatAxis === "x" ? 0 : flatAxis === "y" ? 1 : 2
+        ) === 1) {
           // extrusion for flat shapes
           if (objRef instanceof THREE.Mesh) {
             extrusionParamsRef.current = {
@@ -300,30 +290,55 @@ export function useResizeMode() {
                 objRef.parent.remove(objRef);
               }
 
-              scene.add(extrudedObj);
+              scene!.add(extrudedObj);
               objectsMap.set(element.nodeId, extrudedObj);
               objRef = extrudedObj;
 
               forceSceneUpdate();
             } else {
-              objRef.scale.z = extrusionDepth;
+              // Scale along the flat axis
+              const comp = flatAxis === "x" ? 0 : flatAxis === "y" ? 1 : 2;
+              const s = objRef.scale.clone();
+              s.setComponent(comp, extrusionDepth);
+              objRef.scale.copy(s);
             }
           }
         } else {
-          // regular z scaling for 3d objects
-          const rawDragAmount = delta.z;
+          // regular scaling for 3D objects along this axis
+          const comp = flatAxis === "x" ? 0 : flatAxis === "y" ? 1 : 2;
+          const rawDragAmount = (delta as any)[flatAxis];
           const dragAmount = direction * rawDragAmount;
           const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
 
-          objRef.scale.z = scaleFactor * objRef.userData.originalScale.z;
+          const s = objRef.scale.clone();
+          s.setComponent(comp, scaleFactor * (objRef.userData.originalScale as THREE.Vector3).getComponent(comp));
+          objRef.scale.copy(s);
 
-          const originalDepth = originalMax.z - originalMin.z;
-          const newDepth = originalDepth * scaleFactor;
-
-          const positionOffset = (newDepth - originalDepth) / 2;
-          objRef.position.z =
-            objRef.userData.originalPosition.z + direction * positionOffset;
+          const originalExtent = (originalMax as any)[flatAxis] - (originalMin as any)[flatAxis];
+          const newExtent = originalExtent * scaleFactor;
+          const positionOffset = (newExtent - originalExtent) / 2;
+          const p = objRef.position.clone();
+          (p as any)[flatAxis] = (objRef.userData.originalPosition as THREE.Vector3).getComponent(comp) + direction * positionOffset;
+          objRef.position.copy(p);
         }
+      } else {
+        // Non-flat axis: regular scaling (x or y for Z-flat, etc.)
+        const axis = activeHandle as "x" | "y" | "z";
+        const comp = axis === "x" ? 0 : axis === "y" ? 1 : 2;
+        const rawDragAmount = (delta as any)[axis];
+        const dragAmount = direction * rawDragAmount;
+        const scaleFactor = Math.max(0.1, 1 + dragAmount * sensitivity);
+
+        const s = objRef.scale.clone();
+        s.setComponent(comp, scaleFactor * (objRef.userData.originalScale as THREE.Vector3).getComponent(comp));
+        objRef.scale.copy(s);
+
+        const originalExtent = (originalMax as any)[axis] - (originalMin as any)[axis];
+        const newExtent = originalExtent * scaleFactor;
+        const positionOffset = (newExtent - originalExtent) / 2;
+        const p = objRef.position.clone();
+        (p as any)[axis] = (objRef.userData.originalPosition as THREE.Vector3).getComponent(comp) + direction * positionOffset;
+        objRef.position.copy(p);
       }
 
       updateElementPosition(selectedElement, objRef.position);
@@ -352,33 +367,45 @@ export function useResizeMode() {
     bbox.getSize(size);
     const handleSize = Math.min(size.x, size.y, size.z) * 0.2;
 
+    // Detect flat axis from the original BRep
+    const flatAxis = originalBrepRef.current ? getFlatAxis(originalBrepRef.current) : "z";
+
     let newHandleGeometry: THREE.BoxGeometry | null = null;
 
     resizeHandlesRef.current.forEach((handle) => {
-      const axis = handle.userData.axis;
+      const axis = handle.userData.axis as "x" | "y" | "z";
       const dir = handle.userData.direction;
 
+      // Position handle at the edge of the bounding box along its axis
+      handle.position.set(center.x, center.y, center.z);
       if (axis === "x") {
         handle.position.x = dir > 0 ? bbox.max.x : bbox.min.x;
-        handle.position.y = center.y;
-        handle.position.z = center.z;
       } else if (axis === "y") {
-        handle.position.x = center.x;
         handle.position.y = dir > 0 ? bbox.max.y : bbox.min.y;
-        handle.position.z = center.z;
-      } else if (axis === "z") {
-        const isFlat = Math.abs(bbox.max.z - bbox.min.z) < 0.01;
+      } else {
+        handle.position.z = dir > 0 ? bbox.max.z : bbox.min.z;
+      }
+
+      // Special styling for handles along the flat axis
+      if (axis === flatAxis) {
+        const axisRange = (bbox.max as any)[flatAxis] - (bbox.min as any)[flatAxis];
+        const isFlat = Math.abs(axisRange) < 0.01;
         if (isFlat) {
-          // distinct color for flat objects
           (handle as THREE.Mesh).material = new THREE.MeshBasicMaterial({
             color: RESIZE.previewWireframe,
           });
-          handle.position.z = dir > 0 ? bbox.max.z + 0.1 : bbox.min.z - 0.1;
+          // Offset flat-axis handles slightly so they're visible
+          if (axis === "x") {
+            handle.position.x = dir > 0 ? bbox.max.x + 0.1 : bbox.min.x - 0.1;
+          } else if (axis === "y") {
+            handle.position.y = dir > 0 ? bbox.max.y + 0.1 : bbox.min.y - 0.1;
+          } else {
+            handle.position.z = dir > 0 ? bbox.max.z + 0.1 : bbox.min.z - 0.1;
+          }
         } else {
           (handle as THREE.Mesh).material = new THREE.MeshBasicMaterial({
             color: RESIZE.handle,
           });
-          handle.position.z = dir > 0 ? bbox.max.z : bbox.min.z;
         }
       }
 
@@ -406,24 +433,28 @@ export function useResizeMode() {
     if (element && obj && originalBrepRef.current) {
       try {
         // For X/Y resizing, use the current (preview-modified) position
-        // For Z extrusion, we'll calculate position separately using originalPosition + offset
+        // For flat-axis extrusion, we'll calculate position separately using originalPosition + offset
         let currentPosition = obj.position.clone();
 
-        if (activeHandle === "z" && extrusionParamsRef.current) {
+        const flatAxis = getFlatAxis(originalBrepRef.current);
+
+        if (activeHandle === flatAxis && extrusionParamsRef.current) {
           const { direction } = extrusionParamsRef.current;
 
-          const wasFlat =
-            Math.abs(
-              originalBrepRef.current.vertices[0].z -
-                originalBrepRef.current.vertices[1].z
-            ) < 0.11;
+          // Check if original BRep was flat along its flat axis
+          const verts = originalBrepRef.current.vertices;
+          const flatCoords = verts.map((v) => (v as any)[flatAxis] as number);
+          const wasFlat = verts.length >= 2 &&
+            Math.abs(Math.max(...flatCoords) - Math.min(...flatCoords)) < 0.11;
 
           if (wasFlat && obj.userData.extruded) {
             const bbox = new THREE.Box3().setFromObject(obj);
             const actualSize = new THREE.Vector3();
             bbox.getSize(actualSize);
 
-            const actualExtrusionHeight = actualSize.z;
+            const actualExtrusionHeight = flatAxis === "x" ? actualSize.x
+              : flatAxis === "y" ? actualSize.y
+              : actualSize.z;
 
             // extrudeBRep returns centered BRep + position offset (bounding box center)
             const extrusionResult = await extrudeBRep(
@@ -436,17 +467,14 @@ export function useResizeMode() {
             (element as any).userData = (element as any).userData || {};
             (element as any).userData.brepExtruded = true;
 
-            // For Z extrusion, use ORIGINAL position + offset (not preview-modified position)
+            // Use ORIGINAL position + offset (not preview-modified position)
             const originalPosition = obj.userData.originalPosition?.clone() || obj.position.clone();
-            console.log(`[useResizeMode] Original position: (${originalPosition.x.toFixed(2)}, ${originalPosition.y.toFixed(2)}, ${originalPosition.z.toFixed(2)})`);
-            console.log(`[useResizeMode] Position offset from extrudeBRep: (${extrusionResult.positionOffset.x}, ${extrusionResult.positionOffset.y}, ${extrusionResult.positionOffset.z.toFixed(2)})`);
 
             currentPosition = new THREE.Vector3(
               originalPosition.x + extrusionResult.positionOffset.x,
               originalPosition.y + extrusionResult.positionOffset.y,
               originalPosition.z + extrusionResult.positionOffset.z
             );
-            console.log(`[useResizeMode] Final position: (${currentPosition.x.toFixed(2)}, ${currentPosition.y.toFixed(2)}, ${currentPosition.z.toFixed(2)})`);
           }
         }
 

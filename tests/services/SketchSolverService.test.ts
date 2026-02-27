@@ -722,4 +722,63 @@ describe("SketchSolverService", () => {
       expect(result.success).toBe(true);
     });
   });
+
+  describe("Over-constrained Detection", () => {
+    /**
+     * MOCK LIMITATION: The planegcs mock always returns false for
+     * has_gcs_conflicting_constraints() and has_gcs_redundant_constraints().
+     * This means the overconstrained status path in SketchSolverService.solve()
+     * cannot be triggered through normal constraint solving.
+     *
+     * The test below verifies the detection logic by temporarily patching
+     * the mock's get_gcs_conflicting_constraints to return constraint IDs.
+     */
+    it("should report overconstrained when conflicting constraints exist", async () => {
+      const gcs = await solver.getGCS();
+
+      // Patch the mock to simulate conflicting constraints
+      const originalGetConflicting = gcs.get_gcs_conflicting_constraints;
+      const originalHasConflicting = gcs.has_gcs_conflicting_constraints;
+      gcs.get_gcs_conflicting_constraints = () => ["c1"];
+      gcs.has_gcs_conflicting_constraints = () => true;
+
+      try {
+        const sketch = createEmptySketch();
+        // Two contradictory constraints on same line: horizontal + vertical
+        const p1 = createPoint("p1", 0, 0);
+        const p2 = createPoint("p2", 2, 1);
+        const line = createLine("line1", "p1", "p2");
+        const c1 = createConstraint("c1", "horizontal", ["line1"]);
+        const c2 = createConstraint("c2", "vertical", ["line1"]);
+
+        sketch.primitives = [p1, p2, line];
+        sketch.constraints = [c1, c2];
+
+        const result = await solver.solve(sketch);
+
+        expect(result.status).toBe("overconstrained");
+        expect(result.conflictingConstraintIds).toEqual(["c1"]);
+      } finally {
+        // Restore original mock behavior
+        gcs.get_gcs_conflicting_constraints = originalGetConflicting;
+        gcs.has_gcs_conflicting_constraints = originalHasConflicting;
+      }
+    });
+
+    it("should not report overconstrained for valid constraints (mock baseline)", async () => {
+      const sketch = createEmptySketch();
+      const p1 = createPoint("p1", 0, 0);
+      const p2 = createPoint("p2", 2, 1);
+      const line = createLine("line1", "p1", "p2");
+      const constraint = createConstraint("c1", "horizontal", ["line1"]);
+
+      sketch.primitives = [p1, p2, line];
+      sketch.constraints = [constraint];
+
+      const result = await solver.solve(sketch);
+
+      expect(result.status).not.toBe("overconstrained");
+      expect(result.conflictingConstraintIds).toBeUndefined();
+    });
+  });
 });

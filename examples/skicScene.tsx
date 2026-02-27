@@ -176,7 +176,7 @@ const SkicScene: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (mode !== "draw") return;
+    if (mode !== "move") return;
     const renderer = rendererRef.current;
     const camera = cameraRef.current;
     const scene = sceneRef.current;

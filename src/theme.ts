@@ -46,23 +46,29 @@ export const SKETCH = {
   constrained: 0x111111,       // Near-black
   overconstrained: 0xff0000,   // Red
   preview: 0x1e90ff,           // Blue preview while drawing
-  point: 0xeeeeee,             // Light (unconstrained point)
+  point: 0xffffff,             // White (Fusion 360 style)
   pointConstrained: 0x111111,  // Dark (constrained point)
   selected: 0x2e75b6,          // Blue selection
   selectedLine: 0x2e75b6,      // Blue selected line
   selectedPoint: 0x5ba3e0,     // Lighter blue selected point
   profileHover: 0x87ceeb,      // Light blue profile fill on hover
   profileHoverOpacity: 0.3,
+  profileFill: 0x87ceeb,       // Translucent blue closed profile fill
+  profileFillOpacity: 0.15,
+  construction: 0xff8800,          // Orange construction lines
+  constructionSelected: 0xffaa44,  // Selected construction lines
+  constraintGlyph: 0xddaa00,      // Gold for constraint symbols
+  constraintGlyphBg: 0x333333,    // Dark background circle
 } as const;
 
 // ── Sketch Inference Glyphs ────────────────────────────────────────
 export const INFERENCE = {
-  endpoint: 0x1e90ff,     // Blue (matches underconstrained sketch color)
-  midpoint: 0xffaa00,     // Amber/orange
-  center: 0xff6699,       // Soft pink
-  quadrant: 0x00bcd4,     // Teal
-  intersection: 0xff8800, // Orange
-  default: 0xcccccc,      // Light gray
+  endpoint: 0x00cc44,     // Green (Fusion 360 style)
+  midpoint: 0x00cc44,     // Green
+  center: 0x00cc44,       // Green
+  quadrant: 0x00cc44,     // Green
+  intersection: 0x00cc44, // Green
+  default: 0x00cc44,      // Green
   guidelineChain: 0x00bcd4, // Teal for chain guidelines
   guidelinePoint: 0x5ba3e0, // Soft blue for point guidelines
 } as const;
@@ -86,6 +92,14 @@ export const EXTRUDE = {
   arrow: 0x2e75b6,          // Blue arrows instead of green
   arrowSecondary: 0x2e75b6, // Same blue, lower opacity
   profileHighlight: 0x87ceeb,
+} as const;
+
+// ── Fillet / Chamfer Mode ──────────────────────────────────────────
+export const FILLET = {
+  edgeHighlight: 0xff8800,   // Orange — selected edges
+  edgeHover: 0xffaa44,       // Lighter orange — hovered edge
+  preview: 0xa8a9ad,         // Body default for preview mesh
+  previewOpacity: 0.6,
 } as const;
 
 // ── Resize Mode ────────────────────────────────────────────────────

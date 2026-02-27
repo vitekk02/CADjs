@@ -1,26 +1,24 @@
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect } from "react";
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { SceneElement } from "../scene-operations/types";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
+import { isDescendantOf, collectPickableMeshes } from "../scene-operations/mesh-operations";
+import { BODY, SELECTION } from "../theme";
 
 interface MoveModeState {
   selectedObject: string | null;
-  contextMenu: { visible: boolean; x: number; y: number; nodeId: string | null };
-  isRotating: boolean;
 }
 
 interface MoveModeActions {
   handleMouseDown: (event: MouseEvent) => void;
   handleMouseMove: (event: MouseEvent) => void;
   handleMouseUp: (event: MouseEvent) => void;
-  updateContextMenuPosition: (nodeId: string | null) => void;
   clearSelection: () => void;
 }
 
 const useMoveMode = (): [MoveModeState, MoveModeActions] => {
-  const { elements, getObject, updateElementPosition, updateElementRotation } =
+  const { elements, getObject, updateElementPosition, updateElementRotation, pushUndo, removeElement } =
     useCadCore();
 
   const {
@@ -36,23 +34,14 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
 
   const [selectedObject, setSelectedObject] = useState<string | null>(null);
   const selectedObjectRef = useRef<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-    nodeId: string | null;
-  }>({
-    visible: false,
-    x: 0,
-    y: 0,
-    nodeId: null,
-  });
 
   const [isRotating, setIsRotating] = useState<boolean>(false);
-  const [shiftKeyPressed, setShiftKeyPressed] = useState<boolean>(false);
 
   const updateElementPositionRef = useRef(updateElementPosition);
   const updateElementRotationRef = useRef(updateElementRotation);
+  const pushUndoRef = useRef(pushUndo);
+  const removeElementRef = useRef(removeElement);
+  const isRotatingRef = useRef(isRotating);
 
   useEffect(() => {
     selectedObjectRef.current = selectedObject;
@@ -65,41 +54,16 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
   useEffect(() => {
     updateElementPositionRef.current = updateElementPosition;
     updateElementRotationRef.current = updateElementRotation;
-  }, [updateElementPosition, updateElementRotation]);
+    pushUndoRef.current = pushUndo;
+    removeElementRef.current = removeElement;
+  }, [updateElementPosition, updateElementRotation, pushUndo, removeElement]);
 
-  const snapPositionToGrid = useCallback(
-    (position: THREE.Vector3): THREE.Vector3 => {
-      if (showGroundPlane && !shiftKeyPressed) {
-        const gridSize = 0.5;
-        const newPosition = position.clone();
-        newPosition.x = Math.round(newPosition.x / gridSize) * gridSize;
-        newPosition.y = Math.round(newPosition.y / gridSize) * gridSize;
-        return newPosition;
-      }
-      return position;
-    },
-    [showGroundPlane, shiftKeyPressed]
-  );
-
-  const snapRotationToIncrement = useCallback(
-    (rotation: THREE.Euler): THREE.Euler => {
-      if (showGroundPlane && !shiftKeyPressed) {
-        const angleIncrement = Math.PI / 12;
-        const newRotation = rotation.clone();
-        newRotation.x =
-          Math.round(newRotation.x / angleIncrement) * angleIncrement;
-        newRotation.y =
-          Math.round(newRotation.y / angleIncrement) * angleIncrement;
-        newRotation.z =
-          Math.round(newRotation.z / angleIncrement) * angleIncrement;
-        return newRotation;
-      }
-      return rotation;
-    },
-    [showGroundPlane, shiftKeyPressed]
-  );
+  useEffect(() => {
+    isRotatingRef.current = isRotating;
+  }, [isRotating]);
 
   const transformControlsRef = useRef<TransformControls | null>(null);
+  const dragStartPositionRef = useRef<THREE.Vector3 | null>(null);
 
   useEffect(() => {
     if (!scene || !camera || !renderer) {
@@ -109,6 +73,15 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
 
 
     const onDraggingChanged = (event) => {
+      if (event.value) {
+        pushUndoRef.current(isRotatingRef.current ? "Rotate" : "Move");
+        // Capture position at drag start for relative delta snapping
+        if (transformControlsRef.current?.object) {
+          dragStartPositionRef.current = transformControlsRef.current.object.position.clone();
+        }
+      } else {
+        dragStartPositionRef.current = null;
+      }
       if (orbitControls) {
         orbitControls.enabled = !event.value;
       }
@@ -121,9 +94,17 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
 
         if (
           showGroundPlaneRef.current &&
-          transformControlsRef.current.mode === "translate"
+          transformControlsRef.current.mode === "translate" &&
+          dragStartPositionRef.current
         ) {
-          const snappedPosition = snapPositionToGrid(position);
+          // Snap the movement delta to grid increments (not the absolute position).
+          // This preserves relative alignment of objects at non-grid positions.
+          const gridSize = 0.5;
+          const startPos = dragStartPositionRef.current;
+          const delta = position.clone().sub(startPos);
+          delta.x = Math.round(delta.x / gridSize) * gridSize;
+          delta.y = Math.round(delta.y / gridSize) * gridSize;
+          const snappedPosition = startPos.clone().add(delta);
 
           if (!position.equals(snappedPosition)) {
             transformControlsRef.current.object.position.copy(snappedPosition);
@@ -137,31 +118,12 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
           updateElementPositionRef.current(selectedObjectRef.current, position);
         }
 
-        if (isRotating && transformControlsRef.current.object) {
-          const rotation = new THREE.Euler();
-          rotation.setFromRotationMatrix(
-            new THREE.Matrix4().extractRotation(
-              transformControlsRef.current.object.matrixWorld
-            )
+        if (isRotatingRef.current && transformControlsRef.current.object) {
+          const obj = transformControlsRef.current.object;
+          updateElementRotationRef.current(
+            selectedObjectRef.current,
+            obj.rotation.clone()
           );
-
-          if (showGroundPlaneRef.current) {
-            const snappedRotation = snapRotationToIncrement(rotation);
-            if (!rotation.equals(snappedRotation)) {
-              const quaternion = new THREE.Quaternion();
-              quaternion.setFromEuler(snappedRotation);
-              transformControlsRef.current.object.quaternion.copy(quaternion);
-            }
-            updateElementRotationRef.current(
-              selectedObjectRef.current,
-              snappedRotation
-            );
-          } else {
-            updateElementRotationRef.current(
-              selectedObjectRef.current,
-              rotation
-            );
-          }
         }
       }
     };
@@ -198,9 +160,14 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
       );
 
       transformControls.setMode("translate");
-      transformControls.setSpace("world");
+      transformControls.setSpace("local");
       transformControls.setSize(1.25);
       transformControls.enabled = true;
+
+      if (showGroundPlaneRef.current) {
+        transformControls.setTranslationSnap(0.5);
+        transformControls.setRotationSnap(Math.PI / 12);
+      }
 
       transformControls.addEventListener("dragging-changed", onDraggingChanged);
       transformControls.addEventListener("objectChange", onObjectChange);
@@ -246,9 +213,6 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     scene,
     camera,
     renderer,
-    snapPositionToGrid,
-    snapRotationToIncrement,
-    isRotating,
   ]);
 
   useEffect(() => {
@@ -261,11 +225,20 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
         }
       }
       if (event.key === "Shift") {
-        setShiftKeyPressed(true);
         if (transformControlsRef.current) {
           transformControlsRef.current.setTranslationSnap(null);
           transformControlsRef.current.setRotationSnap(null);
           forceSceneUpdate();
+        }
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        const nodeId = selectedObjectRef.current;
+        if (nodeId) {
+          if (transformControlsRef.current) {
+            transformControlsRef.current.detach();
+          }
+          setSelectedObject(null);
+          removeElementRef.current(nodeId);
         }
       }
     };
@@ -278,7 +251,6 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
         }
       }
       if (event.key === "Shift") {
-        setShiftKeyPressed(false);
         if (transformControlsRef.current && showGroundPlane) {
           transformControlsRef.current.setTranslationSnap(0.5);
           transformControlsRef.current.setRotationSnap(Math.PI / 12);
@@ -318,37 +290,6 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     }
   }, [selectedObject, scene, getObject]);
 
-  // Calculate context menu position at bounding box corner
-  const updateContextMenuPosition = (nodeId: string | null) => {
-    if (!camera || !renderer || !nodeId || !contextMenu.visible) return;
-
-    const obj = getObject(nodeId);
-    if (!obj) return;
-
-    // Calculate the bounding box of the element
-    const boundingBox = new THREE.Box3().setFromObject(obj);
-    const topRightCorner = new THREE.Vector3(
-      boundingBox.max.x,
-      boundingBox.max.y,
-      boundingBox.max.z
-    );
-
-    // Project to screen coordinates
-    const tempV = topRightCorner.clone();
-    tempV.project(camera);
-
-    // Convert to screen coordinates
-    const rect = renderer.domElement.getBoundingClientRect();
-    const x = (tempV.x * 0.5 + 0.5) * rect.width + rect.left;
-    const y = (1 - (tempV.y * 0.5 + 0.5)) * rect.height + rect.top;
-
-    setContextMenu({
-      ...contextMenu,
-      x: x + 10, // Small offset
-      y: y - 10, // Small offset
-    });
-  };
-
   // Update wireframe helpers when element changes
   const updateWireframeHelpers = (nodeId: string | null) => {
     if (!nodeId) return;
@@ -367,20 +308,46 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     });
   };
 
+  // Reset an object's material color back to default and hide helpers
+  const resetObjectVisuals = (nodeId: string) => {
+    const obj = getObject(nodeId);
+    if (!obj) return;
+    obj.traverse((child) => {
+      if (child.userData.isEdgeOverlay || child.userData.isHelper) return;
+      if ((child as THREE.Mesh).isMesh) {
+        const mat = (child as THREE.Mesh).material;
+        if (mat && !Array.isArray(mat)) {
+          (mat as THREE.MeshStandardMaterial).color.setHex(BODY.default);
+        }
+      }
+      if (
+        child.userData.helperType === "edge" ||
+        child.userData.helperType === "vertex"
+      ) {
+        child.visible = false;
+      }
+    });
+  };
+
+  // Apply selection color to an object
+  const applySelectionColor = (nodeId: string) => {
+    const obj = getObject(nodeId);
+    if (!obj) return;
+    obj.traverse((child) => {
+      if (child.userData.isEdgeOverlay || child.userData.isHelper) return;
+      if ((child as THREE.Mesh).isMesh) {
+        const mat = (child as THREE.Mesh).material;
+        if (mat && !Array.isArray(mat)) {
+          (mat as THREE.MeshStandardMaterial).color.setHex(SELECTION.selected);
+        }
+      }
+    });
+  };
+
   // Clear current selection
   const clearSelection = () => {
     if (selectedObject) {
-      const obj = getObject(selectedObject);
-      if (obj) {
-        obj.traverse((child) => {
-          if (
-            child.userData.helperType === "edge" ||
-            child.userData.helperType === "vertex"
-          ) {
-            child.visible = false;
-          }
-        });
-      }
+      resetObjectVisuals(selectedObject);
     }
 
     // Detach transform controls
@@ -389,7 +356,6 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     }
 
     setSelectedObject(null);
-    setContextMenu({ visible: false, x: 0, y: 0, nodeId: null });
   };
 
   // Mouse down handler for selection
@@ -407,50 +373,24 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     );
     raycaster.setFromCamera(mouse, camera);
 
-    // Get all objects for intersection test
-    const objects: THREE.Object3D[] = [];
-    elements.forEach((el) => {
-      const obj = getObject(el.nodeId);
-      if (obj) objects.push(obj);
-    });
-
-    const intersects = raycaster.intersectObjects(objects, true);
+    // Get only pickable Mesh children (skip edge overlays / helpers)
+    const meshes = collectPickableMeshes(elements, getObject);
+    const intersects = raycaster.intersectObjects(meshes, false);
 
     if (intersects.length > 0) {
       const pickedObject = intersects[0].object;
 
-      // Find which element was clicked
+      // Find which element was clicked by walking up the parent chain
       for (const el of elements) {
         const obj = getObject(el.nodeId);
-        if (
-          obj === pickedObject ||
-          (pickedObject.parent && obj === pickedObject.parent)
-        ) {
+        if (obj && isDescendantOf(pickedObject, obj)) {
+          // Reset old selection visuals if selecting a different element
+          if (selectedObjectRef.current && selectedObjectRef.current !== el.nodeId) {
+            resetObjectVisuals(selectedObjectRef.current);
+          }
+
           setSelectedObject(el.nodeId);
-
-          // Update context menu
-          const boundingBox = new THREE.Box3().setFromObject(obj);
-          const topRightCorner = new THREE.Vector3(
-            boundingBox.max.x,
-            boundingBox.max.y,
-            boundingBox.max.z
-          );
-
-          const tempV = topRightCorner.clone();
-          tempV.project(camera);
-
-          const rect = renderer.domElement.getBoundingClientRect();
-          const x = (tempV.x * 0.5 + 0.5) * rect.width + rect.left;
-          const y = (1 - (tempV.y * 0.5 + 0.5)) * rect.height + rect.top;
-
-          setContextMenu({
-            visible: true,
-            x: x + 10,
-            y: y - 10,
-            nodeId: el.nodeId,
-          });
-
-          // Create wireframe helpers
+          applySelectionColor(el.nodeId);
           updateWireframeHelpers(el.nodeId);
 
           break;
@@ -473,12 +413,11 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
 
   // Return state and handlers
   return [
-    { selectedObject, contextMenu },
+    { selectedObject },
     {
       handleMouseDown,
       handleMouseMove,
       handleMouseUp,
-      updateContextMenuPosition,
       clearSelection,
     },
   ];
