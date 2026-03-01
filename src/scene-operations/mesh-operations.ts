@@ -2,7 +2,7 @@
 import * as THREE from "three";
 import { Brep, CompoundBrep, Face } from "../geometry";
 import { createGeometryFromBRep } from "../convertBRepToGeometry";
-import { BODY } from "../theme";
+import { BODY, SWEEP } from "../theme";
 
 export function createMeshFromBrep(brep: Brep): THREE.Group {
   const group = new THREE.Group();
@@ -78,6 +78,44 @@ export function createMeshFromGeometry(
     edgeLines.userData.isEdgeOverlay = true;
     group.add(edgeLines);
   }
+
+  return group;
+}
+
+/**
+ * Create a Three.js Group for a path element (open wire with no faces).
+ * Renders as a line with point markers.
+ */
+export function createMeshFromPath(
+  points: { x: number; y: number; z: number }[],
+): THREE.Group {
+  const group = new THREE.Group();
+
+  if (points.length < 2) return group;
+
+  // Create line geometry from path points
+  const linePoints = points.map(p => new THREE.Vector3(p.x, p.y, p.z));
+  const lineGeometry = new THREE.BufferGeometry().setFromPoints(linePoints);
+  const lineMaterial = new THREE.LineBasicMaterial({
+    color: SWEEP.pathPreview,
+    linewidth: 2,
+  });
+  const line = new THREE.Line(lineGeometry, lineMaterial);
+  line.userData.isPathLine = true;
+  group.add(line);
+
+  // Create point markers at each vertex
+  const pointGroup = new THREE.Group();
+  pointGroup.userData.isHelper = true;
+  const sphereGeometry = new THREE.SphereGeometry(0.06, 8, 8);
+  const sphereMaterial = new THREE.MeshBasicMaterial({ color: SWEEP.pathPoint });
+
+  for (const pt of points) {
+    const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    sphere.position.set(pt.x, pt.y, pt.z);
+    pointGroup.add(sphere);
+  }
+  group.add(pointGroup);
 
   return group;
 }

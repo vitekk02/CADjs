@@ -7,6 +7,8 @@ import { SceneElement } from "../scene-operations/types";
 export interface ImportResult {
   brep: Brep;
   position: THREE.Vector3;
+  occBrep?: string;
+  edgeGeometry?: THREE.BufferGeometry;
 }
 
 export class ImportExportService {
@@ -33,7 +35,10 @@ export class ImportExportService {
     builder.MakeCompound(compound);
 
     for (const el of elements) {
-      const shape = await this.occService.brepToOCShape(el.brep, el.position);
+      // Use serialized OCC shape if available (preserves analytic geometry)
+      const shape = el.occBrep
+        ? await this.occService.occBrepToOCShape(el.occBrep, el.position)
+        : await this.occService.brepToOCShape(el.brep, el.position);
       builder.Add(compound, shape);
     }
 
@@ -169,8 +174,7 @@ export class ImportExportService {
       throw new Error("STL import: Read failed");
     }
 
-    // STL is a mesh format with no concept of separate objects —
-    // importing as a single element is the correct behavior.
+    // STL is a mesh format — no analytic data to preserve
     const position = this.computeBoundingBoxCenter(oc, shape);
     const brep = await this.occService.ocShapeToBRep(shape, true);
 
@@ -193,25 +197,59 @@ export class ImportExportService {
       const iterator = new oc.TopoDS_Iterator_2(shape, true, true);
       while (iterator.More()) {
         const child = iterator.Value();
-        const position = this.computeBoundingBoxCenter(oc, child);
-        const brep = await this.occService.ocShapeToBRep(child, true);
-        results.push({ brep, position });
+        const result = await this.decomposeChild(oc, child);
+        results.push(result);
         iterator.Next();
       }
       iterator.delete();
 
       if (results.length === 0) {
-        const position = this.computeBoundingBoxCenter(oc, shape);
-        const brep = await this.occService.ocShapeToBRep(shape, true);
-        results.push({ brep, position });
+        const result = await this.decomposeChild(oc, shape);
+        results.push(result);
       }
     } else {
-      const position = this.computeBoundingBoxCenter(oc, shape);
-      const brep = await this.occService.ocShapeToBRep(shape, true);
-      results.push({ brep, position });
+      const result = await this.decomposeChild(oc, shape);
+      results.push(result);
     }
 
     return results;
+  }
+
+  /**
+   * Convert a single OCC shape to ImportResult with occBrep and edgeGeometry.
+   */
+  private async decomposeChild(
+    oc: OpenCascadeInstance,
+    shape: TopoDS_Shape,
+  ): Promise<ImportResult> {
+    const position = this.computeBoundingBoxCenter(oc, shape);
+    const brep = await this.occService.ocShapeToBRep(shape, true);
+
+    // Serialize OCC shape in local space (centered at origin)
+    let occBrep: string | undefined;
+    let edgeGeometry: THREE.BufferGeometry | undefined;
+    try {
+      const trsf = new oc.gp_Trsf_1();
+      const vec = new oc.gp_Vec_4(-position.x, -position.y, -position.z);
+      trsf.SetTranslation_1(vec);
+      vec.delete();
+      const transformer = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
+      trsf.delete();
+      const localShape = transformer.Shape();
+      transformer.delete();
+      occBrep = await this.occService.serializeShape(localShape);
+    } catch {
+      // Serialization is best-effort
+    }
+
+    try {
+      edgeGeometry = await this.occService.shapeToEdgeLineSegments(shape, 0.05);
+      edgeGeometry.translate(-position.x, -position.y, -position.z);
+    } catch {
+      // Edge geometry is optional
+    }
+
+    return { brep, position, occBrep, edgeGeometry };
   }
 
   private computeBoundingBoxCenter(

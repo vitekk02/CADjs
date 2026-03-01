@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
+import { useToast } from "../contexts/ToastContext";
 import { Brep } from "../geometry";
 import { OpenCascadeService } from "../services/OpenCascadeService";
 import { filletBRep, chamferBRep } from "../scene-operations/fillet-operations";
@@ -31,6 +32,7 @@ interface EdgeSegmentData {
 export function useFilletMode() {
   const { elements, getObject, updateElementBrep } = useCadCore();
   const { camera, renderer, scene, forceSceneUpdate } = useCadVisualizer();
+  const { showToast } = useToast();
 
   const [state, setState] = useState<FilletState>({
     selectedElement: null,
@@ -134,13 +136,45 @@ export function useFilletMode() {
 
       try {
         const ocService = OpenCascadeService.getInstance();
-        const shape = await ocService.brepToOCShape(element.brep, element.position);
-        const edgeData = await ocService.getEdgeLineSegmentsPerEdge(shape);
+        // Build OCC shape at world position+rotation — MUST match the operation path
+        // in fillet-operations.ts to guarantee identical edge index ordering
+        // (BRepBuilderAPI_Transform with copyGeom=true can reorder edges)
+        const hasOccBrep = !!element.occBrep;
+        const hasRotation = element.rotation &&
+          (element.rotation.x !== 0 || element.rotation.y !== 0 || element.rotation.z !== 0);
+
+        let shape;
+        if (hasRotation) {
+          // Build at origin, then apply rotation+translation (same as buildWorldShape)
+          shape = hasOccBrep
+            ? await ocService.occBrepToOCShape(element.occBrep!)
+            : await ocService.brepToOCShape(element.brep);
+          const oc = await ocService.getOC();
+          const threeQuat = new THREE.Quaternion().setFromEuler(element.rotation!);
+          const ocQuat = new oc.gp_Quaternion_2(threeQuat.x, threeQuat.y, threeQuat.z, threeQuat.w);
+          const vec = new oc.gp_Vec_4(element.position.x, element.position.y, element.position.z);
+          const trsf = new oc.gp_Trsf_1();
+          trsf.SetRotation_2(ocQuat);
+          trsf.SetTranslationPart(vec);
+          ocQuat.delete();
+          vec.delete();
+          const transformer = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
+          trsf.delete();
+          shape = transformer.Shape();
+          transformer.delete();
+        } else {
+          shape = hasOccBrep
+            ? await ocService.occBrepToOCShape(element.occBrep!, element.position)
+            : await ocService.brepToOCShape(element.brep, element.position);
+        }
+        // Skip redundant ShapeFix when shape comes from deserialized occBrep
+        const edgeData = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.05, hasOccBrep);
 
         edgeSegmentsRef.current = edgeData;
 
         const group = new THREE.Group();
         group.userData.isFilletEdgeOverlay = true;
+        // Edge coordinates are in world space — no group transform needed
 
         for (const edge of edgeData) {
           const geometry = new THREE.BufferGeometry();
@@ -213,6 +247,7 @@ export function useFilletMode() {
       const edgeData = edgeSegmentsRef.current.find((e) => e.edgeIndex === firstIdx);
       if (!edgeData) return;
 
+      // Edge coordinates are in world space (overlay built at world position+rotation)
       const worldPos = new THREE.Vector3(
         edgeData.midpoint.x,
         edgeData.midpoint.y,
@@ -252,6 +287,8 @@ export function useFilletMode() {
           element.position,
           state.selectedEdgeIndices,
           radius,
+          element.occBrep,
+          element.rotation,
         );
 
         const newPosition = new THREE.Vector3(
@@ -263,7 +300,7 @@ export function useFilletMode() {
         if (updateElementBrep) {
           updateElementBrep(state.selectedElement, result.brep, newPosition, {
             type: state.operationType,
-          }, result.edgeGeometry);
+          }, result.edgeGeometry, result.occBrep);
         }
 
         // Reset state after successful apply
@@ -284,6 +321,7 @@ export function useFilletMode() {
         forceSceneUpdate();
       } catch (error) {
         console.error(`[useFilletMode] ${state.operationType} failed:`, error);
+        showToast(`${state.operationType === "fillet" ? "Fillet" : "Chamfer"} failed`, "error");
         restoreOriginalMesh();
         setState((prev) => ({ ...prev, isApplying: false }));
       }

@@ -142,6 +142,7 @@ export interface ExtrusionResult {
   /** Position offset to apply to element.position to account for new center */
   positionOffset: { x: number; y: number; z: number };
   edgeGeometry?: THREE.BufferGeometry;
+  occBrep?: string;
 }
 
 /**
@@ -153,36 +154,43 @@ export interface ExtrusionResult {
  * @param brep - The flat BRep to extrude (centered, flat along any axis)
  * @param extrusionDepth - The depth to extrude
  * @param direction - Direction: 1 for positive, -1 for negative along the flat normal
+ * @param normalVec - Optional explicit normal vector (e.g. from sketch plane). When provided, skips vertex-range detection.
  * @returns Promise resolving to the extruded BRep and position offset
  */
 export async function extrudeBRep(
   brep: Brep,
   extrusionDepth: number,
-  direction: number
+  direction: number,
+  normalVec?: { x: number; y: number; z: number }
 ): Promise<ExtrusionResult> {
   // Only extrude if we have faces and vertices
   if (!brep.faces.length || !brep.vertices.length) {
     return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
   }
 
-  // Detect which axis the shape is flat along
-  const xs = brep.vertices.map((v) => v.x);
-  const ys = brep.vertices.map((v) => v.y);
-  const zs = brep.vertices.map((v) => v.z);
-  const rangeX = Math.max(...xs) - Math.min(...xs);
-  const rangeY = Math.max(...ys) - Math.min(...ys);
-  const rangeZ = Math.max(...zs) - Math.min(...zs);
-
   let normal: { x: number; y: number; z: number };
-  if (rangeX < 0.01) {
-    normal = { x: 1, y: 0, z: 0 };
-  } else if (rangeY < 0.01) {
-    normal = { x: 0, y: 1, z: 0 };
-  } else if (rangeZ < 0.01) {
-    normal = { x: 0, y: 0, z: 1 };
+  if (normalVec) {
+    // Use caller-supplied normal directly (e.g. from sketch plane)
+    normal = normalVec;
   } else {
-    console.warn("Attempted to extrude a non-flat BRep");
-    return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
+    // Detect which axis the shape is flat along from vertex ranges
+    const xs = brep.vertices.map((v) => v.x);
+    const ys = brep.vertices.map((v) => v.y);
+    const zs = brep.vertices.map((v) => v.z);
+    const rangeX = Math.max(...xs) - Math.min(...xs);
+    const rangeY = Math.max(...ys) - Math.min(...ys);
+    const rangeZ = Math.max(...zs) - Math.min(...zs);
+
+    if (rangeX < 0.01) {
+      normal = { x: 1, y: 0, z: 0 };
+    } else if (rangeY < 0.01) {
+      normal = { x: 0, y: 1, z: 0 };
+    } else if (rangeZ < 0.01) {
+      normal = { x: 0, y: 0, z: 1 };
+    } else {
+      console.warn("Attempted to extrude a non-flat BRep");
+      return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
+    }
   }
 
   try {
@@ -226,7 +234,29 @@ export async function extrudeBRep(
       -normal.z * halfOffset,
     );
 
-    return { brep: centeredBrep, positionOffset, edgeGeometry };
+    // Serialize the extruded shape in local space for lossless round-tripping
+    let occBrep: string | undefined;
+    try {
+      // extrudedShape is at origin (profile was at origin), translate to centered local space
+      const oc = await ocService.getOC();
+      const trsf = new oc.gp_Trsf_1();
+      const vec = new oc.gp_Vec_4(
+        -normal.x * halfOffset,
+        -normal.y * halfOffset,
+        -normal.z * halfOffset,
+      );
+      trsf.SetTranslation_1(vec);
+      vec.delete();
+      const transformer = new oc.BRepBuilderAPI_Transform_2(extrudedShape, trsf, true);
+      trsf.delete();
+      const localShape = transformer.Shape();
+      transformer.delete();
+      occBrep = await ocService.serializeShape(localShape);
+    } catch {
+      // Serialization is best-effort — fall back to tessellated BRep
+    }
+
+    return { brep: centeredBrep, positionOffset, edgeGeometry, occBrep };
   } catch (error) {
     console.error("OpenCascade extrusion failed:", error);
     // Return original BRep on failure

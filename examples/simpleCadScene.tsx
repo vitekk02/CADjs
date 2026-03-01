@@ -10,13 +10,19 @@ import { useIntersectionMode } from "../src/hooks/useIntersectionMode";
 import { useSketchMode } from "../src/hooks/useSketchMode";
 import { useExtrudeMode } from "../src/hooks/useExtrudeMode";
 import { useFilletMode } from "../src/hooks/useFilletMode";
+import { useSweepMode } from "../src/hooks/useSweepMode";
+import { useLoftMode } from "../src/hooks/useLoftMode";
+import { useRevolveMode } from "../src/hooks/useRevolveMode";
+import { useCameraAnimation, NamedView } from "../src/hooks/useCameraAnimation";
+import ViewCube from "../src/components/ViewCube";
 import SketchToolbar from "../src/navbar/SketchToolbar";
 import DimensionInput from "../src/components/DimensionInput";
 import SketchContextMenu from "../src/components/SketchContextMenu";
 import BrowserPanel from "../src/components/FeatureTree";
 import { buildBrowserSections } from "../src/scene-operations/browser-sections";
-import { SKETCH_PLANE } from "../src/theme";
+import { SKETCH_PLANE, HELPERS } from "../src/theme";
 import FileMenu from "../src/components/FileMenu";
+import { useToast } from "../src/contexts/ToastContext";
 
 interface SimpleCadSceneProps {
   initialMode?: SceneMode;
@@ -64,6 +70,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     canUndoSketch,
     canRedoSketch,
     isOperationPending,
+    duplicateSelectedElements,
   } = useCadCore();
   const {
     createEdgeHelpers,
@@ -83,12 +90,15 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     toggleGroundPlane,
     cursorPosition,
     updateCursorPosition,
+    controls,
   } = useCadVisualizer();
+  const { showToast } = useToast();
 
   const [booleanMenuOpen, setBooleanMenuOpen] = useState(false);
   const booleanMenuRef = useRef<HTMLDivElement>(null);
   const [undoDropdownOpen, setUndoDropdownOpen] = useState(false);
   const [redoDropdownOpen, setRedoDropdownOpen] = useState(false);
+  const [planeOffset, setPlaneOffset] = useState(0);
   const undoDropdownRef = useRef<HTMLDivElement>(null);
   const redoDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -129,6 +139,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     selectPlaneAndStartSketch,
     handlePlaneSelectionMouseMove,
     handlePlaneSelectionClick,
+    setPlaneOffset: setSketchPlaneOffset,
     constraintFeedback,
   } = useSketchMode();
 
@@ -145,7 +156,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleKeyDown: handleExtrudeKeyDown,
     handleDimensionSubmit: handleExtrudeDimensionSubmit,
     handleDimensionCancel: handleExtrudeDimensionCancel,
+    operationType: extrudeOpType,
+    toggleOperationType: toggleExtrudeOpType,
     cleanup: cleanupExtrude,
+    dimSceneBodies: dimExtrudeBodies,
   } = useExtrudeMode();
 
   const {
@@ -165,6 +179,55 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     toggleOperationType: toggleFilletOpType,
     cleanup: cleanupFillet,
   } = useFilletMode();
+
+  const {
+    phase: sweepPhase,
+    selectedProfile: sweepSelectedProfile,
+    selectedPath: sweepSelectedPath,
+    isApplying: sweepIsApplying,
+    handleMouseDown: handleSweepMouseDown,
+    handleMouseMove: handleSweepMouseMove,
+    handleKeyDown: handleSweepKeyDown,
+    performSweep,
+    canSweep,
+    cleanup: cleanupSweep,
+  } = useSweepMode();
+
+  const {
+    selectedProfiles: loftSelectedProfiles,
+    isApplying: loftIsApplying,
+    handleMouseDown: handleLoftMouseDown,
+    handleMouseMove: handleLoftMouseMove,
+    handleKeyDown: handleLoftKeyDown,
+    performLoft,
+    canLoft,
+    cleanup: cleanupLoft,
+  } = useLoftMode();
+
+  const {
+    phase: revolvePhase,
+    isApplying: revolveIsApplying,
+    angle: revolveAngle,
+    showDimensionInput: revolveShowDimInput,
+    dimensionInputPosition: revolveDimPos,
+    setAngle: setRevolveAngle,
+    handleMouseDown: handleRevolveMouseDown,
+    handleMouseMove: handleRevolveMouseMove,
+    handleKeyDown: handleRevolveKeyDown,
+    performRevolve,
+    cleanup: cleanupRevolve,
+  } = useRevolveMode();
+
+  // Camera animation (named views + fit all)
+  const { animateToView, fitAll } = useCameraAnimation(camera, controls);
+
+  const handleViewCubeClick = (viewName: NamedView) => {
+    animateToView(viewName);
+  };
+
+  const handleFitAll = () => {
+    fitAll(elements, getObject);
+  };
 
   // Dimension input state
   const [dimensionInputVisible, setDimensionInputVisible] = useState(false);
@@ -233,17 +296,55 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
 
         if (obj.userData.hasHelpers) return;
 
-        const edgeHelper = createEdgeHelpers(element);
-        const vertexHelper = createVertexHelpers(element);
-
-        if (edgeHelper) {
+        if (element.edgeGeometry) {
+          // Clean OCC-based edge helper
+          const edgeMaterial = new THREE.LineBasicMaterial({
+            color: HELPERS.edgeColor,
+            linewidth: 2,
+            depthTest: false,
+          });
+          const edgeHelper = new THREE.LineSegments(element.edgeGeometry.clone(), edgeMaterial);
+          edgeHelper.renderOrder = 999;
+          edgeHelper.userData.isHelper = true;
+          edgeHelper.userData.helperType = "edge";
           edgeHelper.visible = false;
           obj.add(edgeHelper);
-        }
 
-        if (vertexHelper) {
-          vertexHelper.visible = false;
-          obj.add(vertexHelper);
+          // Clean vertex helper from edge endpoints
+          const vertexGroup = new THREE.Group();
+          vertexGroup.userData.isHelper = true;
+          vertexGroup.userData.helperType = "vertex";
+          const posAttr = element.edgeGeometry.getAttribute("position");
+          const seen = new Set<string>();
+          const sphereGeo = new THREE.SphereGeometry(0.05, 16, 16);
+          const sphereMat = new THREE.MeshBasicMaterial({ color: HELPERS.vertexColor, depthTest: false });
+          for (let i = 0; i < posAttr.count; i++) {
+            const x = posAttr.getX(i), y = posAttr.getY(i), z = posAttr.getZ(i);
+            const key = `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+              sphere.position.set(x, y, z);
+              sphere.renderOrder = 1000;
+              vertexGroup.add(sphere);
+            }
+          }
+          vertexGroup.visible = false;
+          obj.add(vertexGroup);
+        } else {
+          // Fallback: tessellated BRep helpers (for elements without OCC geometry)
+          const edgeHelper = createEdgeHelpers(element);
+          const vertexHelper = createVertexHelpers(element);
+
+          if (edgeHelper) {
+            edgeHelper.visible = false;
+            obj.add(edgeHelper);
+          }
+
+          if (vertexHelper) {
+            vertexHelper.visible = false;
+            obj.add(vertexHelper);
+          }
         }
 
         obj.userData.hasHelpers = true;
@@ -291,6 +392,12 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     };
   }, [mode, handleExtrudeKeyDown]);
 
+  // Dim 3D bodies when entering extrude mode (re-dim when elements change, e.g. new profile added)
+  useEffect(() => {
+    if (mode !== "extrude") return;
+    dimExtrudeBodies();
+  }, [mode, elements, dimExtrudeBodies]);
+
   // Global keyboard listener for fillet mode
   useEffect(() => {
     if (mode !== "fillet") return;
@@ -301,6 +408,39 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       window.removeEventListener("keydown", handleFilletKeyDown);
     };
   }, [mode, handleFilletKeyDown]);
+
+  // Global keyboard listener for sweep mode
+  useEffect(() => {
+    if (mode !== "sweep") return;
+
+    window.addEventListener("keydown", handleSweepKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleSweepKeyDown);
+    };
+  }, [mode, handleSweepKeyDown]);
+
+  // Global keyboard listener for loft mode
+  useEffect(() => {
+    if (mode !== "loft") return;
+
+    window.addEventListener("keydown", handleLoftKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleLoftKeyDown);
+    };
+  }, [mode, handleLoftKeyDown]);
+
+  // Global keyboard listener for revolve mode
+  useEffect(() => {
+    if (mode !== "revolve") return;
+
+    window.addEventListener("keydown", handleRevolveKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleRevolveKeyDown);
+    };
+  }, [mode, handleRevolveKeyDown]);
 
   // Global keyboard listener for undo/redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
   // In sketch mode with active sketch, routes to sketch undo/redo exclusively
@@ -341,6 +481,67 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       window.removeEventListener("keydown", handleUndoRedoKeys);
     };
   }, [mode, activeSketch, undo, redo, undoSketch, redoSketch]);
+
+  // Global keyboard listener for Ctrl+D (duplicate)
+  useEffect(() => {
+    const handleDuplicate = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if ((event.ctrlKey || event.metaKey) && event.key === "d") {
+        event.preventDefault();
+        if (mode === "sketch" && activeSketch) return;
+        if (isOperationPending) return;
+        if (selectedElements.length === 0) return;
+        duplicateSelectedElements();
+      }
+    };
+    window.addEventListener("keydown", handleDuplicate);
+    return () => window.removeEventListener("keydown", handleDuplicate);
+  }, [mode, activeSketch, isOperationPending, selectedElements, duplicateSelectedElements]);
+
+  // View shortcut keys (numpad + number keys)
+  useEffect(() => {
+    const handleViewKeys = (event: KeyboardEvent) => {
+      // Skip if in input field
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      // Skip if in sketch mode or fillet mode (R and F keys conflict)
+      if (mode === "sketch" || mode === "fillet") return;
+
+      switch (event.key) {
+        case "1":
+        case "Numpad1":
+          animateToView("front");
+          event.preventDefault();
+          break;
+        case "3":
+        case "Numpad3":
+          animateToView("right");
+          event.preventDefault();
+          break;
+        case "7":
+        case "Numpad7":
+          animateToView("top");
+          event.preventDefault();
+          break;
+        case "0":
+        case "Numpad0":
+          animateToView("isometric");
+          event.preventDefault();
+          break;
+        case "f":
+          // F = Fit All, only in move mode to avoid conflict with fillet's F key
+          if (mode === "move") {
+            handleFitAll();
+            event.preventDefault();
+          }
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", handleViewKeys);
+    return () => {
+      window.removeEventListener("keydown", handleViewKeys);
+    };
+  }, [mode, animateToView, handleFitAll]);
 
   // Prevent default browser context menu in sketch mode
   useEffect(() => {
@@ -589,6 +790,15 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.addEventListener("mousedown", handleFilletMouseDown);
       renderer.domElement.addEventListener("mousemove", handleFilletMouseMove);
       renderer.domElement.addEventListener("mouseup", handleFilletMouseUp);
+    } else if (mode === "sweep") {
+      renderer.domElement.addEventListener("mousedown", handleSweepMouseDown);
+      renderer.domElement.addEventListener("mousemove", handleSweepMouseMove);
+    } else if (mode === "loft") {
+      renderer.domElement.addEventListener("mousedown", handleLoftMouseDown);
+      renderer.domElement.addEventListener("mousemove", handleLoftMouseMove);
+    } else if (mode === "revolve") {
+      renderer.domElement.addEventListener("mousedown", handleRevolveMouseDown);
+      renderer.domElement.addEventListener("mousemove", handleRevolveMouseMove);
     }
 
     return () => {
@@ -628,6 +838,12 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         handleFilletMouseMove,
       );
       renderer.domElement.removeEventListener("mouseup", handleFilletMouseUp);
+      renderer.domElement.removeEventListener("mousedown", handleSweepMouseDown);
+      renderer.domElement.removeEventListener("mousemove", handleSweepMouseMove);
+      renderer.domElement.removeEventListener("mousedown", handleLoftMouseDown);
+      renderer.domElement.removeEventListener("mousemove", handleLoftMouseMove);
+      renderer.domElement.removeEventListener("mousedown", handleRevolveMouseDown);
+      renderer.domElement.removeEventListener("mousemove", handleRevolveMouseMove);
     };
   }, [
     mode,
@@ -649,6 +865,12 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleFilletMouseDown,
     handleFilletMouseMove,
     handleFilletMouseUp,
+    handleSweepMouseDown,
+    handleSweepMouseMove,
+    handleLoftMouseDown,
+    handleLoftMouseMove,
+    handleRevolveMouseDown,
+    handleRevolveMouseMove,
   ]);
 
   // Plane selection event listeners
@@ -820,11 +1042,15 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     });
   }, [originVisibility]);
 
-  // Hide persistent origin helpers while sketch plane selection is active
+  // Hide persistent origin helpers while sketch plane selection is active; reset offset input
   useEffect(() => {
     if (!originGroupRef.current) return;
     originGroupRef.current.visible = !isSelectingPlane;
-  }, [isSelectingPlane]);
+    if (isSelectingPlane) {
+      setPlaneOffset(0);
+      setSketchPlaneOffset(0);
+    }
+  }, [isSelectingPlane, setSketchPlaneOffset]);
 
   // Helper to get mode display label
   const getModeLabel = (): string => {
@@ -843,6 +1069,12 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         return "Difference";
       case "intersection":
         return "Intersection";
+      case "sweep":
+        return "Sweep";
+      case "loft":
+        return "Loft";
+      case "revolve":
+        return "Revolve";
       default:
         return mode.charAt(0).toUpperCase() + mode.slice(1);
     }
@@ -861,7 +1093,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     (mode === "sketch" && !isSelectingPlane && activeSketch) ||
     isBooleanMode ||
     mode === "extrude" ||
-    mode === "fillet";
+    mode === "fillet" ||
+    mode === "sweep" ||
+    mode === "loft" ||
+    mode === "revolve";
 
   return (
     <div className="w-full h-screen flex overflow-hidden">
@@ -1034,6 +1269,60 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             >
               Fillet (Chamfer)
             </button>
+            <button
+              className={`flex-none px-3 py-1.5 text-sm rounded ${
+                isLocked
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                  : mode === "sweep"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+              }`}
+              disabled={isLocked}
+              onClick={() => {
+                if (mode !== "sweep") {
+                  cleanupSweep();
+                }
+                setMode("sweep");
+              }}
+            >
+              Sweep
+            </button>
+            <button
+              className={`flex-none px-3 py-1.5 text-sm rounded ${
+                isLocked
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                  : mode === "loft"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+              }`}
+              disabled={isLocked}
+              onClick={() => {
+                if (mode !== "loft") {
+                  cleanupLoft();
+                }
+                setMode("loft");
+              }}
+            >
+              Loft
+            </button>
+            <button
+              className={`flex-none px-3 py-1.5 text-sm rounded ${
+                isLocked
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                  : mode === "revolve"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+              }`}
+              disabled={isLocked}
+              onClick={() => {
+                if (mode !== "revolve") {
+                  cleanupRevolve();
+                }
+                setMode("revolve");
+              }}
+            >
+              Revolve
+            </button>
 
             {/* Separator */}
             <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
@@ -1059,6 +1348,27 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                   strokeLinejoin="round"
                   strokeWidth={1.5}
                   d="M3 3h18v18H3V3zM3 9h18M3 15h18M9 3v18M15 3v18"
+                />
+              </svg>
+            </button>
+
+            {/* Fit All */}
+            <button
+              className="flex-none px-2 py-1.5 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+              onClick={handleFitAll}
+              title="Fit All (F)"
+            >
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.5}
+                  d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4M8 8h8v8H8z"
                 />
               </svg>
             </button>
@@ -1264,7 +1574,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                   activeSketch={activeSketch}
                   sketchSubMode={sketchSubMode}
                   onSubModeChange={setSketchSubMode}
-                  onFinishSketch={finishSketch}
+                  onFinishSketch={async () => {
+                    const success = await finishSketch();
+                    if (!success) showToast("Failed to finish sketch", "error");
+                  }}
                   onCancelSketch={cancelSketch}
                   onSolveSketch={solveSketch}
                   selectedPrimitives={selectedPrimitives}
@@ -1326,11 +1639,32 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               {/* Extrude mode controls */}
               {mode === "extrude" && (
                 <div className="flex items-center gap-3">
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      extrudeOpType === "join"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={toggleExtrudeOpType}
+                  >
+                    Join
+                  </button>
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      extrudeOpType === "cut"
+                        ? "bg-orange-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={toggleExtrudeOpType}
+                  >
+                    Cut
+                  </button>
+                  <div className="w-px h-4 bg-gray-600" />
                   <span className="text-sm text-gray-400">
                     {extrudeSelectedElement
                       ? isExtruding
                         ? `Depth: ${extrusionDepth.toFixed(2)}${extrudeDirection ? ` (${extrudeDirection})` : ""}`
-                        : "Drag arrow to extrude"
+                        : extrudeOpType === "cut" ? "Drag arrow to cut" : "Drag arrow to extrude"
                       : "Select a flat shape"}
                   </span>
                   <span className="text-xs text-gray-500">
@@ -1377,6 +1711,93 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                   </span>
                 </div>
               )}
+
+              {/* Sweep mode controls */}
+              {mode === "sweep" && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">
+                    {sweepIsApplying
+                      ? "Applying sweep..."
+                      : sweepPhase === "SELECT_PROFILE"
+                        ? "Select a flat profile"
+                        : sweepPhase === "SELECT_PATH"
+                          ? "Select a path"
+                          : "Ready to sweep"}
+                  </span>
+                  {canSweep && (
+                    <button
+                      className="flex-none px-3 py-1 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded"
+                      onClick={performSweep}
+                    >
+                      Sweep
+                    </button>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    Enter: apply | Esc: cancel
+                  </span>
+                </div>
+              )}
+
+              {/* Loft mode controls */}
+              {mode === "loft" && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">
+                    {loftIsApplying
+                      ? "Applying loft..."
+                      : loftSelectedProfiles.length < 2
+                        ? `Select 2+ flat profiles (${loftSelectedProfiles.length} selected)`
+                        : `${loftSelectedProfiles.length} profiles selected`}
+                  </span>
+                  {canLoft && (
+                    <button
+                      className="flex-none px-3 py-1 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded"
+                      onClick={performLoft}
+                    >
+                      Loft ({loftSelectedProfiles.length})
+                    </button>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    Enter: apply | Esc: cancel
+                  </span>
+                </div>
+              )}
+
+              {/* Revolve mode controls */}
+              {mode === "revolve" && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">
+                    {revolveIsApplying
+                      ? "Applying revolve..."
+                      : revolvePhase === "SELECT_PROFILE"
+                        ? "Select a flat profile"
+                        : revolvePhase === "SELECT_AXIS"
+                          ? "Click an edge to define the axis"
+                          : "Enter angle and confirm"}
+                  </span>
+                  {revolvePhase === "SET_ANGLE" && (
+                    <>
+                      <input
+                        type="number"
+                        className="w-20 px-2 py-1 text-sm bg-gray-700 text-white rounded border border-gray-600"
+                        value={revolveAngle}
+                        onChange={(e) => setRevolveAngle(parseFloat(e.target.value) || 360)}
+                        min={1}
+                        max={360}
+                      />
+                      <span className="text-xs text-gray-500">deg</span>
+                      <button
+                        className="flex-none px-3 py-1 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded"
+                        onClick={() => performRevolve(revolveAngle)}
+                      >
+                        Revolve
+                      </button>
+                    </>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    Enter: apply | Esc: cancel
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1384,6 +1805,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         {/* Canvas area */}
         <div className="flex-1 relative min-h-0 overflow-hidden">
           <div ref={mountRef} className="absolute inset-0" />
+
+          {/* ViewCube */}
+          <ViewCube camera={camera} onViewChange={handleViewCubeClick} />
 
           {/* Constraint feedback toast */}
           {constraintFeedback && (
@@ -1456,7 +1880,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                     Select a sketch plane
                   </p>
                   <p className="text-xs text-gray-400 mb-2">
-                    Click on a colored plane in the scene
+                    Click a plane, use buttons, or click a body face
                   </p>
                   {hoveredPlane && (
                     <p
@@ -1467,32 +1891,50 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                             ? "#4488ff"
                             : hoveredPlane === "XZ"
                               ? "#44ff44"
-                              : "#ff4444",
+                              : hoveredPlane === "face"
+                                ? "#2e75b6"
+                                : "#ff4444",
                       }}
                     >
                       {hoveredPlane === "XY"
                         ? "XY Plane (Front)"
                         : hoveredPlane === "XZ"
                           ? "XZ Plane (Top)"
-                          : "YZ Plane (Side)"}
+                          : hoveredPlane === "face"
+                            ? "Body Face"
+                            : "YZ Plane (Side)"}
                     </p>
                   )}
-                  <div className="mt-3 flex justify-center gap-2 pointer-events-auto">
+                  <div className="mt-2 flex items-center justify-center gap-2 pointer-events-auto">
+                    <label className="text-xs text-gray-400">Offset:</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={planeOffset}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value) || 0;
+                        setPlaneOffset(v);
+                        setSketchPlaneOffset(v);
+                      }}
+                      className="w-16 px-1 py-0.5 text-xs rounded bg-gray-700 border border-gray-600 text-white text-center"
+                    />
+                  </div>
+                  <div className="mt-2 flex justify-center gap-2 pointer-events-auto">
                     <button
                       className="px-3 py-1 text-xs rounded bg-blue-600 hover:bg-blue-500"
-                      onClick={() => selectPlaneAndStartSketch("XY")}
+                      onClick={() => selectPlaneAndStartSketch("XY", planeOffset || undefined)}
                     >
                       XY
                     </button>
                     <button
                       className="px-3 py-1 text-xs rounded bg-green-600 hover:bg-green-500"
-                      onClick={() => selectPlaneAndStartSketch("XZ")}
+                      onClick={() => selectPlaneAndStartSketch("XZ", planeOffset || undefined)}
                     >
                       XZ
                     </button>
                     <button
                       className="px-3 py-1 text-xs rounded bg-red-600 hover:bg-red-500"
-                      onClick={() => selectPlaneAndStartSketch("YZ")}
+                      onClick={() => selectPlaneAndStartSketch("YZ", planeOffset || undefined)}
                     >
                       YZ
                     </button>

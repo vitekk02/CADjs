@@ -1,7 +1,7 @@
 import * as THREE from "three";
 
 // Sketch plane types
-export type SketchPlaneType = "XY" | "XZ" | "YZ";
+export type SketchPlaneType = "XY" | "XZ" | "YZ" | "offset" | "face";
 
 export interface SketchPlane {
   type: SketchPlaneType;
@@ -9,6 +9,8 @@ export interface SketchPlane {
   normal: THREE.Vector3;
   xAxis: THREE.Vector3;
   yAxis: THREE.Vector3;
+  offset?: number;
+  sourceElementId?: string;
 }
 
 // Primitive types for planegcs compatibility
@@ -160,7 +162,41 @@ export function createSketchPlane(
         xAxis: new THREE.Vector3(0, 1, 0),
         yAxis: new THREE.Vector3(0, 0, 1),
       };
+    default:
+      // For "offset" and "face" types, default to XY plane
+      return {
+        type,
+        origin: origin.clone(),
+        normal: new THREE.Vector3(0, 0, 1),
+        xAxis: new THREE.Vector3(1, 0, 0),
+        yAxis: new THREE.Vector3(0, 1, 0),
+      };
   }
+}
+
+// Create a sketch plane from an arbitrary normal and origin
+export function createSketchPlaneFromNormal(
+  normal: THREE.Vector3,
+  origin: THREE.Vector3,
+  sourceElementId?: string,
+): SketchPlane {
+  const n = normal.clone().normalize();
+  // Compute xAxis using "least-aligned world axis" technique
+  const worldY = new THREE.Vector3(0, 1, 0);
+  const worldX = new THREE.Vector3(1, 0, 0);
+  // If normal is nearly parallel to Y, use X as reference
+  const ref = Math.abs(n.dot(worldY)) > 0.9 ? worldX : worldY;
+  const xAxis = new THREE.Vector3().crossVectors(ref, n).normalize();
+  const yAxis = new THREE.Vector3().crossVectors(n, xAxis).normalize();
+
+  return {
+    type: sourceElementId ? "face" : "offset",
+    origin: origin.clone(),
+    normal: n,
+    xAxis,
+    yAxis,
+    sourceElementId,
+  };
 }
 
 // Type guards
@@ -223,7 +259,7 @@ export interface SketchConversionResult {
 /**
  * Operation types for feature tree nodes.
  */
-export type OperationType = "union" | "difference" | "intersection" | "extrude" | "fillet" | "chamfer";
+export type OperationType = "union" | "difference" | "intersection" | "extrude" | "fillet" | "chamfer" | "sweep" | "loft" | "revolve";
 
 /**
  * Feature tree node types for hierarchical display.

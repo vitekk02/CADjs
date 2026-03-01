@@ -763,16 +763,18 @@ export class OpenCascadeService {
       false,
     );
 
+    // Build indexed edge map and filter to sharp edges only
+    const edgeMap = new oc.TopTools_IndexedMapOfShape_1();
+    oc.TopExp.MapShapes_1(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, edgeMap);
+    const count = edgeMap.Size();
+    const sharpIndices = await this.getSharpEdgeIndices(shape, edgeMap, count);
+
     const positions: number[] = [];
 
-    const edgeExplorer = new oc.TopExp_Explorer_2(
-      shape,
-      oc.TopAbs_ShapeEnum.TopAbs_EDGE,
-      oc.TopAbs_ShapeEnum.TopAbs_SHAPE,
-    );
+    for (let i = 1; i <= count; i++) {
+      if (!sharpIndices.has(i)) continue;
 
-    while (edgeExplorer.More()) {
-      const edge = oc.TopoDS.Edge_1(edgeExplorer.Current());
+      const edge = oc.TopoDS.Edge_1(edgeMap.FindKey(i));
       const curve = new oc.BRepAdaptor_Curve_2(edge);
 
       const curveType = curve.GetType();
@@ -797,9 +799,9 @@ export class OpenCascadeService {
 
         if (gcpu.IsDone()) {
           const nbPoints = gcpu.NbPoints();
-          for (let i = 1; i < nbPoints; i++) {
-            const p1 = gcpu.Value(i);
-            const p2 = gcpu.Value(i + 1);
+          for (let j = 1; j < nbPoints; j++) {
+            const p1 = gcpu.Value(j);
+            const p2 = gcpu.Value(j + 1);
             positions.push(p1.X(), p1.Y(), p1.Z());
             positions.push(p2.X(), p2.Y(), p2.Z());
           }
@@ -807,9 +809,9 @@ export class OpenCascadeService {
           // Fallback: uniform parameter sampling
           const numSegments = 32;
           const step = (last - first) / numSegments;
-          for (let i = 0; i < numSegments; i++) {
-            const t1 = first + i * step;
-            const t2 = first + (i + 1) * step;
+          for (let j = 0; j < numSegments; j++) {
+            const t1 = first + j * step;
+            const t2 = first + (j + 1) * step;
             const p1 = curve.Value(t1);
             const p2 = curve.Value(t2);
             positions.push(p1.X(), p1.Y(), p1.Z());
@@ -817,8 +819,6 @@ export class OpenCascadeService {
           }
         }
       }
-
-      edgeExplorer.Next();
     }
 
     const geometry = new THREE.BufferGeometry();
@@ -1778,6 +1778,59 @@ export class OpenCascadeService {
   }
 
   /**
+   * Filter edge indices to only sharp edges (skip degenerate, seam, smooth/tangent).
+   * Uses edge→face adjacency + BRep_Tool.Continuity to detect fillet blend edges.
+   * Returns a Set of 1-based edge indices that are sharp.
+   */
+  private async getSharpEdgeIndices(
+    shape: TopoDS_Shape,
+    edgeMap: any,
+    count: number,
+  ): Promise<Set<number>> {
+    const oc = await this.getOC();
+    const sharpIndices = new Set<number>();
+
+    // Build edge → face adjacency map
+    const edgeFaceMap = new oc.TopTools_IndexedDataMapOfShapeListOfShape_1();
+    oc.TopExp.MapShapesAndAncestors(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_EDGE,
+      oc.TopAbs_ShapeEnum.TopAbs_FACE,
+      edgeFaceMap,
+    );
+
+    for (let i = 1; i <= count; i++) {
+      const edgeShape = edgeMap.FindKey(i);
+      const edge = oc.TopoDS.Edge_1(edgeShape);
+
+      // Skip degenerate edges (zero-length point edges)
+      if (oc.BRep_Tool.Degenerated(edge)) continue;
+
+      // Find this edge in the adjacency map
+      const adjIdx = edgeFaceMap.FindIndex(edgeShape);
+      if (adjIdx === 0) continue;
+
+      const faceList = edgeFaceMap.FindFromIndex(adjIdx);
+
+      // Skip seam/boundary edges (need exactly 2 adjacent faces)
+      if (faceList.Size() !== 2) continue;
+
+      // Get the two adjacent faces
+      const face1 = oc.TopoDS.Face_1(faceList.First_1());
+      const face2 = oc.TopoDS.Face_1(faceList.Last_1());
+
+      // Check continuity — smooth edges (G1/C1+) are fillet transitions
+      const continuity = oc.BRep_Tool.Continuity_1(edge, face1, face2);
+      if (continuity !== oc.GeomAbs_Shape.GeomAbs_C0) continue;
+
+      sharpIndices.add(i);
+    }
+
+    edgeFaceMap.delete();
+    return sharpIndices;
+  }
+
+  /**
    * Get per-edge tessellated line segments from a shape.
    * Each edge is tessellated individually, enabling mapping raycast hits to edge indices.
    * Returns array of { edgeIndex, segments (Float32Array), midpoint }.
@@ -1785,18 +1838,38 @@ export class OpenCascadeService {
   async getEdgeLineSegmentsPerEdge(
     shape: TopoDS_Shape,
     linearDeflection: number = 0.05,
+    skipFix: boolean = false,
+    allEdges: boolean = false,
   ): Promise<Array<{ edgeIndex: number; segments: Float32Array; midpoint: { x: number; y: number; z: number } }>> {
     const oc = await this.getOC();
 
-    // Ensure the shape is meshed
-    new oc.BRepMesh_IncrementalMesh_2(shape, linearDeflection, false, 0.5, false);
+    // Fix input shape to match what filletEdges/chamferEdges will use
+    // Skip if shape was already fixed (e.g. deserialized from occBrep)
+    let fixedShape: TopoDS_Shape;
+    if (skipFix) {
+      fixedShape = shape;
+    } else {
+      const progressRange = new oc.Message_ProgressRange_1();
+      const fixer = new oc.ShapeFix_Shape_2(shape);
+      fixer.SetPrecision(1e-6);
+      fixer.Perform(progressRange);
+      fixedShape = fixer.Shape();
+    }
 
-    const { edgeMap, count } = await this.getEdgeMap(shape);
+    // Ensure the fixed shape is meshed
+    new oc.BRepMesh_IncrementalMesh_2(fixedShape, linearDeflection, false, 0.5, false);
+
+    const { edgeMap, count } = await this.getEdgeMap(fixedShape);
+    // When allEdges is true, skip sharp-edge filter (e.g. for revolve axis selection on flat profiles)
+    const sharpIndices = allEdges ? null : await this.getSharpEdgeIndices(fixedShape, edgeMap, count);
     const result: Array<{ edgeIndex: number; segments: Float32Array; midpoint: { x: number; y: number; z: number } }> = [];
 
     for (let i = 1; i <= count; i++) {
+      if (sharpIndices && !sharpIndices.has(i)) continue;
       const edgeShape = edgeMap.FindKey(i);
       const edge = oc.TopoDS.Edge_1(edgeShape);
+      // Skip degenerate edges (zero-length point edges)
+      if (oc.BRep_Tool.Degenerated(edge)) continue;
       const curve = new oc.BRepAdaptor_Curve_2(edge);
 
       const curveType = curve.GetType();
@@ -1860,17 +1933,23 @@ export class OpenCascadeService {
     shape: TopoDS_Shape,
     edgeIndices: number[],
     radius: number,
+    skipFix: boolean = false,
   ): Promise<TopoDS_Shape> {
     const oc = await this.getOC();
 
     try {
       const progressRange = new oc.Message_ProgressRange_1();
 
-      // Fix input shape
-      const fixer = new oc.ShapeFix_Shape_2(shape);
-      fixer.SetPrecision(1e-6);
-      fixer.Perform(progressRange);
-      const fixedShape = fixer.Shape();
+      // Fix input shape — skip if already fixed (e.g. deserialized from occBrep)
+      let fixedShape: TopoDS_Shape;
+      if (skipFix) {
+        fixedShape = shape;
+      } else {
+        const fixer = new oc.ShapeFix_Shape_2(shape);
+        fixer.SetPrecision(1e-6);
+        fixer.Perform(progressRange);
+        fixedShape = fixer.Shape();
+      }
 
       // Build edge map
       const edgeMap = new oc.TopTools_IndexedMapOfShape_1();
@@ -1921,17 +2000,23 @@ export class OpenCascadeService {
     shape: TopoDS_Shape,
     edgeIndices: number[],
     distance: number,
+    skipFix: boolean = false,
   ): Promise<TopoDS_Shape> {
     const oc = await this.getOC();
 
     try {
       const progressRange = new oc.Message_ProgressRange_1();
 
-      // Fix input shape
-      const fixer = new oc.ShapeFix_Shape_2(shape);
-      fixer.SetPrecision(1e-6);
-      fixer.Perform(progressRange);
-      const fixedShape = fixer.Shape();
+      // Fix input shape — skip if already fixed (e.g. deserialized from occBrep)
+      let fixedShape: TopoDS_Shape;
+      if (skipFix) {
+        fixedShape = shape;
+      } else {
+        const fixer = new oc.ShapeFix_Shape_2(shape);
+        fixer.SetPrecision(1e-6);
+        fixer.Perform(progressRange);
+        fixedShape = fixer.Shape();
+      }
 
       // Build edge map
       const edgeMap = new oc.TopTools_IndexedMapOfShape_1();
@@ -1990,5 +2075,303 @@ export class OpenCascadeService {
       console.error("[OpenCascadeService] Area calculation failed:", error);
       return 0;
     }
+  }
+
+  /**
+   * Build a wire from an ordered list of 3D points.
+   * Creates straight edges between consecutive points and joins them into a wire.
+   */
+  async buildWireFromPoints(
+    points: { x: number; y: number; z: number }[]
+  ): Promise<TopoDS_Wire | null> {
+    if (points.length < 2) return null;
+
+    const oc = await this.getOC();
+    let wireBuilder: ReturnType<typeof oc.BRepBuilderAPI_MakeWire_1> | null = null;
+
+    try {
+      wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
+
+      for (let i = 0; i < points.length - 1; i++) {
+        const p1 = new oc.gp_Pnt_3(points[i].x, points[i].y, points[i].z);
+        const p2 = new oc.gp_Pnt_3(points[i + 1].x, points[i + 1].y, points[i + 1].z);
+        let edgeBuilder: ReturnType<typeof oc.BRepBuilderAPI_MakeEdge_3> | null = null;
+
+        try {
+          edgeBuilder = new oc.BRepBuilderAPI_MakeEdge_3(p1, p2);
+          if (edgeBuilder.IsDone()) {
+            wireBuilder.Add_1(edgeBuilder.Edge());
+          }
+        } finally {
+          p1.delete();
+          p2.delete();
+          edgeBuilder?.delete();
+        }
+      }
+
+      if (!wireBuilder.IsDone()) {
+        console.warn("[OpenCascadeService] buildWireFromPoints: wire builder failed");
+        return null;
+      }
+
+      return wireBuilder.Wire();
+    } catch (error) {
+      console.error("[OpenCascadeService] buildWireFromPoints failed:", error);
+      return null;
+    } finally {
+      wireBuilder?.delete();
+    }
+  }
+
+  /**
+   * Sweep a profile face along a path wire using BRepOffsetAPI_MakePipe.
+   */
+  async sweepShape(
+    profileFace: TopoDS_Shape,
+    pathWire: TopoDS_Wire
+  ): Promise<TopoDS_Shape> {
+    const oc = await this.getOC();
+
+    let pipe: any = null;
+    let fixer: any = null;
+
+    try {
+      pipe = new oc.BRepOffsetAPI_MakePipe_1(pathWire, profileFace);
+      pipe.Build(new oc.Message_ProgressRange_1());
+
+      if (!pipe.IsDone()) {
+        throw new Error("BRepOffsetAPI_MakePipe failed");
+      }
+
+      let result = pipe.Shape();
+
+      // Fix shape
+      fixer = new oc.ShapeFix_Shape_2(result);
+      fixer.Perform(new oc.Message_ProgressRange_1());
+      result = fixer.Shape();
+
+      // Orient as solid
+      try {
+        oc.BRepLib.OrientClosedSolid(oc.TopoDS.Solid_1(result));
+      } catch {
+        // Not a solid — fine for open sweeps
+      }
+
+      return result;
+    } catch (error) {
+      console.error("[OpenCascadeService] sweepShape failed:", error);
+      throw error;
+    } finally {
+      pipe?.delete();
+      fixer?.delete();
+    }
+  }
+
+  /**
+   * Revolve a shape around an axis to create a solid of revolution.
+   * @param face Shape to revolve (face)
+   * @param axisOrigin Point on the revolution axis
+   * @param axisDir Direction of the revolution axis
+   * @param angleRadians Angle in radians (omit or pass 2*PI for full revolution)
+   */
+  async revolveShape(
+    face: TopoDS_Shape,
+    axisOrigin: { x: number; y: number; z: number },
+    axisDir: { x: number; y: number; z: number },
+    angleRadians?: number
+  ): Promise<TopoDS_Shape> {
+    const oc = await this.getOC();
+
+    let origin: any = null;
+    let direction: any = null;
+    let axis: any = null;
+    let revolBuilder: any = null;
+    let fixer: any = null;
+
+    try {
+      origin = new oc.gp_Pnt_3(axisOrigin.x, axisOrigin.y, axisOrigin.z);
+      direction = new oc.gp_Dir_4(axisDir.x, axisDir.y, axisDir.z);
+      axis = new oc.gp_Ax1_2(origin, direction);
+
+      const isFullRevolution = angleRadians === undefined ||
+        Math.abs(angleRadians - 2 * Math.PI) < 1e-6;
+
+      if (isFullRevolution) {
+        revolBuilder = new oc.BRepPrimAPI_MakeRevol_2(face, axis, true);
+      } else {
+        revolBuilder = new oc.BRepPrimAPI_MakeRevol_1(face, axis, angleRadians!, true);
+      }
+
+      revolBuilder.Build(new oc.Message_ProgressRange_1());
+
+      if (!revolBuilder.IsDone()) {
+        throw new Error("BRepPrimAPI_MakeRevol failed");
+      }
+
+      let result = revolBuilder.Shape();
+
+      // Fix shape
+      fixer = new oc.ShapeFix_Shape_2(result);
+      fixer.Perform(new oc.Message_ProgressRange_1());
+      result = fixer.Shape();
+
+      // Orient as solid
+      try {
+        oc.BRepLib.OrientClosedSolid(oc.TopoDS.Solid_1(result));
+      } catch {
+        // Not a closed solid — fine for partial revolutions
+      }
+
+      return result;
+    } catch (error) {
+      console.error("[OpenCascadeService] revolveShape failed:", error);
+      throw error;
+    } finally {
+      origin?.delete();
+      direction?.delete();
+      axis?.delete();
+      revolBuilder?.delete();
+      fixer?.delete();
+    }
+  }
+
+  /**
+   * Loft through multiple profile wires using BRepOffsetAPI_ThruSections.
+   * @param profileFaces Array of profile faces (in order)
+   * @param isSolid Whether to create a solid (true) or shell (false)
+   * @param isRuled Whether to use ruled surfaces (true) or smooth (false)
+   */
+  async loftShapes(
+    profileFaces: TopoDS_Shape[],
+    isSolid: boolean = true,
+    isRuled: boolean = false
+  ): Promise<TopoDS_Shape> {
+    const oc = await this.getOC();
+
+    let thruSections: any = null;
+    let fixer: any = null;
+
+    try {
+      thruSections = new oc.BRepOffsetAPI_ThruSections(isSolid, isRuled, 1e-6);
+
+      // Extract outer wire from each face and add to loft
+      for (let i = 0; i < profileFaces.length; i++) {
+        const face = profileFaces[i];
+        const explorer = new oc.TopExp_Explorer_2(
+          face,
+          oc.TopAbs_ShapeEnum.TopAbs_WIRE,
+          oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+        );
+
+        if (explorer.More()) {
+          const wire = oc.TopoDS.Wire_1(explorer.Current());
+          thruSections.AddWire(wire);
+        } else {
+          console.warn(`[OpenCascadeService] loftShapes: face ${i} has no wire`);
+        }
+        explorer.delete();
+      }
+
+      thruSections.Build(new oc.Message_ProgressRange_1());
+
+      if (!thruSections.IsDone()) {
+        throw new Error("BRepOffsetAPI_ThruSections failed");
+      }
+
+      let result = thruSections.Shape();
+
+      // Fix shape
+      fixer = new oc.ShapeFix_Shape_2(result);
+      fixer.Perform(new oc.Message_ProgressRange_1());
+      result = fixer.Shape();
+
+      // Orient as solid
+      try {
+        oc.BRepLib.OrientClosedSolid(oc.TopoDS.Solid_1(result));
+      } catch {
+        // Not a solid — fine for shell results
+      }
+
+      return result;
+    } catch (error) {
+      console.error("[OpenCascadeService] loftShapes failed:", error);
+      throw error;
+    } finally {
+      thruSections?.delete();
+      fixer?.delete();
+    }
+  }
+
+  /**
+   * Serialize an OCC TopoDS_Shape to BRep text format.
+   * Preserves analytic geometry (curves, surfaces, continuity) losslessly.
+   */
+  async serializeShape(shape: TopoDS_Shape): Promise<string> {
+    const oc = await this.getOC();
+    const filePath = "/tmp/occ_brep_out.brep";
+    const progress = new oc.Message_ProgressRange_1();
+
+    try {
+      const success = oc.BRepTools.Write_3(shape, filePath, progress);
+      if (!success) {
+        throw new Error("BRepTools.Write_3 failed");
+      }
+
+      const brepString = oc.FS.readFile(filePath, { encoding: "utf8" }) as string;
+      return brepString;
+    } finally {
+      try { oc.FS.unlink(filePath); } catch { /* ignore */ }
+      progress.delete();
+    }
+  }
+
+  /**
+   * Deserialize a BRep text string back to a TopoDS_Shape.
+   */
+  async deserializeShape(brepString: string): Promise<TopoDS_Shape> {
+    const oc = await this.getOC();
+    const filePath = "/tmp/occ_brep_in.brep";
+    const progress = new oc.Message_ProgressRange_1();
+
+    try {
+      oc.FS.writeFile(filePath, brepString);
+
+      const builder = new oc.BRep_Builder();
+      const shape = new oc.TopoDS_Shape();
+      const success = oc.BRepTools.Read_2(shape, filePath, builder, progress);
+
+      if (!success) {
+        shape.delete();
+        throw new Error("BRepTools.Read_2 failed");
+      }
+
+      return shape;
+    } finally {
+      try { oc.FS.unlink(filePath); } catch { /* ignore */ }
+      progress.delete();
+    }
+  }
+
+  /**
+   * Deserialize an occBrep string and optionally translate to world position.
+   * Replaces the lossy brepToOCShape(brep, position) path when occBrep is available.
+   */
+  async occBrepToOCShape(occBrep: string, position?: THREE.Vector3): Promise<TopoDS_Shape> {
+    const oc = await this.getOC();
+    let shape = await this.deserializeShape(occBrep);
+
+    if (position && (position.x !== 0 || position.y !== 0 || position.z !== 0)) {
+      const trsf = new oc.gp_Trsf_1();
+      const vec = new oc.gp_Vec_4(position.x, position.y, position.z);
+      trsf.SetTranslation_1(vec);
+      vec.delete();
+
+      const transformer = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
+      trsf.delete();
+      shape = transformer.Shape();
+      transformer.delete();
+    }
+
+    return shape;
   }
 }

@@ -76,6 +76,22 @@ export const ExtrudeIcon: FC<IconProps> = ({ className = "w-4 h-4" }) => (
   </svg>
 );
 
+export const SweepIcon: FC<IconProps> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <rect x="2" y="5" width="4" height="6" rx="0.5" />
+    <path d="M6 8c2-3 5-3 8 0" strokeLinecap="round" />
+    <path d="M12 6l2 2-2 2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+export const LoftIcon: FC<IconProps> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <rect x="4" y="2" width="8" height="3" rx="0.5" />
+    <rect x="5" y="11" width="6" height="3" rx="0.5" />
+    <path d="M4 5c-1 3-1 3 1 6M12 5c1 3 1 3-1 6" strokeLinecap="round" />
+  </svg>
+);
+
 export const EyeIcon: FC<IconProps> = ({ className = "w-3.5 h-3.5" }) => (
   <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
     <path d="M1 8s3-5 7-5 7 5 7 5-3 5-7 5S1 8 1 8z" />

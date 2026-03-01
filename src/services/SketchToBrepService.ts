@@ -7,10 +7,10 @@
  * @module services/SketchToBrepService
  */
 
-import type { OpenCascadeInstance, TopoDS_Edge, TopoDS_Wire, TopoDS_Face } from "opencascade.js";
+import type { OpenCascadeInstance, TopoDS_Edge, TopoDS_Wire, TopoDS_Face, TopoDS_Shape } from "opencascade.js";
 import { Brep } from "../geometry";
 import { OpenCascadeService } from "./OpenCascadeService";
-import type { Sketch, SketchPrimitive, SketchLine, SketchCircle, SketchArc, SketchConversionResult, SketchPlaneType } from "../types/sketch-types";
+import type { Sketch, SketchPrimitive, SketchLine, SketchCircle, SketchArc, SketchConversionResult, SketchPlaneType, SketchPlane } from "../types/sketch-types";
 
 /**
  * Singleton service that converts sketches to BRep using OpenCascade.
@@ -112,7 +112,7 @@ export class SketchToBrepService {
       let resultShape = this.unionFaces(oc, faces);
 
       // Transform from XY to the target sketch plane
-      resultShape = this.transformShapeToPlane(oc, resultShape, sketch.plane.type);
+      resultShape = this.transformShapeToPlane(oc, resultShape, sketch.plane);
 
       const brep = await ocService.ocShapeToBRep(resultShape);
 
@@ -197,12 +197,10 @@ export class SketchToBrepService {
       }
 
       // Transform faces from XY to the target sketch plane
-      if (sketch.plane.type !== "XY") {
-        finalFaces = finalFaces.map(face => {
-          const transformed = this.transformShapeToPlane(oc, face, sketch.plane.type);
-          return oc.TopoDS.Face_1(transformed);
-        });
-      }
+      finalFaces = finalFaces.map(face => {
+        const transformed = this.transformShapeToPlane(oc, face, sketch.plane);
+        return oc.TopoDS.Face_1(transformed);
+      });
 
       // Convert each face to a separate profile
       const profiles = await this.facesToProfiles(finalFaces, sketch.id, ocService);
@@ -878,29 +876,24 @@ export class SketchToBrepService {
   private transformShapeToPlane(
     oc: OpenCascadeInstance,
     shape: any,
-    planeType: SketchPlaneType
+    plane: SketchPlane
   ): any {
-    if (planeType === "XY") return shape;
+    // Skip transform for XY plane at origin (identity transform)
+    const isIdentity = plane.type === "XY" &&
+      Math.abs(plane.origin.x) < 1e-9 &&
+      Math.abs(plane.origin.y) < 1e-9 &&
+      Math.abs(plane.origin.z) < 1e-9;
+    if (isIdentity) return shape;
 
     const trsf = new oc.gp_Trsf_1();
 
-    if (planeType === "XZ") {
-      // Rotate -90° around X axis: (x,y,0) → (x,0,y)
-      const axis = new oc.gp_Ax1_2(
-        new oc.gp_Pnt_3(0, 0, 0),
-        new oc.gp_Dir_4(1, 0, 0)
-      );
-      trsf.SetRotation_1(axis, -Math.PI / 2);
-      axis.delete();
-    } else if (planeType === "YZ") {
-      // Rotate 90° around Z axis then -90° around X axis: (x,y,0) → (0,x,y)
-      // Use SetValues to set the full rotation matrix directly
-      trsf.SetValues(
-        0, 0, 1, 0,
-        1, 0, 0, 0,
-        0, 1, 0, 0
-      );
-    }
+    // Build rotation matrix from plane basis vectors: columns = [xAxis, yAxis, normal]
+    // Plus translation = origin
+    trsf.SetValues(
+      plane.xAxis.x, plane.yAxis.x, plane.normal.x, plane.origin.x,
+      plane.xAxis.y, plane.yAxis.y, plane.normal.y, plane.origin.y,
+      plane.xAxis.z, plane.yAxis.z, plane.normal.z, plane.origin.z
+    );
 
     let transformer: any = null;
     try {
@@ -953,5 +946,146 @@ export class SketchToBrepService {
       circle.delete();
       builder?.delete();
     }
+  }
+
+  /**
+   * Check if a sketch forms at least one closed loop.
+   * An open sketch (only open chains of lines/arcs, no circles) is a path candidate for sweep.
+   */
+  isSketchClosed(sketch: Sketch): boolean {
+    const nonConstructionPrimitives = sketch.primitives.filter(
+      p => !(p as any).construction
+    );
+
+    // Circles are always self-closing
+    if (nonConstructionPrimitives.some(p => p.type === "circle")) {
+      return true;
+    }
+
+    // Check if lines/arcs form a closed chain
+    const pointMap = this.buildPointMap(sketch.primitives);
+    const lines = nonConstructionPrimitives.filter(p => p.type === "line") as SketchLine[];
+    const arcs = nonConstructionPrimitives.filter(p => p.type === "arc") as SketchArc[];
+
+    if (lines.length === 0 && arcs.length === 0) return false;
+
+    // Build adjacency: count how many edges each point is connected to
+    const pointEdgeCount = new Map<string, number>();
+    const addEdge = (pId: string) => {
+      pointEdgeCount.set(pId, (pointEdgeCount.get(pId) || 0) + 1);
+    };
+    for (const line of lines) {
+      addEdge(line.p1Id);
+      addEdge(line.p2Id);
+    }
+    for (const arc of arcs) {
+      addEdge(arc.startId);
+      addEdge(arc.endId);
+    }
+
+    // In a closed loop, every vertex has exactly 2 edges (even degree).
+    // If any vertex has odd degree, the graph has open endpoints.
+    for (const [, count] of pointEdgeCount) {
+      if (count % 2 !== 0) return false;
+    }
+
+    // All vertices have even degree → at least one closed loop exists
+    return true;
+  }
+
+  /**
+   * Convert an open sketch (chain of lines/arcs) to a wire + ordered point list.
+   * Used for sweep path creation.
+   */
+  async convertSketchToWire(
+    sketch: Sketch
+  ): Promise<{ wire: TopoDS_Wire; points: { x: number; y: number; z: number }[] } | null> {
+    const ocService = OpenCascadeService.getInstance();
+    const oc = await ocService.getOC();
+
+    try {
+      const nonConstructionPrimitives = sketch.primitives.filter(
+        p => !(p as any).construction
+      );
+      const pointMap = this.buildPointMap(sketch.primitives);
+
+      if (!this.validateSketch(nonConstructionPrimitives, pointMap)) {
+        console.warn("[SketchToBrepService] Wire sketch validation failed");
+        return null;
+      }
+
+      const { otherEdges } = this.buildEdges(oc, nonConstructionPrimitives, pointMap);
+      if (otherEdges.length === 0) {
+        console.warn("[SketchToBrepService] No edges for wire");
+        return null;
+      }
+
+      // Sort edges into a connected chain
+      const { sorted: sortedEdges } = this.sortEdgesForWire(oc, otherEdges);
+
+      // Build the wire
+      let wireBuilder: ReturnType<typeof oc.BRepBuilderAPI_MakeWire_1> | null = null;
+      try {
+        wireBuilder = new oc.BRepBuilderAPI_MakeWire_1();
+        for (const edge of sortedEdges) {
+          wireBuilder.Add_1(edge);
+        }
+
+        if (!wireBuilder.IsDone()) {
+          console.warn("[SketchToBrepService] Wire builder failed for path");
+          return null;
+        }
+
+        let wire = wireBuilder.Wire();
+
+        // Extract ordered points from wire edges
+        const points: { x: number; y: number; z: number }[] = [];
+        for (let i = 0; i < sortedEdges.length; i++) {
+          const endpoints = this.getEdgeEndpoints(oc, sortedEdges[i]);
+          if (endpoints) {
+            if (i === 0) {
+              points.push({ x: endpoints.start[0], y: endpoints.start[1], z: endpoints.start[2] });
+            }
+            points.push({ x: endpoints.end[0], y: endpoints.end[1], z: endpoints.end[2] });
+          }
+        }
+
+        // Transform wire to sketch plane
+        const transformedWireShape = this.transformShapeToPlane(oc, wire, sketch.plane);
+        wire = oc.TopoDS.Wire_1(transformedWireShape);
+
+        // Transform points to sketch plane
+        const transformedPoints = this.transformPointsToPlane(points, sketch.plane);
+
+        console.log(`[SketchToBrepService] Built wire with ${sortedEdges.length} edges, ${transformedPoints.length} points`);
+        return { wire, points: transformedPoints };
+      } finally {
+        wireBuilder?.delete();
+      }
+    } catch (error) {
+      console.error("[SketchToBrepService] Wire conversion failed:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Transform 2D sketch points to the target 3D sketch plane.
+   */
+  private transformPointsToPlane(
+    points: { x: number; y: number; z: number }[],
+    plane: SketchPlane
+  ): { x: number; y: number; z: number }[] {
+    // Skip transform for XY plane at origin
+    const isIdentity = plane.type === "XY" &&
+      Math.abs(plane.origin.x) < 1e-9 &&
+      Math.abs(plane.origin.y) < 1e-9 &&
+      Math.abs(plane.origin.z) < 1e-9;
+    if (isIdentity) return points;
+
+    return points.map(p => ({
+      x: plane.origin.x + p.x * plane.xAxis.x + p.y * plane.yAxis.x + p.z * plane.normal.x,
+      y: plane.origin.y + p.x * plane.xAxis.y + p.y * plane.yAxis.y + p.z * plane.normal.y,
+      z: plane.origin.z + p.x * plane.xAxis.z + p.y * plane.yAxis.z + p.z * plane.normal.z,
+    }));
   }
 }

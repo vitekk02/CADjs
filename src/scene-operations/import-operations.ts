@@ -1,7 +1,9 @@
 import * as THREE from "three";
 import { Brep } from "../geometry";
 import { SceneElement } from "./types";
-import { createMeshFromBrep } from "./mesh-operations";
+import { createMeshFromBrep, createMeshFromGeometry } from "./mesh-operations";
+import { createGeometryFromBRep } from "../convertBRepToGeometry";
+import { getAllFaces } from "./mesh-operations";
 import { ImportResult } from "../services/ImportExportService";
 
 export function importElements(
@@ -19,7 +21,15 @@ export function importElements(
     const nodeId = `node_${currentId}`;
     nodeIds.push(nodeId);
 
-    const mesh = createMeshFromBrep(imp.brep);
+    // Use OCC edge geometry if available for clean edge overlay
+    let mesh: THREE.Group;
+    if (imp.edgeGeometry) {
+      const faces = getAllFaces(imp.brep);
+      const faceGeometry = createGeometryFromBRep(faces);
+      mesh = createMeshFromGeometry(faceGeometry, imp.edgeGeometry);
+    } else {
+      mesh = createMeshFromBrep(imp.brep);
+    }
     mesh.position.copy(imp.position);
     objectsMap.set(nodeId, mesh);
 
@@ -28,6 +38,8 @@ export function importElements(
       nodeId,
       position: imp.position,
       selected: false,
+      occBrep: imp.occBrep,
+      edgeGeometry: imp.edgeGeometry,
     });
   }
 

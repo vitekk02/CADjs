@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { Brep, BrepGraph } from "../geometry";
+import { SketchPlane } from "../types/sketch-types";
 
-export type SceneMode = "move" | "union" | "difference" | "intersection" | "sketch" | "extrude" | "fillet";
+export type SceneMode = "move" | "union" | "difference" | "intersection" | "sketch" | "extrude" | "fillet" | "sweep" | "loft" | "revolve";
 
 export interface SceneElement {
   brep: Brep;
@@ -9,6 +10,11 @@ export interface SceneElement {
   position: THREE.Vector3;
   selected?: boolean;
   rotation?: THREE.Euler;
+  elementType?: "profile" | "path";
+  pathData?: { points: { x: number; y: number; z: number }[] };
+  occBrep?: string;
+  edgeGeometry?: THREE.BufferGeometry;
+  sketchPlane?: SketchPlane;
 }
 
 export function isElement3D(el: SceneElement): boolean {

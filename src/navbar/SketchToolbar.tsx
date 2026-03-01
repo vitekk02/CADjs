@@ -137,11 +137,19 @@ const SketchToolbar: FC<SketchToolbarProps> = ({
     <div className="flex items-center gap-1 w-full min-w-0 relative">
       {/* Drawing tools */}
       {toolBtn("line", "Line", "L")}
+      {toolBtn("rectangle", "Rect", "R")}
       {toolBtn("circle", "Circle", "C")}
       {toolBtn("arc", "Arc", "A")}
       {toolBtn("point", "Point", "P")}
       {toolBtn("dimension", "Dim", "D")}
       {toolBtn("select", "Select", "S")}
+
+      {/* Separator */}
+      <div className="flex-none w-px h-5 bg-gray-600 mx-1" />
+
+      {/* Trim/Extend */}
+      {toolBtn("trim", "Trim", "T")}
+      {toolBtn("extend", "Extend", "E")}
 
       {/* Separator */}
       <div className="flex-none w-px h-5 bg-gray-600 mx-1" />

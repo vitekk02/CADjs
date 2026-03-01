@@ -1,6 +1,8 @@
 import {
   applyFilletToTree,
   applyExtrudeToTree,
+  applySweepToTree,
+  applyBooleanOperationToTree,
   countOperationsOfType,
 } from "../../src/scene-operations/feature-tree-operations";
 import { FeatureNode } from "../../src/types/sketch-types";
@@ -141,6 +143,137 @@ describe("feature-tree-operations", () => {
       ];
 
       expect(countOperationsOfType(tree, "fillet")).toBe(2);
+    });
+  });
+
+  describe("applySweepToTree", () => {
+    it("should convert profile node to sweep operation and remove path node", () => {
+      const tree: FeatureNode[] = [
+        { id: "body1", type: "body", name: "Profile 1", visible: true, elementId: "el-profile" },
+        { id: "body2", type: "body", name: "Path 1", visible: true, elementId: "el-path" },
+      ];
+
+      const result = applySweepToTree(tree, "el-profile", "el-path", "Sweep 1");
+
+      // Path node removed, profile node converted to sweep operation
+      expect(result).toHaveLength(1);
+      expect(result[0].type).toBe("operation");
+      expect(result[0].operationType).toBe("sweep");
+      expect(result[0].name).toBe("Sweep 1");
+      expect(result[0].elementId).toBe("el-profile");
+    });
+
+    it("should preserve other nodes unchanged", () => {
+      const tree: FeatureNode[] = [
+        { id: "body0", type: "body", name: "Other", visible: true, elementId: "el-other" },
+        { id: "body1", type: "body", name: "Profile 1", visible: true, elementId: "el-profile" },
+        { id: "body2", type: "body", name: "Path 1", visible: true, elementId: "el-path" },
+      ];
+
+      const result = applySweepToTree(tree, "el-profile", "el-path", "Sweep 1");
+
+      expect(result).toHaveLength(2);
+      expect(result[0].name).toBe("Other");
+      expect(result[0].type).toBe("body");
+      expect(result[1].name).toBe("Sweep 1");
+      expect(result[1].type).toBe("operation");
+    });
+
+    it("should handle nested profile and path nodes", () => {
+      const tree: FeatureNode[] = [
+        {
+          id: "sketch1",
+          type: "sketch",
+          name: "Sketch 1",
+          visible: true,
+          children: [
+            { id: "body1", type: "body", name: "Profile", visible: true, elementId: "el-profile" },
+            { id: "body2", type: "body", name: "Path", visible: true, elementId: "el-path" },
+          ],
+        },
+      ];
+
+      const result = applySweepToTree(tree, "el-profile", "el-path", "Sweep 1");
+
+      // Path removed from children, profile converted
+      expect(result[0].children).toHaveLength(1);
+      expect(result[0].children![0].type).toBe("operation");
+      expect(result[0].children![0].operationType).toBe("sweep");
+    });
+  });
+
+  describe("applyBooleanOperationToTree (for loft)", () => {
+    it("should consume profile nodes and create loft operation node", () => {
+      const tree: FeatureNode[] = [
+        { id: "body1", type: "body", name: "Profile 1", visible: true, elementId: "el-1" },
+        { id: "body2", type: "body", name: "Profile 2", visible: true, elementId: "el-2" },
+      ];
+
+      const result = applyBooleanOperationToTree(
+        tree, ["el-1", "el-2"], "el-loft", "loft", "Loft 1",
+      );
+
+      // Both profiles removed, new loft operation node added
+      expect(result).toHaveLength(1);
+      expect(result[0].type).toBe("operation");
+      expect(result[0].operationType).toBe("loft");
+      expect(result[0].name).toBe("Loft 1");
+      expect(result[0].elementId).toBe("el-loft");
+      // Original nodes stored as children
+      expect(result[0].children).toHaveLength(2);
+      expect(result[0].children![0].elementId).toBe("el-1");
+      expect(result[0].children![1].elementId).toBe("el-2");
+    });
+
+    it("should preserve unrelated nodes when creating loft", () => {
+      const tree: FeatureNode[] = [
+        { id: "body0", type: "body", name: "Untouched", visible: true, elementId: "el-0" },
+        { id: "body1", type: "body", name: "Profile 1", visible: true, elementId: "el-1" },
+        { id: "body2", type: "body", name: "Profile 2", visible: true, elementId: "el-2" },
+      ];
+
+      const result = applyBooleanOperationToTree(
+        tree, ["el-1", "el-2"], "el-loft", "loft", "Loft 1",
+      );
+
+      expect(result).toHaveLength(2);
+      expect(result[0].name).toBe("Untouched");
+      expect(result[1].name).toBe("Loft 1");
+    });
+
+    it("should handle 3 profiles consumed in loft", () => {
+      const tree: FeatureNode[] = [
+        { id: "body1", type: "body", name: "P1", visible: true, elementId: "el-1" },
+        { id: "body2", type: "body", name: "P2", visible: true, elementId: "el-2" },
+        { id: "body3", type: "body", name: "P3", visible: true, elementId: "el-3" },
+      ];
+
+      const result = applyBooleanOperationToTree(
+        tree, ["el-1", "el-2", "el-3"], "el-loft", "loft", "Loft 1",
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0].children).toHaveLength(3);
+    });
+  });
+
+  describe("countOperationsOfType (sweep/loft)", () => {
+    it("should count sweep operations", () => {
+      const tree: FeatureNode[] = [
+        { id: "op1", type: "operation", name: "Sweep 1", visible: true, operationType: "sweep", elementId: "el-1" },
+        { id: "op2", type: "operation", name: "Extrude 1", visible: true, operationType: "extrude", elementId: "el-2" },
+        { id: "op3", type: "operation", name: "Sweep 2", visible: true, operationType: "sweep", elementId: "el-3" },
+      ];
+
+      expect(countOperationsOfType(tree, "sweep")).toBe(2);
+    });
+
+    it("should count loft operations", () => {
+      const tree: FeatureNode[] = [
+        { id: "op1", type: "operation", name: "Loft 1", visible: true, operationType: "loft", elementId: "el-1" },
+      ];
+
+      expect(countOperationsOfType(tree, "loft")).toBe(1);
     });
   });
 

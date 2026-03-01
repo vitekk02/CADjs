@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
+import { useToast } from "../contexts/ToastContext";
 import { isDescendantOf, collectPickableMeshes } from "../scene-operations/mesh-operations";
 import { isElement3D } from "../scene-operations/types";
 
@@ -29,6 +30,8 @@ export function useIntersectionMode(): UseIntersectionModeResult {
     highlightElement,
     unhighlightElement,
   } = useCadVisualizer();
+
+  const { showToast } = useToast();
 
   const canIntersect = selectedElements.length >= 2;
 
@@ -67,9 +70,12 @@ export function useIntersectionMode(): UseIntersectionModeResult {
     }
   };
 
-  const performIntersection = () => {
+  const performIntersection = async () => {
     if (canIntersect) {
-      intersectionSelectedElements();
+      const success = await intersectionSelectedElements();
+      if (!success) {
+        showToast("Intersection operation failed", "error");
+      }
       forceSceneUpdate();
     }
   };

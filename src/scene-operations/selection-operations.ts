@@ -12,14 +12,37 @@ export function handleSetMode(
     const object = objectsMap.get(element.nodeId);
     if (object) {
       if (object instanceof THREE.Mesh) {
-        (object.material as THREE.MeshStandardMaterial).color.set(BODY.default);
+        const mat = object.material as THREE.MeshStandardMaterial;
+        mat.color.set(BODY.default);
+        mat.opacity = 1.0;
+        mat.transparent = false;
+        mat.needsUpdate = true;
       } else if (object instanceof THREE.Group) {
         object.traverse((child) => {
           if (child instanceof THREE.Mesh && !child.userData.isEdgeOverlay && !child.userData.isHelper) {
-            (child.material as THREE.MeshStandardMaterial).color.set(BODY.default);
+            const mat = child.material as THREE.MeshStandardMaterial;
+            mat.color.set(BODY.default);
+            mat.opacity = 1.0;
+            mat.transparent = false;
+            mat.needsUpdate = true;
+          }
+          if (child instanceof THREE.LineSegments && child.userData.isEdgeOverlay) {
+            const mat = child.material as THREE.LineBasicMaterial;
+            mat.opacity = 1.0;
+            mat.transparent = false;
+            mat.needsUpdate = true;
           }
         });
       }
+      // Hide helpers on mode switch
+      object.traverse((child) => {
+        if (
+          child.userData.helperType === "edge" ||
+          child.userData.helperType === "vertex"
+        ) {
+          child.visible = false;
+        }
+      });
     }
     return { ...element, selected: false };
   });

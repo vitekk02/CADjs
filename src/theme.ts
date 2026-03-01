@@ -59,6 +59,8 @@ export const SKETCH = {
   constructionSelected: 0xffaa44,  // Selected construction lines
   constraintGlyph: 0xddaa00,      // Gold for constraint symbols
   constraintGlyphBg: 0x333333,    // Dark background circle
+  trimHighlight: 0xff4444,        // Red for segment to be removed
+  extendPreview: 0x44ff44,        // Green for extension preview line
 } as const;
 
 // ── Sketch Inference Glyphs ────────────────────────────────────────
@@ -92,6 +94,9 @@ export const EXTRUDE = {
   arrow: 0x2e75b6,          // Blue arrows instead of green
   arrowSecondary: 0x2e75b6, // Same blue, lower opacity
   profileHighlight: 0x87ceeb,
+  cutArrow: 0xcc3333,          // Red arrows for cut direction
+  cutArrowSecondary: 0xcc3333, // Same red, lower opacity
+  cutPreview: 0xff6b6b,        // Light red/salmon preview volume
 } as const;
 
 // ── Fillet / Chamfer Mode ──────────────────────────────────────────
@@ -99,6 +104,32 @@ export const FILLET = {
   edgeHighlight: 0xff8800,   // Orange — selected edges
   edgeHover: 0xffaa44,       // Lighter orange — hovered edge
   preview: 0xa8a9ad,         // Body default for preview mesh
+  previewOpacity: 0.6,
+} as const;
+
+// ── Sweep Mode ─────────────────────────────────────────────────────
+export const SWEEP = {
+  pathPreview: 0x2e75b6,
+  pathPoint: 0x4a90d9,
+  profileHighlight: 0x87ceeb,
+  preview: 0xa8a9ad,
+  previewOpacity: 0.6,
+} as const;
+
+// ── Loft Mode ──────────────────────────────────────────────────────
+export const LOFT = {
+  profileHighlight: 0x2e75b6,
+  profileHover: 0x4a90d9,
+  preview: 0xa8a9ad,
+  previewOpacity: 0.6,
+} as const;
+
+// ── Revolve Mode ──────────────────────────────────────────────────
+export const REVOLVE = {
+  axisLine: 0xff8800,          // Orange axis line
+  axisHover: 0xffaa44,         // Lighter orange on hover
+  profileHighlight: 0x87ceeb,  // Same as extrude
+  preview: 0xa8a9ad,           // Body default for preview
   previewOpacity: 0.6,
 } as const;
 
@@ -118,6 +149,16 @@ export const DEBUG = {
 export const DRAW = {
   preview: 0x87ceeb,      // Light blue preview
   previewOpacity: 0.5,
+} as const;
+
+// ── ViewCube ──────────────────────────────────────────────────────
+export const VIEWCUBE = {
+  face: 0x5a5a5a,           // Medium gray face
+  faceHover: 0x6a8abf,      // Blue-gray on hover
+  faceBorder: 0x444444,      // Dark gray edge lines
+  text: "#e0e0e0",          // Light text on faces (CSS color)
+  textBold: "#ffffff",       // Active/hovered text
+  background: 0x2a2a2a,     // Dark background for the mini scene
 } as const;
 
 // ── Helpers ────────────────────────────────────────────────────────

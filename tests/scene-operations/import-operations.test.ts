@@ -3,14 +3,6 @@ import { importElements } from "../../src/scene-operations/import-operations";
 import { Brep, Vertex, Face } from "../../src/geometry";
 import { SceneElement } from "../../src/scene-operations/types";
 
-jest.mock("../../src/scene-operations/mesh-operations", () => ({
-  createMeshFromBrep: jest.fn(() => {
-    const group = new THREE.Group();
-    group.add(new THREE.Mesh());
-    return group;
-  }),
-}));
-
 function makeBrep(): Brep {
   const v1 = new Vertex(0, 0, 0);
   const v2 = new Vertex(1, 0, 0);
@@ -23,7 +15,6 @@ describe("importElements", () => {
 
   beforeEach(() => {
     objectsMap = new Map();
-    jest.clearAllMocks();
   });
 
   test("adds imported elements to existing elements array", () => {

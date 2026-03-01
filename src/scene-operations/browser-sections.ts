@@ -30,7 +30,7 @@ export function buildBrowserSections(
       const profileChildren: BrowserItem[] = [];
 
       for (const child of node.children ?? []) {
-        if (child.type === "operation" && child.operationType === "extrude") {
+        if (child.type === "operation") {
           bodyItems.push(featureNodeToBodyItem(child));
           extrudedChildren.push(featureNodeToBodyItem(child));
         } else {

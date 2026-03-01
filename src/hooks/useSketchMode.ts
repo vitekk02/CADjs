@@ -15,16 +15,28 @@ import {
   SketchConstraint,
   ConstraintType,
   ConstraintResultStatus,
+  SketchPlane,
   SketchPlaneType,
   isSketchPoint,
   isSketchLine,
   isSketchCircle,
   isSketchArc,
   createSketchPlane,
+  createSketchPlaneFromNormal,
 } from "../types/sketch-types";
 import { useSketchInference, InferencePoint, Guideline } from "./useSketchInference";
+import {
+  findAllIntersections,
+  identifyTrimSegment,
+  findClosestEndpoint,
+  findNearestExtendTarget,
+} from "../scene-operations/sketch-intersection-utils";
+import {
+  trimLineAtSegment,
+  convertCircleToArc,
+} from "../scene-operations/sketch-operations";
 
-export type SketchSubMode = "select" | "line" | "circle" | "arc" | "point" | "dimension";
+export type SketchSubMode = "select" | "line" | "rectangle" | "circle" | "arc" | "point" | "dimension" | "trim" | "extend";
 
 // Info about a newly created line for dimension input
 export interface PendingLineDimension {
@@ -73,10 +85,11 @@ interface UseSketchModeResult {
   hoveredPlane: SketchPlaneType | null;
   enterPlaneSelectionMode: () => void;
   cancelPlaneSelection: () => void;
-  selectPlaneAndStartSketch: (planeType: SketchPlaneType) => void;
+  selectPlaneAndStartSketch: (planeOrType: SketchPlane | SketchPlaneType, offset?: number) => void;
   cleanupSketchGrid: () => void;
   handlePlaneSelectionMouseMove: (event: MouseEvent) => void;
   handlePlaneSelectionClick: (event: MouseEvent) => void;
+  setPlaneOffset: (v: number) => void;
   // Constraint feedback (redundant/conflicting rollback)
   constraintFeedback: { message: string; type: "redundant" | "conflicting" } | null;
 }
@@ -103,6 +116,22 @@ const SKETCH_CONFIG = {
   /** Extra pixels of tolerance for Line2 screen-space raycast */
   LINE_HIT_THRESHOLD: 8,
 } as const;
+
+/** Distance from a 2D point to a line segment (p1→p2) */
+function pointToLineDistance(
+  pt: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+): number {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-10) return Math.hypot(pt.x - p1.x, pt.y - p1.y);
+  const t = Math.max(0, Math.min(1, ((pt.x - p1.x) * dx + (pt.y - p1.y) * dy) / len2));
+  const projX = p1.x + t * dx;
+  const projY = p1.y + t * dy;
+  return Math.hypot(pt.x - projX, pt.y - projY);
+}
 
 import { SKETCH as SKETCH_THEME, INFERENCE, SKETCH_PLANE as PLANE_THEME, BODY as BODY_THEME } from "../theme";
 
@@ -191,6 +220,7 @@ export function useSketchMode(): UseSketchModeResult {
     activeSketch,
     addPrimitive,
     updatePrimitive,
+    removePrimitive,
     updatePrimitivesAndSolve,
     addConstraintAndSolve,
     startSketch,
@@ -311,6 +341,10 @@ export function useSketchMode(): UseSketchModeResult {
   const centerPointRef = useRef<THREE.Vector3 | null>(null); // For circle/arc
   const idCounterRef = useRef(0);
 
+  // Trim mode state
+  const trimHighlightRef = useRef<THREE.Object3D | null>(null);
+  const trimHoveredPrimRef = useRef<{ primId: string; startParam: number; endParam: number } | null>(null);
+
   // Shared raycaster to avoid creating new one on every mouse event
   const raycasterRef = useRef(new THREE.Raycaster());
 
@@ -358,6 +392,7 @@ export function useSketchMode(): UseSketchModeResult {
   const [isSelectingPlane, setIsSelectingPlane] = useState(false);
   const [hoveredPlane, setHoveredPlane] = useState<SketchPlaneType | null>(null);
   const planeObjectsRef = useRef<THREE.Object3D[]>([]);
+  const planeOffsetRef = useRef(0);
   const sketchHidGroundPlaneRef = useRef(false);
 
   // Drag-to-move state for primitives
@@ -439,16 +474,9 @@ export function useSketchMode(): UseSketchModeResult {
 
   // Convert a 3D world point to 2D sketch coordinates (inverse of sketchTo3D)
   const worldToSketch2D = useCallback(
-    (point3D: THREE.Vector3, planeType: SketchPlaneType): THREE.Vector3 => {
-      switch (planeType) {
-        case "XZ":
-          return new THREE.Vector3(point3D.x, point3D.z, 0);
-        case "YZ":
-          return new THREE.Vector3(point3D.y, point3D.z, 0);
-        case "XY":
-        default:
-          return new THREE.Vector3(point3D.x, point3D.y, 0);
-      }
+    (point3D: THREE.Vector3, plane: SketchPlane): THREE.Vector3 => {
+      const delta = point3D.clone().sub(plane.origin);
+      return new THREE.Vector3(delta.dot(plane.xAxis), delta.dot(plane.yAxis), 0);
     },
     []
   );
@@ -546,6 +574,16 @@ export function useSketchMode(): UseSketchModeResult {
       }
       previewObjectRef.current = null;
     }
+    // Clean up trim highlight
+    if (trimHighlightRef.current && scene) {
+      scene.remove(trimHighlightRef.current);
+      if (trimHighlightRef.current instanceof THREE.Line) {
+        trimHighlightRef.current.geometry.dispose();
+        (trimHighlightRef.current.material as THREE.Material).dispose();
+      }
+      trimHighlightRef.current = null;
+    }
+    trimHoveredPrimRef.current = null;
   }, [scene]);
 
   // Cleanup inference visualization objects
@@ -694,6 +732,25 @@ export function useSketchMode(): UseSketchModeResult {
     []
   );
 
+  // Create rectangle preview using Line2 (corners are 2D sketch coords, converted to 3D for rendering)
+  const createRectanglePreview = useCallback(
+    (corner1: THREE.Vector3, corner2: THREE.Vector3): Line2 => {
+      const bl = sketchTo3DRef.current(corner1.x, corner1.y, 0.01);
+      const br = sketchTo3DRef.current(corner2.x, corner1.y, 0.01);
+      const tr = sketchTo3DRef.current(corner2.x, corner2.y, 0.01);
+      const tl = sketchTo3DRef.current(corner1.x, corner2.y, 0.01);
+      const positions = [
+        bl.x, bl.y, bl.z,
+        br.x, br.y, br.z,
+        tr.x, tr.y, tr.z,
+        tl.x, tl.y, tl.z,
+        bl.x, bl.y, bl.z, // close the loop
+      ];
+      return createLine2FromPoints(positions, COLORS.preview, 1.5);
+    },
+    []
+  );
+
   // Create circle preview using Line2 (center is 2D sketch coords, converted to 3D for rendering)
   const createCirclePreview = useCallback(
     (center: THREE.Vector3, radius: number): Line2 => {
@@ -789,6 +846,271 @@ export function useSketchMode(): UseSketchModeResult {
       return null;
     },
     [generateId, addConstraintAndSolve]
+  );
+
+  // ── Trim/Extend cleanup ──
+  const cleanupTrimHighlight = useCallback(() => {
+    if (trimHighlightRef.current && scene) {
+      scene.remove(trimHighlightRef.current);
+      if (trimHighlightRef.current instanceof THREE.Line) {
+        trimHighlightRef.current.geometry.dispose();
+        (trimHighlightRef.current.material as THREE.Material).dispose();
+      }
+      trimHighlightRef.current = null;
+    }
+    trimHoveredPrimRef.current = null;
+  }, [scene]);
+
+  // ── Trim mode handler ──
+  const handleTrimMode = useCallback(
+    (event: MouseEvent, point: THREE.Vector3) => {
+      if (!activeSketch) return;
+
+      const pt2d = worldToSketch2D(point, activeSketch.plane);
+      if (!pt2d) return;
+      const cursorPoint = { x: pt2d.x, y: pt2d.y };
+
+      if (event.type === "mousemove") {
+        cleanupTrimHighlight();
+
+        // Find closest primitive to cursor
+        let bestPrimId: string | null = null;
+        let bestDist = 0.5; // snap distance in sketch units
+
+        for (const prim of activeSketch.primitives) {
+          if (isSketchPoint(prim)) continue;
+
+          let dist = Infinity;
+          if (isSketchLine(prim)) {
+            const p1 = activeSketch.primitives.find(p => p.id === prim.p1Id && isSketchPoint(p)) as SketchPoint | undefined;
+            const p2 = activeSketch.primitives.find(p => p.id === prim.p2Id && isSketchPoint(p)) as SketchPoint | undefined;
+            if (p1 && p2) {
+              dist = pointToLineDistance(cursorPoint, { x: p1.x, y: p1.y }, { x: p2.x, y: p2.y });
+            }
+          } else if (isSketchCircle(prim)) {
+            const center = activeSketch.primitives.find(p => p.id === prim.centerId && isSketchPoint(p)) as SketchPoint | undefined;
+            if (center) {
+              dist = Math.abs(Math.hypot(cursorPoint.x - center.x, cursorPoint.y - center.y) - prim.radius);
+            }
+          } else if (isSketchArc(prim)) {
+            const center = activeSketch.primitives.find(p => p.id === prim.centerId && isSketchPoint(p)) as SketchPoint | undefined;
+            if (center) {
+              dist = Math.abs(Math.hypot(cursorPoint.x - center.x, cursorPoint.y - center.y) - prim.radius);
+            }
+          }
+
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestPrimId = prim.id;
+          }
+        }
+
+        if (bestPrimId) {
+          const intersections = findAllIntersections(activeSketch, bestPrimId);
+          const segment = identifyTrimSegment(activeSketch, bestPrimId, intersections, cursorPoint);
+
+          if (segment && intersections.length > 0) {
+            trimHoveredPrimRef.current = {
+              primId: bestPrimId,
+              startParam: segment.startParam,
+              endParam: segment.endParam,
+            };
+
+            // Visualize the segment to be trimmed (in red)
+            const prim = activeSketch.primitives.find(p => p.id === bestPrimId);
+            if (prim && isSketchLine(prim) && sketchTo3DRef.current) {
+              const p1 = activeSketch.primitives.find(p => p.id === prim.p1Id && isSketchPoint(p)) as SketchPoint | undefined;
+              const p2 = activeSketch.primitives.find(p => p.id === prim.p2Id && isSketchPoint(p)) as SketchPoint | undefined;
+              if (p1 && p2) {
+                const s = segment.startParam;
+                const e = segment.endParam;
+                const sx = p1.x + s * (p2.x - p1.x);
+                const sy = p1.y + s * (p2.y - p1.y);
+                const ex = p1.x + e * (p2.x - p1.x);
+                const ey = p1.y + e * (p2.y - p1.y);
+                const start3d = sketchTo3DRef.current(sx, sy, 0.01);
+                const end3d = sketchTo3DRef.current(ex, ey, 0.01);
+                const geom = new THREE.BufferGeometry().setFromPoints([start3d, end3d]);
+                const mat = new THREE.LineBasicMaterial({
+                  color: SKETCH_THEME.trimHighlight,
+                  linewidth: 3,
+                  depthTest: false,
+                });
+                const line = new THREE.Line(geom, mat);
+                line.renderOrder = 1000;
+                if (scene) scene.add(line);
+                trimHighlightRef.current = line;
+              }
+            }
+          }
+        }
+      } else if (event.type === "mousedown") {
+        if (!trimHoveredPrimRef.current) return;
+
+        const { primId, startParam, endParam } = trimHoveredPrimRef.current;
+        cleanupTrimHighlight();
+
+        pushSketchUndo();
+
+        const prim = activeSketch.primitives.find(p => p.id === primId);
+        if (!prim) return;
+
+        const intersections = findAllIntersections(activeSketch, primId);
+
+        if (isSketchLine(prim)) {
+          const p1 = activeSketch.primitives.find(p => p.id === prim.p1Id && isSketchPoint(p)) as SketchPoint | undefined;
+          const p2 = activeSketch.primitives.find(p => p.id === prim.p2Id && isSketchPoint(p)) as SketchPoint | undefined;
+          if (!p1 || !p2) return;
+
+          const isStartSegment = startParam < 1e-4;
+          const isEndSegment = endParam > 1 - 1e-4;
+
+          if (isStartSegment && isEndSegment) {
+            // Only segment — remove entire line
+            removePrimitive(primId);
+          } else if (isStartSegment) {
+            // Trim from start: move p1 to endParam position
+            const newX = p1.x + endParam * (p2.x - p1.x);
+            const newY = p1.y + endParam * (p2.y - p1.y);
+            updatePrimitive(prim.p1Id, { x: newX, y: newY });
+          } else if (isEndSegment) {
+            // Trim from end: move p2 to startParam position
+            const newX = p1.x + startParam * (p2.x - p1.x);
+            const newY = p1.y + startParam * (p2.y - p1.y);
+            updatePrimitive(prim.p2Id, { x: newX, y: newY });
+          } else {
+            // Middle segment: remove original line, create two new segments
+            // Create new intersection points at split locations
+            const splitPts: { id: string; x: number; y: number }[] = [];
+            const sortedParams = intersections.map(ix => ix.tSource)
+              .filter(t => t > 1e-4 && t < 1 - 1e-4)
+              .sort((a, b) => a - b);
+
+            for (const t of sortedParams) {
+              const id = generateId("point");
+              splitPts.push({
+                id,
+                x: p1.x + t * (p2.x - p1.x),
+                y: p1.y + t * (p2.y - p1.y),
+              });
+            }
+
+            // Remove original line first
+            removePrimitive(primId);
+
+            // Add split points
+            for (const pt of splitPts) {
+              addPrimitive({ id: pt.id, type: "point", x: pt.x, y: pt.y });
+            }
+
+            // Create line segments: p1→split1, split1→split2, ..., splitN→p2
+            const orderedPtIds = [prim.p1Id, ...splitPts.map(p => p.id), prim.p2Id];
+            const newLines: { id: string; p1Id: string; p2Id: string }[] = [];
+            for (let i = 0; i < orderedPtIds.length - 1; i++) {
+              newLines.push({
+                id: generateId("line"),
+                p1Id: orderedPtIds[i],
+                p2Id: orderedPtIds[i + 1],
+              });
+            }
+
+            // Find which segment to skip (the clicked one)
+            const boundaries = [0, ...sortedParams, 1];
+            let skipIdx = -1;
+            for (let i = 0; i < boundaries.length - 1; i++) {
+              if (Math.abs(boundaries[i] - startParam) < 1e-3 &&
+                  Math.abs(boundaries[i + 1] - endParam) < 1e-3) {
+                skipIdx = i;
+                break;
+              }
+            }
+
+            // Add all segments except the clicked one
+            for (let i = 0; i < newLines.length; i++) {
+              if (i === skipIdx) continue;
+              addPrimitive({
+                id: newLines[i].id,
+                type: "line" as const,
+                p1Id: newLines[i].p1Id,
+                p2Id: newLines[i].p2Id,
+                construction: prim.construction,
+              });
+            }
+          }
+        } else if (isSketchCircle(prim)) {
+          if (intersections.length >= 2) {
+            // Remove circle first
+            const center = activeSketch.primitives.find(p => p.id === prim.centerId && isSketchPoint(p)) as SketchPoint | undefined;
+            if (!center) return;
+
+            // The surviving arc goes from endParam to startParam
+            const startPtId = generateId("point");
+            const endPtId = generateId("point");
+            const arcId = generateId("arc");
+
+            removePrimitive(primId);
+
+            addPrimitive({
+              id: startPtId,
+              type: "point" as const,
+              x: center.x + prim.radius * Math.cos(endParam),
+              y: center.y + prim.radius * Math.sin(endParam),
+            });
+            addPrimitive({
+              id: endPtId,
+              type: "point" as const,
+              x: center.x + prim.radius * Math.cos(startParam),
+              y: center.y + prim.radius * Math.sin(startParam),
+            });
+            addPrimitive({
+              id: arcId,
+              type: "arc" as const,
+              centerId: prim.centerId,
+              startId: startPtId,
+              endId: endPtId,
+              radius: prim.radius,
+              construction: prim.construction,
+            });
+          }
+        }
+
+        // Solve after trim
+        solveSketch();
+      }
+    },
+    [activeSketch, worldToSketch2D, scene, cleanupTrimHighlight, pushSketchUndo, solveSketch, removePrimitive, updatePrimitive, addPrimitive, generateId],
+  );
+
+  // ── Extend mode handler ──
+  const handleExtendMode = useCallback(
+    (event: MouseEvent, point: THREE.Vector3) => {
+      if (!activeSketch || event.type !== "mousedown") return;
+
+      const pt2d = worldToSketch2D(point, activeSketch.plane);
+      if (!pt2d) return;
+      const cursorPoint = { x: pt2d.x, y: pt2d.y };
+
+      // Find closest line/arc endpoint
+      const endpoint = findClosestEndpoint(activeSketch, cursorPoint, 0.5);
+      if (!endpoint) return;
+
+      const prim = activeSketch.primitives.find(p => p.id === endpoint.primitiveId);
+      if (!prim) return;
+
+      if (isSketchLine(prim)) {
+        const target = findNearestExtendTarget(activeSketch, endpoint.primitiveId, endpoint.isStart);
+        if (!target) return;
+
+        pushSketchUndo();
+
+        // Update the endpoint position to the intersection point
+        updatePrimitive(endpoint.pointId, { x: target.point.x, y: target.point.y });
+
+        // Solve after extend
+        solveSketch();
+      }
+    },
+    [activeSketch, worldToSketch2D, pushSketchUndo, solveSketch, updatePrimitive],
   );
 
   // Handle line drawing - Fusion 360 style click-to-click with chaining
@@ -916,6 +1238,126 @@ export function useSketchMode(): UseSketchModeResult {
       isChaining,
       autoApplyHVConstraint,
       activeSketch,
+      pushSketchUndo,
+    ]
+  );
+
+  // Rectangle drawing start corner ref
+  const rectStartRef = useRef<THREE.Vector3 | null>(null);
+
+  // Handle rectangle drawing - 2-corner click-drag
+  const handleRectangleDraw = useCallback(
+    async (event: MouseEvent, point: THREE.Vector3) => {
+      if (event.type === "mousedown") {
+        isDrawingRef.current = true;
+        rectStartRef.current = point.clone();
+      } else if (event.type === "mousemove") {
+        if (!isDrawingRef.current || !rectStartRef.current) return;
+
+        cleanupSketchPreview();
+        const preview = createRectanglePreview(rectStartRef.current, point);
+        if (scene) {
+          scene.add(preview);
+          previewObjectRef.current = preview;
+        }
+      } else if (event.type === "mouseup") {
+        if (!isDrawingRef.current || !rectStartRef.current) return;
+
+        cleanupSketchPreview();
+
+        const start = rectStartRef.current;
+        const width = Math.abs(point.x - start.x);
+        const height = Math.abs(point.y - start.y);
+
+        if (width > 0.05 && height > 0.05) {
+          // Determine corners (BL, BR, TR, TL)
+          const minX = Math.min(start.x, point.x);
+          const maxX = Math.max(start.x, point.x);
+          const minY = Math.min(start.y, point.y);
+          const maxY = Math.max(start.y, point.y);
+
+          pushSketchUndo();
+
+          // Create 4 corner points directly via addPrimitive (not getOrCreatePoint, to avoid extra undo pushes)
+          const blId = generateId("pt");
+          const brId = generateId("pt");
+          const trId = generateId("pt");
+          const tlId = generateId("pt");
+
+          const blPt: SketchPoint = { id: blId, type: "point", x: minX, y: minY };
+          const brPt: SketchPoint = { id: brId, type: "point", x: maxX, y: minY };
+          const trPt: SketchPoint = { id: trId, type: "point", x: maxX, y: maxY };
+          const tlPt: SketchPoint = { id: tlId, type: "point", x: minX, y: maxY };
+
+          addPrimitive(blPt);
+          addPrimitive(brPt);
+          addPrimitive(trPt);
+          addPrimitive(tlPt);
+
+          // Create 4 lines connecting corners sequentially
+          const bottomId = generateId("ln");
+          const rightId = generateId("ln");
+          const topId = generateId("ln");
+          const leftId = generateId("ln");
+
+          const bottomLine: SketchLine = { id: bottomId, type: "line", p1Id: blId, p2Id: brId };
+          const rightLine: SketchLine = { id: rightId, type: "line", p1Id: brId, p2Id: trId };
+          const topLine: SketchLine = { id: topId, type: "line", p1Id: trId, p2Id: tlId };
+          const leftLine: SketchLine = { id: leftId, type: "line", p1Id: tlId, p2Id: blId };
+
+          addPrimitive(bottomLine);
+          addPrimitive(rightLine);
+          addPrimitive(topLine);
+          addPrimitive(leftLine);
+
+          // Auto-apply horizontal constraints on bottom + top lines
+          const hBottom: SketchConstraint = {
+            id: generateId("const"),
+            type: "horizontal",
+            primitiveIds: [bottomId],
+            driving: true,
+          };
+          const hTop: SketchConstraint = {
+            id: generateId("const"),
+            type: "horizontal",
+            primitiveIds: [topId],
+            driving: true,
+          };
+
+          // Auto-apply vertical constraints on right + left lines
+          const vRight: SketchConstraint = {
+            id: generateId("const"),
+            type: "vertical",
+            primitiveIds: [rightId],
+            driving: true,
+          };
+          const vLeft: SketchConstraint = {
+            id: generateId("const"),
+            type: "vertical",
+            primitiveIds: [leftId],
+            driving: true,
+          };
+
+          await addConstraintAndSolve(hBottom);
+          await addConstraintAndSolve(hTop);
+          await addConstraintAndSolve(vRight);
+          await addConstraintAndSolve(vLeft);
+
+          await solveSketch();
+        }
+
+        isDrawingRef.current = false;
+        rectStartRef.current = null;
+      }
+    },
+    [
+      scene,
+      cleanupSketchPreview,
+      createRectanglePreview,
+      addPrimitive,
+      addConstraintAndSolve,
+      solveSketch,
+      generateId,
       pushSketchUndo,
     ]
   );
@@ -1174,9 +1616,10 @@ export function useSketchMode(): UseSketchModeResult {
       lastClickTimeRef.current = 0;
     }
 
-    // Reset circle drawing
+    // Reset circle / rectangle drawing
     isDrawingRef.current = false;
     centerPointRef.current = null;
+    rectStartRef.current = null;
 
     // Reset arc drawing
     arcStepRef.current = 0;
@@ -1195,36 +1638,21 @@ export function useSketchMode(): UseSketchModeResult {
   // Store original camera position to restore if cancelled
   const originalCameraPositionRef = useRef<THREE.Vector3 | null>(null);
   const originalCameraUpRef = useRef<THREE.Vector3 | null>(null);
+  // Face highlight overlay for face-picking during plane selection
+  const faceHighlightRef = useRef<THREE.Mesh | null>(null);
 
   // Orient camera to face a plane (for sketching)
   const orientCameraToPlane = useCallback(
-    (planeType: SketchPlaneType) => {
+    (plane: SketchPlane) => {
       if (!camera) return;
 
       const distance = 15;
       const duration = 500; // Animation duration in ms
 
-      // Calculate target camera position based on plane
-      let targetPosition: THREE.Vector3;
-      let targetUp: THREE.Vector3;
-
-      switch (planeType) {
-        case "XY":
-          // Looking at XY plane from +Z (front view in standard convention)
-          targetPosition = new THREE.Vector3(0, 0, distance);
-          targetUp = new THREE.Vector3(0, 1, 0);
-          break;
-        case "XZ":
-          // Looking at XZ plane from +Y (top view)
-          targetPosition = new THREE.Vector3(0, distance, 0);
-          targetUp = new THREE.Vector3(0, 0, -1);
-          break;
-        case "YZ":
-          // Looking at YZ plane from +X (right/side view)
-          targetPosition = new THREE.Vector3(distance, 0, 0);
-          targetUp = new THREE.Vector3(0, 1, 0);
-          break;
-      }
+      // Calculate target camera position: offset from plane origin along normal
+      const targetPosition = plane.origin.clone().addScaledVector(plane.normal, distance);
+      const targetUp = plane.yAxis.clone();
+      const lookAtTarget = plane.origin.clone();
 
       // Animate camera position
       const startPosition = camera.position.clone();
@@ -1239,7 +1667,7 @@ export function useSketchMode(): UseSketchModeResult {
 
         camera.position.lerpVectors(startPosition, targetPosition, eased);
         camera.up.lerpVectors(startUp, targetUp, eased);
-        camera.lookAt(0, 0, 0);
+        camera.lookAt(lookAtTarget);
 
         if (t < 1) {
           requestAnimationFrame(animateCamera);
@@ -1493,7 +1921,7 @@ export function useSketchMode(): UseSketchModeResult {
 
   // Create grid on the selected plane
   const createSketchGrid = useCallback(
-    (planeType: SketchPlaneType) => {
+    (plane: SketchPlane, gridSizeOverride?: number) => {
       if (!scene) return;
 
       // Remove existing sketch grid
@@ -1516,10 +1944,10 @@ export function useSketchMode(): UseSketchModeResult {
       const gridGroup = new THREE.Group();
       gridGroup.userData.isSketchGrid = true;
 
-      const gridSize = 20;
-      const gridDivisions = 40;
+      const gridSize = gridSizeOverride ?? 20;
+      const gridDivisions = gridSize * 2;
 
-      // Create grid lines manually for proper plane orientation
+      // Create grid lines using plane vectors
       const step = gridSize / gridDivisions;
       const halfSize = gridSize / 2;
 
@@ -1528,45 +1956,37 @@ export function useSketchMode(): UseSketchModeResult {
 
       const gridPoints: THREE.Vector3[] = [];
 
-      switch (planeType) {
-        case "XY":
-          // Grid on XY plane (Z=0)
-          for (let i = -halfSize; i <= halfSize; i += step) {
-            // Vertical lines (parallel to Y)
-            gridPoints.push(new THREE.Vector3(i, -halfSize, 0));
-            gridPoints.push(new THREE.Vector3(i, halfSize, 0));
-            // Horizontal lines (parallel to X)
-            gridPoints.push(new THREE.Vector3(-halfSize, i, 0));
-            gridPoints.push(new THREE.Vector3(halfSize, i, 0));
-          }
-          break;
-        case "XZ":
-          // Grid on XZ plane (Y=0)
-          for (let i = -halfSize; i <= halfSize; i += step) {
-            // Lines parallel to Z
-            gridPoints.push(new THREE.Vector3(i, 0, -halfSize));
-            gridPoints.push(new THREE.Vector3(i, 0, halfSize));
-            // Lines parallel to X
-            gridPoints.push(new THREE.Vector3(-halfSize, 0, i));
-            gridPoints.push(new THREE.Vector3(halfSize, 0, i));
-          }
-          break;
-        case "YZ":
-          // Grid on YZ plane (X=0)
-          for (let i = -halfSize; i <= halfSize; i += step) {
-            // Lines parallel to Z
-            gridPoints.push(new THREE.Vector3(0, i, -halfSize));
-            gridPoints.push(new THREE.Vector3(0, i, halfSize));
-            // Lines parallel to Y
-            gridPoints.push(new THREE.Vector3(0, -halfSize, i));
-            gridPoints.push(new THREE.Vector3(0, halfSize, i));
-          }
-          break;
+      for (let i = -halfSize; i <= halfSize; i += step) {
+        // Lines along yAxis direction
+        gridPoints.push(plane.origin.clone().addScaledVector(plane.xAxis, i).addScaledVector(plane.yAxis, -halfSize));
+        gridPoints.push(plane.origin.clone().addScaledVector(plane.xAxis, i).addScaledVector(plane.yAxis, halfSize));
+        // Lines along xAxis direction
+        gridPoints.push(plane.origin.clone().addScaledVector(plane.yAxis, i).addScaledVector(plane.xAxis, -halfSize));
+        gridPoints.push(plane.origin.clone().addScaledVector(plane.yAxis, i).addScaledVector(plane.xAxis, halfSize));
       }
 
       const gridGeometry = new THREE.BufferGeometry().setFromPoints(gridPoints);
       const gridLines = new THREE.LineSegments(gridGeometry, gridMaterial);
       gridGroup.add(gridLines);
+
+      // Add origin axes indicator (red = xAxis, green = yAxis, ~1 unit each)
+      const axisLength = Math.min(gridSize / 10, 1.0);
+      const xAxisPoints = [
+        plane.origin.clone(),
+        plane.origin.clone().addScaledVector(plane.xAxis, axisLength),
+      ];
+      const yAxisPoints = [
+        plane.origin.clone(),
+        plane.origin.clone().addScaledVector(plane.yAxis, axisLength),
+      ];
+      const xAxisGeom = new THREE.BufferGeometry().setFromPoints(xAxisPoints);
+      const yAxisGeom = new THREE.BufferGeometry().setFromPoints(yAxisPoints);
+      const xAxisLine = new THREE.Line(xAxisGeom, new THREE.LineBasicMaterial({ color: 0xff4444, linewidth: 2, depthTest: false }));
+      const yAxisLine = new THREE.Line(yAxisGeom, new THREE.LineBasicMaterial({ color: 0x44ff44, linewidth: 2, depthTest: false }));
+      xAxisLine.renderOrder = 999;
+      yAxisLine.renderOrder = 999;
+      gridGroup.add(xAxisLine);
+      gridGroup.add(yAxisLine);
 
       scene.add(gridGroup);
       sketchGridRef.current = gridGroup;
@@ -1593,57 +2013,178 @@ export function useSketchMode(): UseSketchModeResult {
   }, [scene]);
 
   // Handle mouse move during plane selection (for hover effects)
+  // Collect body meshes from scene elements for face-picking
+  const collectBodyMeshes = useCallback((): THREE.Mesh[] => {
+    const meshes: THREE.Mesh[] = [];
+    for (const el of elements) {
+      const obj = getObject(el.nodeId);
+      if (!obj) continue;
+      obj.traverse((child) => {
+        if (child instanceof THREE.Mesh && !child.userData.isEdgeOverlay && !child.userData.isHelper && !child.userData.isSketchPrimitive) {
+          meshes.push(child);
+        }
+      });
+    }
+    return meshes;
+  }, [elements, getObject]);
+
+  // Get face normal in world space from an intersection
+  const getFaceWorldNormal = useCallback((intersection: THREE.Intersection): THREE.Vector3 | null => {
+    if (!intersection.face) return null;
+    const normal = intersection.face.normal.clone();
+    const mesh = intersection.object as THREE.Mesh;
+    const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+    normal.applyMatrix3(normalMatrix).normalize();
+    return normal;
+  }, []);
+
+  // Clean up face highlight overlay
+  const cleanupFaceHighlight = useCallback(() => {
+    if (faceHighlightRef.current && scene) {
+      scene.remove(faceHighlightRef.current);
+      faceHighlightRef.current.geometry.dispose();
+      (faceHighlightRef.current.material as THREE.Material).dispose();
+      faceHighlightRef.current = null;
+    }
+  }, [scene]);
+
   const handlePlaneSelectionMouseMove = useCallback(
     (event: MouseEvent) => {
-      if (!isSelectingPlane || !selectionPlanesRef.current) return;
+      if (!isSelectingPlane) return;
 
-      // Get plane meshes
-      const planes = selectionPlanesRef.current.children.filter(
-        (child) => child instanceof THREE.Mesh && child.userData.planeType
-      ) as THREE.Mesh[];
+      // Clean up previous face highlight
+      cleanupFaceHighlight();
 
-      const intersects = raycastToObjects(event, planes, false);
+      if (selectionPlanesRef.current) {
+        // Get plane meshes
+        const planes = selectionPlanesRef.current.children.filter(
+          (child) => child instanceof THREE.Mesh && child.userData.planeType
+        ) as THREE.Mesh[];
 
-      // Reset all planes to base color and opacity
-      planes.forEach((plane) => {
-        const material = plane.material as THREE.MeshBasicMaterial;
-        material.color.setHex(plane.userData.baseColor);
-        material.opacity = plane.userData.baseOpacity || 0.5;
-      });
+        const intersects = raycastToObjects(event, planes, false);
 
-      if (intersects.length > 0) {
-        const hitPlane = intersects[0].object as THREE.Mesh;
-        const material = hitPlane.material as THREE.MeshBasicMaterial;
-        material.color.setHex(PLANE_THEME.hover); // Bright yellow on hover
-        material.opacity = 0.8;
-        setHoveredPlane(hitPlane.userData.planeType as SketchPlaneType);
-      } else {
-        setHoveredPlane(null);
+        // Reset all planes to base color and opacity
+        planes.forEach((plane) => {
+          const material = plane.material as THREE.MeshBasicMaterial;
+          material.color.setHex(plane.userData.baseColor);
+          material.opacity = plane.userData.baseOpacity || 0.5;
+        });
+
+        if (intersects.length > 0) {
+          const hitPlane = intersects[0].object as THREE.Mesh;
+          const material = hitPlane.material as THREE.MeshBasicMaterial;
+          material.color.setHex(PLANE_THEME.hover); // Bright yellow on hover
+          material.opacity = 0.8;
+          setHoveredPlane(hitPlane.userData.planeType as SketchPlaneType);
+          return; // Plane hit takes priority over face hit
+        }
       }
+
+      // Also raycast against body faces
+      const bodyMeshes = collectBodyMeshes();
+      if (bodyMeshes.length > 0) {
+        const bodyIntersects = raycastToObjects(event, bodyMeshes, false);
+        if (bodyIntersects.length > 0) {
+          const hit = bodyIntersects[0];
+          const worldNormal = getFaceWorldNormal(hit);
+          if (worldNormal && scene) {
+            // Create a highlight disc on the face
+            const highlightGeom = new THREE.CircleGeometry(2.0, 32);
+            const highlightMat = new THREE.MeshBasicMaterial({
+              color: 0x2e75b6,
+              transparent: true,
+              opacity: 0.4,
+              side: THREE.DoubleSide,
+              depthTest: false,
+            });
+            const highlight = new THREE.Mesh(highlightGeom, highlightMat);
+            highlight.position.copy(hit.point).addScaledVector(worldNormal, 0.01);
+            const quat = new THREE.Quaternion();
+            quat.setFromUnitVectors(new THREE.Vector3(0, 0, 1), worldNormal);
+            highlight.quaternion.copy(quat);
+            highlight.renderOrder = 1000;
+            scene.add(highlight);
+            faceHighlightRef.current = highlight;
+            setHoveredPlane("face" as SketchPlaneType);
+            return;
+          }
+        }
+      }
+
+      setHoveredPlane(null);
     },
-    [isSelectingPlane, raycastToObjects]
+    [isSelectingPlane, raycastToObjects, collectBodyMeshes, getFaceWorldNormal, cleanupFaceHighlight, scene]
   );
 
   // Handle click during plane selection
   const handlePlaneSelectionClick = useCallback(
     (event: MouseEvent) => {
-      if (!isSelectingPlane || !selectionPlanesRef.current) return;
+      if (!isSelectingPlane) return;
 
-      // Get plane meshes
-      const planes = selectionPlanesRef.current.children.filter(
-        (child) => child instanceof THREE.Mesh && child.userData.planeType
-      ) as THREE.Mesh[];
+      // Clean up face highlight
+      cleanupFaceHighlight();
 
-      const intersects = raycastToObjects(event, planes, false);
+      if (selectionPlanesRef.current) {
+        // Get plane meshes
+        const planes = selectionPlanesRef.current.children.filter(
+          (child) => child instanceof THREE.Mesh && child.userData.planeType
+        ) as THREE.Mesh[];
 
-      if (intersects.length > 0) {
-        const hitPlane = intersects[0].object as THREE.Mesh;
-        const planeType = hitPlane.userData.planeType as SketchPlaneType;
-        selectPlaneAndStartSketch(planeType);
+        const intersects = raycastToObjects(event, planes, false);
+
+        if (intersects.length > 0) {
+          const hitPlane = intersects[0].object as THREE.Mesh;
+          const planeType = hitPlane.userData.planeType as SketchPlaneType;
+          selectPlaneAndStartSketch(planeType, planeOffsetRef.current || undefined);
+          return;
+        }
+      }
+
+      // Also check body faces
+      const bodyMeshes = collectBodyMeshes();
+      if (bodyMeshes.length > 0) {
+        const bodyIntersects = raycastToObjects(event, bodyMeshes, false);
+        if (bodyIntersects.length > 0) {
+          const hit = bodyIntersects[0];
+          const worldNormal = getFaceWorldNormal(hit);
+          if (worldNormal) {
+            // Find the element this mesh belongs to
+            let elementNodeId: string | undefined;
+            let parent = hit.object.parent;
+            while (parent) {
+              if (parent.userData?.nodeId) {
+                elementNodeId = parent.userData.nodeId;
+                break;
+              }
+              parent = parent.parent;
+            }
+
+            // Snap normal to nearest axis if close (tolerance for tessellated faces)
+            const axes = [
+              new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
+              new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0),
+              new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1),
+            ];
+            for (const axis of axes) {
+              if (worldNormal.angleTo(axis) < 0.1) { // ~5.7 degrees
+                worldNormal.copy(axis);
+                break;
+              }
+            }
+
+            const facePlane = createSketchPlaneFromNormal(worldNormal, hit.point, elementNodeId);
+            selectPlaneAndStartSketch(facePlane, planeOffsetRef.current || undefined);
+          }
+        }
       }
     },
-    [isSelectingPlane, raycastToObjects]
+    [isSelectingPlane, raycastToObjects, collectBodyMeshes, getFaceWorldNormal, cleanupFaceHighlight]
   );
+
+  // Set plane offset (called from UI input, read by handlePlaneSelectionClick)
+  const setPlaneOffset = useCallback((v: number) => {
+    planeOffsetRef.current = v;
+  }, []);
 
   // Enter plane selection mode
   const enterPlaneSelectionMode = useCallback(() => {
@@ -1661,6 +2202,7 @@ export function useSketchMode(): UseSketchModeResult {
     setIsSelectingPlane(false);
     setHoveredPlane(null);
     removeSelectionPlanes();
+    cleanupFaceHighlight();
 
     // Restore original camera position
     if (camera && originalCameraPositionRef.current && originalCameraUpRef.current) {
@@ -1668,11 +2210,23 @@ export function useSketchMode(): UseSketchModeResult {
       camera.up.copy(originalCameraUpRef.current);
       camera.lookAt(0, 0, 0);
     }
-  }, [camera, removeSelectionPlanes]);
+  }, [camera, removeSelectionPlanes, cleanupFaceHighlight]);
 
   // Select a plane and start sketch
   const selectPlaneAndStartSketch = useCallback(
-    (planeType: SketchPlaneType) => {
+    (planeOrType: SketchPlane | SketchPlaneType, offset?: number) => {
+      // Accept either a full SketchPlane or a SketchPlaneType string
+      const plane: SketchPlane = typeof planeOrType === "string"
+        ? createSketchPlane(planeOrType)
+        : planeOrType;
+
+      // Apply offset if provided (for offset planes)
+      if (offset && typeof planeOrType === "string") {
+        plane.origin.addScaledVector(plane.normal, offset);
+        plane.type = "offset";
+        plane.offset = offset;
+      }
+
       // Exit plane selection mode
       setIsSelectingPlane(false);
       setHoveredPlane(null);
@@ -1690,15 +2244,16 @@ export function useSketchMode(): UseSketchModeResult {
       // Dim existing 3D bodies so sketch stands out
       dimSceneBodies();
 
-      // Set the drawing plane for raycasting based on plane type
-      const plane = createSketchPlane(planeType);
-      setDrawingPlane(plane.normal);
+      // Set the drawing plane for raycasting — pass normal and plane constant
+      const planeConstant = -plane.normal.dot(plane.origin);
+      setDrawingPlane(plane.normal, planeConstant);
 
       // Orient camera to the plane
-      orientCameraToPlane(planeType);
+      orientCameraToPlane(plane);
 
-      // Create grid on the plane
-      createSketchGrid(planeType);
+      // Create grid on the plane (smaller grid for face planes)
+      const isFacePlane = plane.type === "face";
+      createSketchGrid(plane, isFacePlane ? 10 : undefined);
 
       // Start sketch on selected plane
       startSketch(plane);
@@ -1773,10 +2328,31 @@ export function useSketchMode(): UseSketchModeResult {
           event.preventDefault();
           break;
 
+        case "r":
+          // R: Rectangle tool
+          cancelCurrentOperation();
+          setSketchSubMode("rectangle");
+          event.preventDefault();
+          break;
+
         case "s":
           // S: Select tool
           cancelCurrentOperation();
           setSketchSubMode("select");
+          event.preventDefault();
+          break;
+
+        case "t":
+          // T: Trim tool
+          cancelCurrentOperation();
+          setSketchSubMode("trim");
+          event.preventDefault();
+          break;
+
+        case "e":
+          // E: Extend tool (only when not in extrude mode)
+          cancelCurrentOperation();
+          setSketchSubMode("extend");
           event.preventDefault();
           break;
 
@@ -2161,7 +2737,7 @@ export function useSketchMode(): UseSketchModeResult {
       if (!point3D) return;
 
       // Convert to 2D sketch coords — dragStartPointRef is already in sketch coords
-      const point = worldToSketch2D(point3D, currentSketch.plane.type);
+      const point = worldToSketch2D(point3D, currentSketch.plane);
       const deltaX = point.x - dragStartPointRef.current.x;
       const deltaY = point.y - dragStartPointRef.current.y;
 
@@ -2208,7 +2784,7 @@ export function useSketchMode(): UseSketchModeResult {
       if (!point3D) return;
 
       // Store drag start in 2D sketch coordinates
-      const point = worldToSketch2D(point3D, activeSketch.plane.type);
+      const point = worldToSketch2D(point3D, activeSketch.plane);
 
       // Collect all points that need to be moved
       const pointsToMove: string[] = [];
@@ -2417,7 +2993,7 @@ export function useSketchMode(): UseSketchModeResult {
 
       // Convert 3D world intersection to 2D sketch coordinates
       let point = activeSketch
-        ? worldToSketch2D(point3D, activeSketch.plane.type)
+        ? worldToSketch2D(point3D, activeSketch.plane)
         : point3D.clone();
 
       // Apply grid snapping first
@@ -2470,6 +3046,9 @@ export function useSketchMode(): UseSketchModeResult {
         case "line":
           handleLineDraw(event, point);
           break;
+        case "rectangle":
+          handleRectangleDraw(event, point);
+          break;
         case "circle":
           handleCircleDraw(event, point);
           break;
@@ -2483,6 +3062,12 @@ export function useSketchMode(): UseSketchModeResult {
         case "dimension":
           handleSelectMode(event, false);
           break;
+        case "trim":
+          handleTrimMode(event, point);
+          break;
+        case "extend":
+          handleExtendMode(event, point);
+          break;
       }
     },
     [
@@ -2493,6 +3078,7 @@ export function useSketchMode(): UseSketchModeResult {
       worldToSketch2D,
       snapToGrid,
       handleLineDraw,
+      handleRectangleDraw,
       handleCircleDraw,
       handleArcDraw,
       handlePointDraw,
@@ -2504,6 +3090,8 @@ export function useSketchMode(): UseSketchModeResult {
       renderGuidelines,
       cleanupInferenceObjects,
       isSelectingPlane,
+      handleTrimMode,
+      handleExtendMode,
     ]
   );
 
@@ -2561,18 +3149,14 @@ export function useSketchMode(): UseSketchModeResult {
       return !!(prim && (prim as any).construction);
     };
 
-    // Convert 2D sketch coordinates to 3D based on plane type
+    // Convert 2D sketch coordinates to 3D based on plane vectors
     const sketchTo3D = (x: number, y: number, zOffset: number = 0): THREE.Vector3 => {
-      const planeType = activeSketch.plane.type;
-      switch (planeType) {
-        case "XZ":
-          return new THREE.Vector3(x, zOffset, y);
-        case "YZ":
-          return new THREE.Vector3(zOffset, x, y);
-        case "XY":
-        default:
-          return new THREE.Vector3(x, y, zOffset);
-      }
+      const plane = activeSketch.plane;
+      return new THREE.Vector3()
+        .copy(plane.origin)
+        .addScaledVector(plane.xAxis, x)
+        .addScaledVector(plane.yAxis, y)
+        .addScaledVector(plane.normal, zOffset);
     };
     sketchTo3DRef.current = sketchTo3D;
 
@@ -2619,17 +3203,14 @@ export function useSketchMode(): UseSketchModeResult {
         const p1 = getPointPosition(primitive.p1Id);
         const p2 = getPointPosition(primitive.p2Id);
         if (p1 && p2) {
-          // Apply plane-aware offset for visibility
-          const planeType = activeSketch.plane.type;
-          if (planeType === "XZ") {
-            p1.y = 0.05;
-            p2.y = 0.05;
-          } else if (planeType === "YZ") {
-            p1.x = 0.05;
-            p2.x = 0.05;
-          } else {
-            p1.z = 0.05;
-            p2.z = 0.05;
+          // Apply plane-aware offset for visibility using sketchTo3D
+          const p1Prim = activeSketch.primitives.find(p => p.id === primitive.p1Id && isSketchPoint(p)) as SketchPoint | undefined;
+          const p2Prim = activeSketch.primitives.find(p => p.id === primitive.p2Id && isSketchPoint(p)) as SketchPoint | undefined;
+          if (p1Prim && p2Prim) {
+            const p1Offset = sketchTo3D(p1Prim.x, p1Prim.y, 0.05);
+            const p2Offset = sketchTo3D(p2Prim.x, p2Prim.y, 0.05);
+            p1.copy(p1Offset);
+            p2.copy(p2Offset);
           }
 
           // Create Line2 for thin, crisp lines
@@ -2668,13 +3249,14 @@ export function useSketchMode(): UseSketchModeResult {
           console.warn("Could not find center for circle:", primitive.centerId);
         }
       } else if (isSketchArc(primitive)) {
-        const center = getPointPosition(primitive.centerId);
-        const start = getPointPosition(primitive.startId);
-        const end = getPointPosition(primitive.endId);
-        if (center && start && end) {
+        // Get 2D coordinates from primitives for arc calculation
+        const centerPrim2D = activeSketch.primitives.find(p => p.id === primitive.centerId && isSketchPoint(p)) as SketchPoint | undefined;
+        const startPrim2D = activeSketch.primitives.find(p => p.id === primitive.startId && isSketchPoint(p)) as SketchPoint | undefined;
+        const endPrim2D = activeSketch.primitives.find(p => p.id === primitive.endId && isSketchPoint(p)) as SketchPoint | undefined;
+        if (centerPrim2D && startPrim2D && endPrim2D) {
           const radius = primitive.radius;
-          const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
-          const endAngle = Math.atan2(end.y - center.y, end.x - center.x);
+          const startAngle = Math.atan2(startPrim2D.y - centerPrim2D.y, startPrim2D.x - centerPrim2D.x);
+          const endAngle = Math.atan2(endPrim2D.y - centerPrim2D.y, endPrim2D.x - centerPrim2D.x);
           const angleDiff = endAngle - startAngle;
           const normalizedDiff =
             angleDiff > 0 ? angleDiff : angleDiff + Math.PI * 2;
@@ -2684,11 +3266,10 @@ export function useSketchMode(): UseSketchModeResult {
           for (let i = 0; i <= segments; i++) {
             const t = i / segments;
             const currentAngle = startAngle + normalizedDiff * t;
-            positions.push(
-              center.x + Math.cos(currentAngle) * radius,
-              center.y + Math.sin(currentAngle) * radius,
-              0.05
-            );
+            const localX = centerPrim2D.x + Math.cos(currentAngle) * radius;
+            const localY = centerPrim2D.y + Math.sin(currentAngle) * radius;
+            const pt = sketchTo3D(localX, localY, 0.05);
+            positions.push(pt.x, pt.y, pt.z);
           }
           const lineWidth = isSelected ? 3.0 : 1.5;
           const line = createLine2FromPoints(positions, color, lineWidth, constructionFlag);
@@ -2974,13 +3555,11 @@ export function useSketchMode(): UseSketchModeResult {
             side: THREE.DoubleSide,
           });
           const shapeMesh = new THREE.Mesh(shapeGeometry, shapeMaterial);
-          // Position on the sketch plane
-          const planeType = activeSketch.plane.type;
-          if (planeType === "XZ") {
-            shapeMesh.rotation.x = -Math.PI / 2;
-          } else if (planeType === "YZ") {
-            shapeMesh.rotation.y = Math.PI / 2;
-          }
+          // Position on the sketch plane using quaternion from normal
+          const quat = new THREE.Quaternion();
+          quat.setFromUnitVectors(new THREE.Vector3(0, 0, 1), activeSketch.plane.normal);
+          shapeMesh.quaternion.copy(quat);
+          shapeMesh.position.copy(activeSketch.plane.origin);
           shapeMesh.renderOrder = 997;
           scene.add(shapeMesh);
           newObjects.push(shapeMesh);
@@ -3098,6 +3677,7 @@ export function useSketchMode(): UseSketchModeResult {
     cleanupSketchGrid,
     handlePlaneSelectionMouseMove,
     handlePlaneSelectionClick,
+    setPlaneOffset,
     // Constraint feedback (redundant/conflicting rollback)
     constraintFeedback,
   };

@@ -155,6 +155,34 @@ export class BrepGraph {
   }
 }
 
+/**
+ * Deep-clone a Brep or CompoundBrep.
+ * BRep refs are treated as immutable in the codebase, but we clone
+ * the vertex/edge/face arrays so the copy is truly independent.
+ */
+export function cloneBrep(brep: Brep): Brep {
+  if (brep instanceof CompoundBrep) {
+    const clonedChildren = brep.children.map(child => cloneBrep(child));
+    const compound = new CompoundBrep(clonedChildren);
+    // Clone unified brep if already computed
+    const unified = (brep as any)._unifiedBRep as Brep | null;
+    if (unified) {
+      compound.setUnifiedBrep(cloneBrep(unified));
+    }
+    return compound;
+  }
+
+  const vertices = brep.vertices.map(v => new Vertex(v.x, v.y, v.z));
+  const edges = brep.edges.map(e => new Edge(
+    new Vertex(e.start.x, e.start.y, e.start.z),
+    new Vertex(e.end.x, e.end.y, e.end.z),
+  ));
+  const faces = brep.faces.map(f => new Face(
+    f.vertices.map(v => new Vertex(v.x, v.y, v.z)),
+  ));
+  return new Brep(vertices, edges, faces);
+}
+
 function crossProduct(a: Vertex, b: Vertex): Vertex {
   return new Vertex(
     a.y * b.z - a.z * b.y,

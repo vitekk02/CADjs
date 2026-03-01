@@ -1,12 +1,13 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useCadCore } from "../contexts/CoreContext";
+import { useToast } from "../contexts/ToastContext";
 
 const FileMenu: React.FC = () => {
   const { elements, importFile, exportFile, mode, activeSketch, isOperationPending } = useCadCore();
+  const { showToast } = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const isLocked = (mode === "sketch" && !!activeSketch) || isOperationPending;
-  const [error, setError] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -24,13 +25,6 @@ const FileMenu: React.FC = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [menuOpen]);
 
-  // Clear error after 4 seconds
-  useEffect(() => {
-    if (!error) return;
-    const timer = setTimeout(() => setError(null), 4000);
-    return () => clearTimeout(timer);
-  }, [error]);
-
   const handleImportClick = () => {
     fileInputRef.current?.click();
     setMenuOpen(false);
@@ -41,12 +35,11 @@ const FileMenu: React.FC = () => {
     if (!file) return;
 
     setLoading(true);
-    setError(null);
     try {
       await importFile(file);
     } catch (err) {
       console.error("Import failed:", err);
-      setError(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+      showToast(`Import failed: ${err instanceof Error ? err.message : String(err)}`, "error");
     } finally {
       setLoading(false);
       // Reset input so the same file can be re-imported
@@ -57,12 +50,11 @@ const FileMenu: React.FC = () => {
   const handleExport = async (format: "step" | "stl" | "iges") => {
     setMenuOpen(false);
     setLoading(true);
-    setError(null);
     try {
       await exportFile(format);
     } catch (err) {
       console.error("Export failed:", err);
-      setError(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+      showToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, "error");
     } finally {
       setLoading(false);
     }
@@ -134,12 +126,6 @@ const FileMenu: React.FC = () => {
         onChange={handleFileChange}
       />
 
-      {/* Error toast */}
-      {error && (
-        <div className="fixed bottom-4 right-4 bg-red-800 text-white px-4 py-2 rounded-md shadow-lg z-50 text-sm max-w-sm">
-          {error}
-        </div>
-      )}
     </>
   );
 };

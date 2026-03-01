@@ -7,22 +7,6 @@ import {
 import { Brep, CompoundBrep, Face, Vertex } from "../../src/geometry";
 import { SceneElement } from "../../src/scene-operations/types";
 
-// Mock dependencies
-jest.mock("../../src/scene-operations/mesh-operations", () => ({
-  createMeshFromBrep: jest.fn(
-    () =>
-      new THREE.Mesh(
-        new THREE.BoxGeometry(),
-        new THREE.MeshStandardMaterial({ color: 0x0000ff })
-      )
-  ),
-}));
-
-jest.mock("../../src/convertBRepToGeometry", () => ({
-  transformBrepVertices: jest.fn((brep) => brep),
-  createGeometryFromBRep: jest.fn(() => new THREE.BufferGeometry()),
-}));
-
 describe("element-operations", () => {
   let objectsMap: Map<string, THREE.Object3D>;
   let elements: SceneElement[];
@@ -31,9 +15,6 @@ describe("element-operations", () => {
   let compoundBrep: CompoundBrep;
 
   beforeEach(() => {
-    // Reset mocks
-    jest.clearAllMocks();
-
     // Setup test fixtures
     objectsMap = new Map<string, THREE.Object3D>();
     elements = [];
@@ -80,6 +61,10 @@ describe("element-operations", () => {
       expect(objectsMap.size).toBe(1);
       expect(objectsMap.has("node_1")).toBe(true);
 
+      // Real createMeshFromBrep returns a THREE.Group
+      const obj = objectsMap.get("node_1")!;
+      expect(obj).toBeInstanceOf(THREE.Group);
+
       // Check if id counter is incremented
       expect(result.nextId).toBe(1);
     });
@@ -108,26 +93,13 @@ describe("element-operations", () => {
 
   describe("removeElement", () => {
     beforeEach(() => {
-      // Setup pre-existing elements
-      elements = [
-        {
-          nodeId: "node_1",
-          brep: simpleBrep,
-          position: new THREE.Vector3(0, 0, 0),
-          selected: false,
-        },
-        {
-          nodeId: "node_2",
-          brep: simpleBrep,
-          position: new THREE.Vector3(1, 0, 0),
-          selected: true,
-        },
-      ];
+      // Setup pre-existing elements using real createMeshFromBrep
+      const result1 = addElement([], simpleBrep, new THREE.Vector3(0, 0, 0), 0, objectsMap);
+      const result2 = addElement(result1.updatedElements, simpleBrep, new THREE.Vector3(1, 0, 0), result1.nextId, objectsMap);
+      elements = result2.updatedElements.map((el, i) =>
+        i === 1 ? { ...el, selected: true } : el
+      );
       selectedElements = ["node_2"];
-
-      // Add objects to objectsMap
-      objectsMap.set("node_1", new THREE.Mesh());
-      objectsMap.set("node_2", new THREE.Mesh());
     });
 
     test("removes element from elements array and objects map", () => {
@@ -159,26 +131,17 @@ describe("element-operations", () => {
   });
 
   describe("updateElementPosition", () => {
-    let transformBrepVerticesMock: jest.Mock;
-
     beforeEach(() => {
-      // Get reference to mock function
-      transformBrepVerticesMock =
-        require("../../src/convertBRepToGeometry").transformBrepVertices;
+      // Setup pre-existing elements using real createMeshFromBrep
+      const result1 = addElement([], simpleBrep, new THREE.Vector3(0, 0, 0), 0, objectsMap);
+      elements = result1.updatedElements;
 
-      // Create a simple implementation
-      transformBrepVerticesMock.mockImplementation((brep) => {
-        return brep; // Just return the same brep for testing
-      });
-
-      // Setup pre-existing elements
+      // Add a compound brep element with a provided Group (CompoundBrep can't go through createMeshFromBrep easily)
+      const compoundGroup = new THREE.Group();
+      compoundGroup.position.set(1, 0, 0);
+      objectsMap.set("node_2", compoundGroup);
       elements = [
-        {
-          nodeId: "node_1",
-          brep: simpleBrep,
-          position: new THREE.Vector3(0, 0, 0),
-          selected: false,
-        },
+        ...elements,
         {
           nodeId: "node_2",
           brep: compoundBrep,
@@ -186,10 +149,6 @@ describe("element-operations", () => {
           selected: true,
         },
       ];
-
-      // Add objects to objectsMap
-      objectsMap.set("node_1", new THREE.Mesh());
-      objectsMap.set("node_2", new THREE.Group());
     });
 
     test("updates position for a simple brep element", () => {
@@ -210,9 +169,6 @@ describe("element-operations", () => {
       // Check if object position is updated
       const object = objectsMap.get("node_1");
       expect(object?.position.equals(newPosition)).toBe(true);
-
-      // BRep vertices are NOT transformed - only position property is updated
-      // transformBrepVertices is NOT called in updateElementPosition
     });
 
     test("updates position for a compound brep element", () => {
@@ -233,9 +189,6 @@ describe("element-operations", () => {
       // Check if object position is updated
       const object = objectsMap.get("node_2");
       expect(object?.position.equals(newPosition)).toBe(true);
-
-      // BRep vertices are NOT transformed for compound breps either
-      // The position property is updated, not the geometry
     });
 
     test("returns original elements array when element not found", () => {
@@ -249,7 +202,6 @@ describe("element-operations", () => {
 
       // Should return the original elements unchanged
       expect(updatedElements).toBe(elements);
-      expect(transformBrepVerticesMock).not.toHaveBeenCalled();
     });
   });
 });

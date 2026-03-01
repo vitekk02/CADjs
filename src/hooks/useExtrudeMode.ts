@@ -2,15 +2,18 @@ import { useCallback, useRef, useState } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
+import { useToast } from "../contexts/ToastContext";
 import { Brep } from "../geometry";
 import { OpenCascadeService } from "../services/OpenCascadeService";
 import {
   extrudeBRep,
 } from "../scene-operations/resize-operations";
 import { isDescendantOf, collectPickableMeshes } from "../scene-operations/mesh-operations";
+import { isElement3D, SceneElement } from "../scene-operations/types";
 import { EXTRUDE, SKETCH as SKETCH_THEME, BODY, SELECTION } from "../theme";
 
 export type ExtrudeDirection = "up" | "down" | "symmetric";
+export type ExtrudeOperationType = "join" | "cut";
 
 interface ExtrudeState {
   selectedElement: string | null;
@@ -19,6 +22,7 @@ interface ExtrudeState {
   extrusionDepth: number;
   showDimensionInput: boolean;
   dimensionInputPosition: { x: number; y: number };
+  operationType: ExtrudeOperationType;
 }
 
 /**
@@ -29,6 +33,7 @@ export function useExtrudeMode() {
   const { elements, getObject, updateElementBrep } = useCadCore();
   const { camera, renderer, scene, getMouseIntersection, forceSceneUpdate } =
     useCadVisualizer();
+  const { showToast } = useToast();
 
   const [state, setState] = useState<ExtrudeState>({
     selectedElement: null,
@@ -37,6 +42,7 @@ export function useExtrudeMode() {
     extrusionDepth: 0,
     showDimensionInput: false,
     dimensionInputPosition: { x: 0, y: 0 },
+    operationType: "join",
   });
 
   const startPointRef = useRef<THREE.Vector3 | null>(null);
@@ -50,6 +56,8 @@ export function useExtrudeMode() {
   // Profile hover highlight
   const hoveredElementRef = useRef<string | null>(null);
   const hoverOverlayRef = useRef<THREE.Mesh | null>(null);
+  // Body dimming state — stores original material properties for restoration
+  const dimmedMaterialsRef = useRef<Map<string, { color: number; opacity: number; transparent: boolean }>>(new Map());
 
   /**
    * Check if a BRep is flat (2D shape — flat along any single axis)
@@ -68,11 +76,77 @@ export function useExtrudeMode() {
     return rangeX < 0.01 || rangeY < 0.01 || rangeZ < 0.01;
   }, []);
 
+  /** Dim all 3D bodies so flat profiles stand out (Fusion 360-style) */
+  const dimSceneBodies = useCallback(() => {
+    dimmedMaterialsRef.current.clear();
+    elements.forEach((el) => {
+      if (!isElement3D(el)) return; // Only dim 3D bodies, leave flat profiles visible
+      const obj = getObject(el.nodeId);
+      if (!obj) return;
+      obj.traverse((child) => {
+        if (child instanceof THREE.Mesh && !child.userData.isEdgeOverlay && !child.userData.isHelper) {
+          const mat = child.material as THREE.MeshStandardMaterial;
+          dimmedMaterialsRef.current.set(child.uuid, {
+            color: mat.color.getHex(),
+            opacity: mat.opacity,
+            transparent: mat.transparent,
+          });
+          mat.transparent = true;
+          mat.opacity = BODY.dimmedOpacity;
+          mat.color.set(BODY.dimmedColor);
+          mat.needsUpdate = true;
+        }
+        if (child instanceof THREE.LineSegments && child.userData.isEdgeOverlay) {
+          const mat = child.material as THREE.LineBasicMaterial;
+          dimmedMaterialsRef.current.set(child.uuid, {
+            color: mat.color.getHex(),
+            opacity: mat.opacity,
+            transparent: mat.transparent,
+          });
+          mat.transparent = true;
+          mat.opacity = BODY.dimmedOpacity;
+          mat.needsUpdate = true;
+        }
+      });
+    });
+  }, [elements, getObject]);
+
+  /** Restore all dimmed bodies to their original appearance */
+  const restoreSceneBodies = useCallback(() => {
+    if (dimmedMaterialsRef.current.size === 0) return;
+    // Traverse the whole scene — avoids stale closure over elements/getObject
+    scene?.traverse((child) => {
+      const saved = dimmedMaterialsRef.current.get(child.uuid);
+      if (!saved) return;
+      if (child instanceof THREE.Mesh) {
+        const mat = child.material as THREE.MeshStandardMaterial;
+        mat.color.set(saved.color);
+        mat.opacity = saved.opacity;
+        mat.transparent = saved.transparent;
+        mat.needsUpdate = true;
+      }
+      if (child instanceof THREE.LineSegments) {
+        const mat = child.material as THREE.LineBasicMaterial;
+        mat.color.set(saved.color);
+        mat.opacity = saved.opacity;
+        mat.transparent = saved.transparent;
+        mat.needsUpdate = true;
+      }
+    });
+    dimmedMaterialsRef.current.clear();
+  }, [scene]);
+
   /**
    * Get the normal direction of a flat BRep (the axis it's flat along).
-   * Returns (0,0,1) for XY-plane shapes, (0,1,0) for XZ, (1,0,0) for YZ.
+   * If element has a sketchPlane, uses that normal directly.
+   * Otherwise falls back to detecting the flat axis from vertex ranges.
    */
-  const getFlatNormal = useCallback((brep: Brep): THREE.Vector3 => {
+  const getFlatNormal = useCallback((brep: Brep, element?: SceneElement): THREE.Vector3 => {
+    // Use sketch plane normal when available (e.g., face sketches, offset planes)
+    if (element?.sketchPlane) {
+      return element.sketchPlane.normal.clone();
+    }
+
     if (!brep.vertices || brep.vertices.length === 0)
       return new THREE.Vector3(0, 0, 1);
 
@@ -184,10 +258,12 @@ export function useExtrudeMode() {
   }, [scene]);
 
   /**
-   * Create arrow handles for extrusion
+   * Create arrow handles for extrusion.
+   * @param nodeId - The element to create handles for
+   * @param opType - Optional operation type override (avoids stale state during toggle)
    */
   const createArrowHandles = useCallback(
-    (nodeId: string) => {
+    (nodeId: string, opType?: ExtrudeOperationType) => {
       if (!scene) return;
       cleanupHandles();
 
@@ -209,9 +285,18 @@ export function useExtrudeMode() {
       const headLength = 0.3;
 
       // Determine the extrusion direction based on which axis the shape is flat along
-      const normal = getFlatNormal(element.brep);
+      const normal = getFlatNormal(element.brep, element);
 
-      // Create up arrow (primary - full opacity)
+      // Choose colors based on operation type
+      const effectiveOpType = opType ?? state.operationType;
+      const isCut = effectiveOpType === "cut";
+      const primaryColor = isCut ? EXTRUDE.cutArrow : EXTRUDE.arrow;
+      const secondaryColor = isCut ? EXTRUDE.cutArrowSecondary : EXTRUDE.arrowSecondary;
+      // In cut mode, swap opacity so "into body" (down/negative normal) is full opacity
+      const upOpacity = isCut ? 0.5 : 1.0;
+      const downOpacity = isCut ? 1.0 : 0.5;
+
+      // Create up arrow (positive normal direction)
       const upArrow = createArrow(
         center,
         normal.clone(),
@@ -219,14 +304,14 @@ export function useExtrudeMode() {
         shaftRadius,
         headRadius,
         headLength,
-        EXTRUDE.arrow,
-        1.0,
+        primaryColor,
+        upOpacity,
         "up"
       );
       scene.add(upArrow);
       arrowHandlesRef.current.push(upArrow);
 
-      // Create down arrow (secondary - half opacity)
+      // Create down arrow (negative normal direction)
       const downArrow = createArrow(
         center,
         normal.clone().negate(),
@@ -234,8 +319,8 @@ export function useExtrudeMode() {
         shaftRadius,
         headRadius,
         headLength,
-        EXTRUDE.arrowSecondary,
-        0.5,
+        secondaryColor,
+        downOpacity,
         "down"
       );
       scene.add(downArrow);
@@ -243,7 +328,7 @@ export function useExtrudeMode() {
 
       forceSceneUpdate();
     },
-    [elements, getObject, scene, forceSceneUpdate, cleanupHandles, createArrow, getFlatNormal]
+    [elements, getObject, scene, forceSceneUpdate, cleanupHandles, createArrow, getFlatNormal, state.operationType]
   );
 
   /**
@@ -277,14 +362,14 @@ export function useExtrudeMode() {
    * Creates a correctly shaped extrusion of depth=1 that can be Z-scaled during drag.
    */
   const buildCachedPreviewGeometry = useCallback(
-    async (brep: Brep): Promise<THREE.BufferGeometry | null> => {
+    async (brep: Brep, element?: SceneElement): Promise<THREE.BufferGeometry | null> => {
       try {
         const ocService = OpenCascadeService.getInstance();
         const cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
         if (!cleanFace) return null;
 
         // Extrude by unit depth=1 along the flat normal
-        const normal = getFlatNormal(brep);
+        const normal = getFlatNormal(brep, element);
         const normalVec = { x: normal.x, y: normal.y, z: normal.z };
         const extrudedShape = await ocService.extrudeShape(cleanFace, 1, 1, normalVec);
 
@@ -329,11 +414,12 @@ export function useExtrudeMode() {
       // Use cached OCC geometry if available (correct shape with holes)
       if (cachedPreviewGeometryRef.current) {
         const directionSign = direction === "down" ? -1 : 1;
+        const previewColor = state.operationType === "cut" ? EXTRUDE.cutPreview : EXTRUDE.profileHighlight;
 
         const previewMesh = new THREE.Mesh(
           cachedPreviewGeometryRef.current,
           new THREE.MeshStandardMaterial({
-            color: EXTRUDE.profileHighlight,
+            color: previewColor,
             transparent: true,
             opacity: 0.6,
             side: THREE.DoubleSide,
@@ -342,7 +428,7 @@ export function useExtrudeMode() {
 
         // The cached geometry is a unit extrusion (depth=1) along the flat normal
         // Scale the appropriate axis to match the desired depth
-        const normal = getFlatNormal(originalBrepRef.current);
+        const normal = getFlatNormal(originalBrepRef.current, element);
         const s = extrusionDepth * directionSign;
         previewMesh.scale.set(
           normal.x ? s : 1,
@@ -362,6 +448,7 @@ export function useExtrudeMode() {
     },
     [
       state.selectedElement,
+      state.operationType,
       elements,
       getObject,
       scene,
@@ -398,11 +485,16 @@ export function useExtrudeMode() {
             ocDirection = 1;
         }
 
+        // Pass sketch plane normal to extrudeBRep for non-axis-aligned profiles
+        const normal = getFlatNormal(originalBrepRef.current, element);
+        const normalVec = { x: normal.x, y: normal.y, z: normal.z };
+
         // Extrude the BRep - returns { brep, positionOffset }
         const extrusionResult = await extrudeBRep(
           originalBrepRef.current,
           depth,
-          ocDirection
+          ocDirection,
+          normalVec
         );
 
         // Calculate the new position:
@@ -416,12 +508,13 @@ export function useExtrudeMode() {
 
         // Update the element's BRep and position
         if (updateElementBrep) {
-          updateElementBrep(state.selectedElement, extrusionResult.brep, newPosition, { type: "extrude" }, extrusionResult.edgeGeometry);
+          updateElementBrep(state.selectedElement, extrusionResult.brep, newPosition, { type: "extrude" }, extrusionResult.edgeGeometry, extrusionResult.occBrep);
         }
 
         forceSceneUpdate();
       } catch (error) {
         console.error("Extrusion failed:", error);
+        showToast("Extrusion failed", "error");
         // Restore original on failure
         restoreOriginalMesh();
       }
@@ -435,6 +528,185 @@ export function useExtrudeMode() {
       updateElementBrep,
       forceSceneUpdate,
       restoreOriginalMesh,
+      getFlatNormal,
+    ]
+  );
+
+  /**
+   * Toggle between Join and Cut extrude operation types
+   */
+  const toggleOperationType = useCallback(() => {
+    setState((prev) => {
+      const newType = prev.operationType === "join" ? "cut" : "join";
+      // Recreate arrows with updated colors if an element is selected
+      if (prev.selectedElement) {
+        // Use setTimeout to ensure state is updated before recreating arrows
+        setTimeout(() => createArrowHandles(prev.selectedElement!, newType), 0);
+      }
+      return { ...prev, operationType: newType };
+    });
+  }, [createArrowHandles]);
+
+  /**
+   * Apply cut extrusion: extrude tool shape, then boolean-subtract from intersecting body
+   */
+  const applyCutExtrusion = useCallback(
+    async (depth: number, direction: ExtrudeDirection) => {
+      if (!state.selectedElement || !originalBrepRef.current) return;
+
+      const profileElement = elements.find((el) => el.nodeId === state.selectedElement);
+      if (!profileElement) return;
+
+      try {
+        const ocService = OpenCascadeService.getInstance();
+
+        // 1. Extrude the profile to create the tool solid
+        let ocDirection: number;
+        switch (direction) {
+          case "down": ocDirection = -1; break;
+          default: ocDirection = 1;
+        }
+
+        // Pass sketch plane normal to extrudeBRep for non-axis-aligned profiles
+        const normal = getFlatNormal(originalBrepRef.current, profileElement);
+        const normalVec = { x: normal.x, y: normal.y, z: normal.z };
+
+        const extrusionResult = await extrudeBRep(originalBrepRef.current, depth, ocDirection, normalVec);
+
+        // 2. Calculate world position of the extruded tool
+        const toolWorldPos = new THREE.Vector3(
+          profileElement.position.x + extrusionResult.positionOffset.x,
+          profileElement.position.y + extrusionResult.positionOffset.y,
+          profileElement.position.z + extrusionResult.positionOffset.z
+        );
+
+        // Convert tool BRep to OCC shape at world position
+        const toolShape = await ocService.brepToOCShape(extrusionResult.brep, toolWorldPos);
+
+        // 3. Find an intersecting 3D body
+        let targetElement: SceneElement | null = null;
+        let targetShape = null;
+
+        // 3a: Prefer sourceElementId from sketch plane (sketch was created on this body)
+        const sourceId = profileElement.sketchPlane?.sourceElementId;
+        if (sourceId) {
+          const sourceEl = elements.find((el) => el.nodeId === sourceId);
+          if (sourceEl && isElement3D(sourceEl)) {
+            targetElement = sourceEl;
+            targetShape = sourceEl.occBrep
+              ? await ocService.occBrepToOCShape(sourceEl.occBrep, sourceEl.position)
+              : await ocService.brepToOCShape(sourceEl.brep, sourceEl.position);
+          }
+        }
+
+        // 3b: Fallback — bounding box overlap check using tool BRep vertices (not mesh, which may be hidden)
+        if (!targetElement) {
+          // Compute tool bounding box from extrusionResult.brep vertices + toolWorldPos
+          const toolBox = new THREE.Box3();
+          for (const v of extrusionResult.brep.vertices) {
+            toolBox.expandByPoint(new THREE.Vector3(
+              v.x + toolWorldPos.x,
+              v.y + toolWorldPos.y,
+              v.z + toolWorldPos.z,
+            ));
+          }
+          // Expand tool box in extrusion direction to ensure overlap
+          const expandVec = normal.clone().multiplyScalar(depth * 2);
+          toolBox.expandByVector(new THREE.Vector3(Math.abs(expandVec.x), Math.abs(expandVec.y), Math.abs(expandVec.z)));
+
+          for (const el of elements) {
+            if (el.nodeId === state.selectedElement) continue;
+            if (!isElement3D(el)) continue;
+
+            const targetObj = getObject(el.nodeId);
+            if (targetObj) {
+              const targetBox = new THREE.Box3().setFromObject(targetObj);
+              if (toolBox.intersectsBox(targetBox)) {
+                targetElement = el;
+                targetShape = el.occBrep
+                  ? await ocService.occBrepToOCShape(el.occBrep, el.position)
+                  : await ocService.brepToOCShape(el.brep, el.position);
+                break;
+              }
+            }
+          }
+        }
+
+        if (!targetElement || !targetShape) {
+          showToast("No intersecting body found for cut", "error");
+          restoreOriginalMesh();
+          return;
+        }
+
+        // 4. Boolean difference: target - tool
+        const diffResult = await ocService.booleanDifference(targetShape, toolShape);
+        const resultShape = diffResult.shape;
+
+        // 5. Convert result
+        const resultBrep = await ocService.ocShapeToBRep(resultShape, true);
+
+        // 6. Calculate world center from uncentered result (result shape is in world space)
+        const uncenteredBrep = await ocService.ocShapeToBRep(resultShape, false);
+        const uverts = uncenteredBrep.vertices;
+        const uxs = uverts.map(v => v.x);
+        const uys = uverts.map(v => v.y);
+        const uzs = uverts.map(v => v.z);
+        const worldCenter = new THREE.Vector3(
+          (Math.min(...uxs) + Math.max(...uxs)) / 2,
+          (Math.min(...uys) + Math.max(...uys)) / 2,
+          (Math.min(...uzs) + Math.max(...uzs)) / 2,
+        );
+
+        // 7. Extract edge geometry and face geometry for clean rendering (translated to local space)
+        const edgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape);
+        edgeGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
+
+        const faceGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.05, 0.3);
+        faceGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
+
+        // 8. Serialize in local space for occBrep preservation
+        const oc = await ocService.getOC();
+        const trsf = new oc.gp_Trsf_1();
+        const vec = new oc.gp_Vec_4(-worldCenter.x, -worldCenter.y, -worldCenter.z);
+        trsf.SetTranslation_1(vec);
+        vec.delete();
+        const transformer = new oc.BRepBuilderAPI_Transform_2(resultShape, trsf, true);
+        trsf.delete();
+        const localShape = transformer.Shape();
+        transformer.delete();
+        const occBrep = await ocService.serializeShape(localShape);
+
+        // 9. Update the target element with the cut result
+        // The consumedElementId tells CoreContext to also remove the profile element
+        updateElementBrep(
+          targetElement.nodeId,
+          resultBrep,
+          worldCenter,
+          { type: "difference", consumedElementId: state.selectedElement },
+          edgeGeometry,
+          occBrep,
+          faceGeometry,
+        );
+
+        forceSceneUpdate();
+      } catch (error) {
+        console.error("Cut extrusion failed:", error);
+        showToast("Cut extrusion failed", "error");
+        restoreOriginalMesh();
+      }
+
+      originalBrepRef.current = null;
+      cachedPreviewGeometryRef.current = null;
+    },
+    [
+      state.selectedElement,
+      elements,
+      getObject,
+      updateElementBrep,
+      forceSceneUpdate,
+      restoreOriginalMesh,
+      showToast,
+      getFlatNormal,
     ]
   );
 
@@ -493,7 +765,7 @@ export function useExtrudeMode() {
 
           // Start building the OCC preview geometry (async, will be ready for next mouse move)
           cachedPreviewGeometryRef.current = null;
-          buildCachedPreviewGeometry(element.brep).then((geometry) => {
+          buildCachedPreviewGeometry(element.brep, element).then((geometry) => {
             cachedPreviewGeometryRef.current = geometry;
           });
         }
@@ -502,32 +774,22 @@ export function useExtrudeMode() {
         return;
       }
 
-      // Check if clicking on scene elements (mesh-only, skip edge overlays)
-      const meshes = collectPickableMeshes(elements, getObject);
+      // Only pick flat profiles — 3D bodies are dimmed and non-interactive
+      const flatElements = elements.filter(el => isFlatShape(el.brep));
+      const meshes = collectPickableMeshes(flatElements, getObject);
       const intersects = raycaster.intersectObjects(meshes, false);
       if (intersects.length > 0) {
         const pickedObject = intersects[0].object;
 
-        for (const el of elements) {
+        for (const el of flatElements) {
           const obj = getObject(el.nodeId);
           if (obj && isDescendantOf(pickedObject, obj)) {
-            // Check if it's a flat shape
-            if (isFlatShape(el.brep)) {
-              setState((prev) => ({
-                ...prev,
-                selectedElement: el.nodeId,
-                showDimensionInput: false,
-              }));
-              createArrowHandles(el.nodeId);
-            } else {
-              // Not a flat shape - deselect
-              setState((prev) => ({
-                ...prev,
-                selectedElement: null,
-                showDimensionInput: false,
-              }));
-              cleanupHandles();
-            }
+            setState((prev) => ({
+              ...prev,
+              selectedElement: el.nodeId,
+              showDimensionInput: false,
+            }));
+            createArrowHandles(el.nodeId);
             event.stopPropagation();
             return;
           }
@@ -597,18 +859,18 @@ export function useExtrudeMode() {
         );
         raycaster.setFromCamera(mouse, camera);
 
-        const meshes = collectPickableMeshes(elements, getObject);
+        // Only hover-highlight flat profiles — 3D bodies are dimmed and non-interactive
+        const flatElements = elements.filter(el => isFlatShape(el.brep));
+        const meshes = collectPickableMeshes(flatElements, getObject);
         const intersects = raycaster.intersectObjects(meshes, false);
         if (intersects.length > 0) {
           const pickedObject = intersects[0].object;
           let foundId: string | null = null;
 
-          for (const el of elements) {
+          for (const el of flatElements) {
             const obj = getObject(el.nodeId);
             if (obj && isDescendantOf(pickedObject, obj)) {
-              if (isFlatShape(el.brep)) {
-                foundId = el.nodeId;
-              }
+              foundId = el.nodeId;
               break;
             }
           }
@@ -650,7 +912,7 @@ export function useExtrudeMode() {
 
       // Determine the extrusion normal from the selected element's BRep
       const selectedEl = elements.find((el) => el.nodeId === state.selectedElement);
-      const normal = selectedEl ? getFlatNormal(selectedEl.brep) : new THREE.Vector3(0, 0, 1);
+      const normal = selectedEl ? getFlatNormal(selectedEl.brep, selectedEl) : new THREE.Vector3(0, 0, 1);
 
       // Project extrusion normal to screen space to determine how mouse pixel movement maps to depth.
       // getMouseIntersection returns points on the ground plane (Z=0), so for XY-plane shapes
@@ -750,8 +1012,12 @@ export function useExtrudeMode() {
       return;
     }
 
-    // Apply the extrusion
-    await applyExtrusion(state.extrusionDepth, state.activeDirection!);
+    // Apply the extrusion (join or cut)
+    if (state.operationType === "cut") {
+      await applyCutExtrusion(state.extrusionDepth, state.activeDirection!);
+    } else {
+      await applyExtrusion(state.extrusionDepth, state.activeDirection!);
+    }
 
     // Reset state
     setState((prev) => ({
@@ -774,10 +1040,12 @@ export function useExtrudeMode() {
     state.selectedElement,
     state.extrusionDepth,
     state.activeDirection,
+    state.operationType,
     getObject,
     camera,
     renderer,
     applyExtrusion,
+    applyCutExtrusion,
     cleanupPreview,
     restoreOriginalMesh,
     cleanupHandles,
@@ -798,7 +1066,11 @@ export function useExtrudeMode() {
             originalBrepRef.current = element.brep;
           }
         }
-        await applyExtrusion(value, state.activeDirection || "up");
+        if (state.operationType === "cut") {
+          await applyCutExtrusion(value, state.activeDirection || "up");
+        } else {
+          await applyExtrusion(value, state.activeDirection || "up");
+        }
       }
 
       setState((prev) => ({
@@ -813,8 +1085,10 @@ export function useExtrudeMode() {
     [
       state.selectedElement,
       state.activeDirection,
+      state.operationType,
       elements,
       applyExtrusion,
+      applyCutExtrusion,
       cleanupHandles,
     ]
   );
@@ -864,18 +1138,20 @@ export function useExtrudeMode() {
     cleanupPreview();
     cleanupHoverOverlay();
     restoreOriginalMesh();
-    setState({
+    restoreSceneBodies();
+    setState((prev) => ({
       selectedElement: null,
       isExtruding: false,
       activeDirection: null,
       extrusionDepth: 0,
       showDimensionInput: false,
       dimensionInputPosition: { x: 0, y: 0 },
-    });
+      operationType: prev.operationType, // preserve toggle across cleanup
+    }));
     startPointRef.current = null;
     startScreenRef.current = null;
     originalBrepRef.current = null;
-  }, [cleanupHandles, cleanupPreview, cleanupHoverOverlay, restoreOriginalMesh]);
+  }, [cleanupHandles, cleanupPreview, cleanupHoverOverlay, restoreOriginalMesh, restoreSceneBodies]);
 
   return {
     selectedElement: state.selectedElement,
@@ -884,12 +1160,15 @@ export function useExtrudeMode() {
     activeDirection: state.activeDirection,
     showDimensionInput: state.showDimensionInput,
     dimensionInputPosition: state.dimensionInputPosition,
+    operationType: state.operationType,
     handleMouseDown,
     handleMouseMove,
     handleMouseUp,
     handleKeyDown,
     handleDimensionSubmit,
     handleDimensionCancel,
+    toggleOperationType,
     cleanup,
+    dimSceneBodies,
   };
 }

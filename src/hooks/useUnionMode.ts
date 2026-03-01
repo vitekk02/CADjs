@@ -2,6 +2,7 @@ import { useState } from "react";
 import * as THREE from "three";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
+import { useToast } from "../contexts/ToastContext";
 import { isDescendantOf, collectPickableMeshes } from "../scene-operations/mesh-operations";
 import { isElement3D } from "../scene-operations/types";
 
@@ -29,6 +30,8 @@ export function useUnionMode(): UseUnionModeResult {
     highlightElement,
     unhighlightElement,
   } = useCadVisualizer();
+
+  const { showToast } = useToast();
 
   const canUnion = selectedElements.length >= 2;
 
@@ -68,9 +71,12 @@ export function useUnionMode(): UseUnionModeResult {
     }
   };
 
-  const performUnion = () => {
+  const performUnion = async () => {
     if (canUnion) {
-      unionSelectedElements();
+      const success = await unionSelectedElements();
+      if (!success) {
+        showToast("Union operation failed", "error");
+      }
       forceSceneUpdate();
     }
   };

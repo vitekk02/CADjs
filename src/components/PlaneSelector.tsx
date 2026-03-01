@@ -4,7 +4,7 @@ import { SketchPlaneType } from "../types/sketch-types";
 
 interface PlaneSelectorProps {
   visible: boolean;
-  onSelectPlane: (planeType: SketchPlaneType) => void;
+  onSelectPlane: (planeType: SketchPlaneType, offset?: number) => void;
   onCancel: () => void;
   renderer: THREE.WebGLRenderer | null;
   camera: THREE.PerspectiveCamera | null;
@@ -50,6 +50,7 @@ const PlaneSelector: FC<PlaneSelectorProps> = ({
   camera,
 }) => {
   const [hoveredPlane, setHoveredPlane] = useState<SketchPlaneType | null>(null);
+  const [offset, setOffset] = useState<number>(0);
   const cubeContainerRef = useRef<HTMLDivElement>(null);
   const cubeSceneRef = useRef<THREE.Scene | null>(null);
   const cubeCameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -204,10 +205,10 @@ const PlaneSelector: FC<PlaneSelectorProps> = ({
 
       if (intersects.length > 0) {
         const planeType = intersects[0].object.userData.planeType as SketchPlaneType;
-        onSelectPlane(planeType);
+        onSelectPlane(planeType, offset || undefined);
       }
     },
-    [onSelectPlane]
+    [onSelectPlane, offset]
   );
 
   // Handle cube hover
@@ -293,25 +294,38 @@ const PlaneSelector: FC<PlaneSelectorProps> = ({
             </div>
           )}
 
+          {/* Offset input */}
+          <div className="mt-3 flex items-center gap-2">
+            <label className="text-gray-300 text-xs whitespace-nowrap">Offset:</label>
+            <input
+              type="number"
+              step="0.5"
+              value={offset}
+              onChange={(e) => setOffset(parseFloat(e.target.value) || 0)}
+              className="w-full px-2 py-1 text-sm rounded bg-gray-700 text-white border border-gray-500 focus:border-blue-400 focus:outline-none"
+              placeholder="0"
+            />
+          </div>
+
           {/* Quick select buttons */}
-          <div className="mt-3 flex flex-col gap-1">
+          <div className="mt-2 flex flex-col gap-1">
             <button
               className="px-3 py-1 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white"
-              onClick={() => onSelectPlane("XY")}
+              onClick={() => onSelectPlane("XY", offset || undefined)}
             >
-              Top (XY)
+              Top (XY){offset ? ` @ ${offset}` : ""}
             </button>
             <button
               className="px-3 py-1 text-sm rounded bg-green-600 hover:bg-green-500 text-white"
-              onClick={() => onSelectPlane("XZ")}
+              onClick={() => onSelectPlane("XZ", offset || undefined)}
             >
-              Front (XZ)
+              Front (XZ){offset ? ` @ ${offset}` : ""}
             </button>
             <button
               className="px-3 py-1 text-sm rounded bg-red-600 hover:bg-red-500 text-white"
-              onClick={() => onSelectPlane("YZ")}
+              onClick={() => onSelectPlane("YZ", offset || undefined)}
             >
-              Right (YZ)
+              Right (YZ){offset ? ` @ ${offset}` : ""}
             </button>
           </div>
 
@@ -328,7 +342,7 @@ const PlaneSelector: FC<PlaneSelectorProps> = ({
       {/* Instructions */}
       <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 pointer-events-auto">
         <div className="bg-gray-800 bg-opacity-90 rounded-lg px-4 py-2 text-white text-sm">
-          Click a plane on the cube or use the buttons to select a sketch plane
+          Click a plane on the cube, use the buttons, or click a face on a 3D body
         </div>
       </div>
     </div>

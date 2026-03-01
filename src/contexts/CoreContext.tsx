@@ -7,7 +7,7 @@ import React, {
   useCallback,
 } from "react";
 import * as THREE from "three";
-import { Brep, BrepGraph, CompoundBrep } from "../geometry";
+import { Brep, BrepGraph, CompoundBrep, Vertex, Edge, cloneBrep } from "../geometry";
 import {
   addElement as addElementOp,
   removeElement as removeElementOp,
@@ -25,6 +25,7 @@ import { SceneElement, SceneMode } from "../scene-operations/types";
 import {
   createMeshFromBrep,
   createMeshFromGeometry,
+  createMeshFromPath,
   getAllFaces,
   getObject,
   getAllObjects,
@@ -45,6 +46,8 @@ import {
   applyBooleanOperationToTree,
   applyExtrudeToTree,
   applyFilletToTree,
+  applySweepToTree,
+  applyRevolveToTree,
   applyUngroupToTree,
   renameNode as renameNodeOp,
   removeNodeById as removeNodeByIdOp,
@@ -81,15 +84,17 @@ export interface CadCoreContextType {
   selectElement: (nodeId: string) => void;
   deselectElement: (nodeId: string) => void;
   deselectAll: () => void;
-  unionSelectedElements: () => void;
-  differenceSelectedElements: () => void;
-  intersectionSelectedElements: () => void;
+  unionSelectedElements: () => Promise<boolean>;
+  differenceSelectedElements: () => Promise<boolean>;
+  intersectionSelectedElements: () => Promise<boolean>;
   updateElementRotation: (nodeId: string, rotation: THREE.Euler) => void;
   getObject: (nodeId: string) => THREE.Object3D | undefined;
   getAllObjects: () => Map<string, THREE.Object3D>;
   createMeshFromBrep: (brep: Brep) => THREE.Object3D;
   ungroupSelectedElement: () => void;
-  updateElementBrep: (nodeId: string, brep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType }, edgeGeometry?: THREE.BufferGeometry) => void;
+  updateElementBrep: (nodeId: string, brep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType; consumedElementId?: string }, edgeGeometry?: THREE.BufferGeometry, occBrep?: string, faceGeometry?: THREE.BufferGeometry) => void;
+  loftElements: (profileNodeIds: string[], resultBrep: Brep, resultPosition: THREE.Vector3, edgeGeometry?: THREE.BufferGeometry, occBrep?: string) => void;
+  duplicateSelectedElements: () => void;
 
   // Sketch-related state and methods
   activeSketch: Sketch | null;
@@ -102,7 +107,7 @@ export interface CadCoreContextType {
   addConstraintAndSolve: (constraint: SketchConstraint) => Promise<ConstraintResult>;
   removePrimitive: (primitiveId: string) => void;
   removeConstraint: (constraintId: string) => void;
-  finishSketch: () => Promise<void>;
+  finishSketch: () => Promise<boolean>;
   cancelSketch: () => void;
   solveSketch: () => Promise<Sketch | null>;
 
@@ -224,7 +229,14 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       objectsMap.clear();
 
       for (const el of snapshot.elements) {
-        const mesh = createMeshFromBrep(el.brep);
+        let mesh: THREE.Group;
+        if (el.edgeGeometry) {
+          const faces = getAllFaces(el.brep);
+          const faceGeometry = createGeometryFromBRep(faces);
+          mesh = createMeshFromGeometry(faceGeometry, el.edgeGeometry);
+        } else {
+          mesh = createMeshFromBrep(el.brep);
+        }
         mesh.position.copy(el.position);
         if (el.rotation) {
           mesh.rotation.copy(el.rotation);
@@ -397,18 +409,22 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   );
 
   // Internal remove without undo push (used by deleteNodeImpl to avoid double-pushing)
+  // Uses functional updater to avoid stale closure over `elements` — ensures
+  // pending state updates (e.g. from updateElementBrep) are not overwritten.
   const removeElementInternal = useCallback(
     (nodeId: string) => {
-      const result = removeElementOp(
-        elements,
-        selectedElements,
-        nodeId,
-        objectsMap
-      );
-      setElements(result.updatedElements);
-      setSelectedElements(result.updatedSelectedElements);
+      setElements((prevElements) => {
+        const result = removeElementOp(
+          prevElements,
+          selectedElements,
+          nodeId,
+          objectsMap
+        );
+        setSelectedElements(result.updatedSelectedElements);
+        return result.updatedElements;
+      });
     },
-    [elements, selectedElements, objectsMap]
+    [selectedElements, objectsMap]
   );
 
   const removeElement = useCallback(
@@ -466,8 +482,8 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     setSelectedElements([]);
   }, [elements, mode, objectsMap]);
 
-  const unionSelectedElementsImpl = useCallback(async () => {
-    if (selectedElements.length < 2) return;
+  const unionSelectedElementsImpl = useCallback(async (): Promise<boolean> => {
+    if (selectedElements.length < 2) return false;
 
     pushUndo("Union");
     setOperationPending(true);
@@ -487,7 +503,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         // Pop the undo snapshot on failure
         undoStackRef.current = undoStackRef.current.slice(0, -1);
         setUndoRedoVersion((v) => v + 1);
-        return;
+        return false;
       }
 
       setElements(result.updatedElements);
@@ -500,18 +516,20 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         const name = `Union ${countOperationsOfType(prev, "union") + 1}`;
         return applyBooleanOperationToTree(prev, consumedIds, newNodeId, "union", name);
       });
+      return true;
     } catch (error) {
       console.error("Union error:", error);
       // Pop the undo snapshot on error
       undoStackRef.current = undoStackRef.current.slice(0, -1);
       setUndoRedoVersion((v) => v + 1);
+      return false;
     } finally {
       setOperationPending(false);
     }
   }, [elements, selectedElements, idCounter, brepGraph, objectsMap, pushUndo]);
 
-  const differenceSelectedElementsImpl = useCallback(async () => {
-    if (selectedElements.length < 2) return;
+  const differenceSelectedElementsImpl = useCallback(async (): Promise<boolean> => {
+    if (selectedElements.length < 2) return false;
 
     pushUndo("Difference");
     setOperationPending(true);
@@ -530,7 +548,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         console.error("Difference operation failed");
         undoStackRef.current = undoStackRef.current.slice(0, -1);
         setUndoRedoVersion((v) => v + 1);
-        return;
+        return false;
       }
 
       setElements(result.updatedElements);
@@ -543,17 +561,19 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         const name = `Difference ${countOperationsOfType(prev, "difference") + 1}`;
         return applyBooleanOperationToTree(prev, consumedIds, newNodeId, "difference", name);
       });
+      return true;
     } catch (error) {
       console.error("Difference error:", error);
       undoStackRef.current = undoStackRef.current.slice(0, -1);
       setUndoRedoVersion((v) => v + 1);
+      return false;
     } finally {
       setOperationPending(false);
     }
   }, [elements, selectedElements, idCounter, brepGraph, objectsMap, pushUndo]);
 
-  const intersectionSelectedElementsImpl = useCallback(async () => {
-    if (selectedElements.length < 2) return;
+  const intersectionSelectedElementsImpl = useCallback(async (): Promise<boolean> => {
+    if (selectedElements.length < 2) return false;
 
     pushUndo("Intersection");
     setOperationPending(true);
@@ -572,7 +592,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         console.error("Intersection operation failed");
         undoStackRef.current = undoStackRef.current.slice(0, -1);
         setUndoRedoVersion((v) => v + 1);
-        return;
+        return false;
       }
 
       setElements(result.updatedElements);
@@ -585,10 +605,12 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         const name = `Intersection ${countOperationsOfType(prev, "intersection") + 1}`;
         return applyBooleanOperationToTree(prev, consumedIds, newNodeId, "intersection", name);
       });
+      return true;
     } catch (error) {
       console.error("Intersection error:", error);
       undoStackRef.current = undoStackRef.current.slice(0, -1);
       setUndoRedoVersion((v) => v + 1);
+      return false;
     } finally {
       setOperationPending(false);
     }
@@ -613,7 +635,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   );
 
   const updateElementBrep = useCallback(
-    (nodeId: string, newBrep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType }, edgeGeometry?: THREE.BufferGeometry) => {
+    (nodeId: string, newBrep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType; consumedElementId?: string }, edgeGeometry?: THREE.BufferGeometry, occBrep?: string, faceGeometry?: THREE.BufferGeometry) => {
       // Get the existing element to preserve position and rotation
       const existingElement = elements.find((el) => el.nodeId === nodeId);
       if (!existingElement) {
@@ -622,8 +644,11 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       }
 
       const undoLabel = featureUpdate?.type === "extrude" ? "Extrude"
+        : featureUpdate?.type === "difference" ? "Cut"
         : featureUpdate?.type === "fillet" ? "Fillet"
         : featureUpdate?.type === "chamfer" ? "Chamfer"
+        : featureUpdate?.type === "sweep" ? "Sweep"
+        : featureUpdate?.type === "revolve" ? "Revolve"
         : "Update Shape";
       pushUndo(undoLabel);
 
@@ -633,9 +658,16 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       // Create new mesh — use OCC edge geometry if available for clean edge overlay
       let mesh: THREE.Group;
       if (edgeGeometry) {
-        const faces = getAllFaces(newBrep);
-        const faceGeometry = createGeometryFromBRep(faces);
-        mesh = createMeshFromGeometry(faceGeometry, edgeGeometry);
+        let geom: THREE.BufferGeometry;
+        if (faceGeometry) {
+          // OCC-tessellated geometry (smooth, no internal edges) — used by cut extrude
+          geom = faceGeometry;
+        } else {
+          // Fallback: tessellated BRep → many triangles (may show internal edges)
+          const faces = getAllFaces(newBrep);
+          geom = createGeometryFromBRep(faces);
+        }
+        mesh = createMeshFromGeometry(geom, edgeGeometry);
       } else {
         mesh = createMeshFromBrep(newBrep);
       }
@@ -656,11 +688,11 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       // Update objectsMap with new mesh
       objectsMap.set(nodeId, mesh);
 
-      // Update the element state
+      // Update the element state (store occBrep and edgeGeometry for lossless round-tripping)
       setElements((prevElements) =>
         prevElements.map((element) => {
           if (element.nodeId === nodeId) {
-            return { ...element, brep: newBrep, position };
+            return { ...element, brep: newBrep, position, occBrep, edgeGeometry };
           }
           return element;
         })
@@ -682,6 +714,34 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
           const name = `${label} ${countOperationsOfType(prev, opType) + 1}`;
           return applyFilletToTree(prev, nodeId, name, opType);
         });
+      }
+
+      // Update feature tree if this is a sweep operation
+      if (featureUpdate?.type === "sweep" && featureUpdate.consumedElementId) {
+        setFeatureTree((prev) => {
+          const name = `Sweep ${countOperationsOfType(prev, "sweep") + 1}`;
+          return applySweepToTree(prev, nodeId, featureUpdate.consumedElementId!, name);
+        });
+      }
+
+      // Update feature tree if this is a revolve operation
+      if (featureUpdate?.type === "revolve") {
+        setFeatureTree((prev) => {
+          const name = `Revolve ${countOperationsOfType(prev, "revolve") + 1}`;
+          return applyRevolveToTree(prev, nodeId, name);
+        });
+      }
+
+      // Update feature tree if this is a cut (difference) operation
+      if (featureUpdate?.type === "difference") {
+        setFeatureTree((prev) => {
+          const name = `Cut ${countOperationsOfType(prev, "difference") + 1}`;
+          return applyExtrudeToTree(prev, nodeId, name);
+        });
+        // Remove the consumed profile element from scene if specified
+        if (featureUpdate.consumedElementId) {
+          removeElementInternal(featureUpdate.consumedElementId);
+        }
       }
     },
     [elements, objectsMap, pushUndo]
@@ -716,6 +776,164 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setFeatureTree((prev) => applyUngroupToTree(prev, nodeId, newChildIds));
     }
   }, [elements, selectedElements, idCounter, brepGraph, objectsMap, pushUndo]);
+
+  const loftElementsImpl = useCallback(
+    (profileNodeIds: string[], resultBrep: Brep, resultPosition: THREE.Vector3, edgeGeometry?: THREE.BufferGeometry, occBrep?: string) => {
+      if (profileNodeIds.length < 2) return;
+
+      pushUndo("Loft");
+
+      const consumedIds = [...profileNodeIds];
+
+      // Create new mesh
+      let mesh: THREE.Group;
+      if (edgeGeometry) {
+        const faces = getAllFaces(resultBrep);
+        const faceGeometry = createGeometryFromBRep(faces);
+        mesh = createMeshFromGeometry(faceGeometry, edgeGeometry);
+      } else {
+        mesh = createMeshFromBrep(resultBrep);
+      }
+
+      const newIdCounter = idCounter + 1;
+      const newNodeId = `node_${newIdCounter}`;
+
+      mesh.position.copy(resultPosition);
+      mesh.userData.nodeId = newNodeId;
+      objectsMap.set(newNodeId, mesh);
+
+      // Remove consumed elements and add new element
+      const newElements = elements.filter(el => !consumedIds.includes(el.nodeId));
+      const newElement: SceneElement = {
+        brep: resultBrep,
+        nodeId: newNodeId,
+        position: resultPosition.clone(),
+        selected: false,
+        occBrep,
+        edgeGeometry,
+      };
+      newElements.push(newElement);
+
+      // Remove consumed objects from objectsMap
+      for (const nodeId of consumedIds) {
+        const obj = objectsMap.get(nodeId);
+        if (obj && obj.parent) {
+          obj.parent.remove(obj);
+        }
+        objectsMap.delete(nodeId);
+      }
+
+      setElements(newElements);
+      setSelectedElements([]);
+      setIdCounter(newIdCounter);
+
+      // Update feature tree — same pattern as union
+      setFeatureTree((prev) => {
+        const name = `Loft ${countOperationsOfType(prev, "loft") + 1}`;
+        return applyBooleanOperationToTree(prev, consumedIds, newNodeId, "loft", name);
+      });
+    },
+    [elements, idCounter, objectsMap, pushUndo]
+  );
+
+  const duplicateSelectedElementsImpl = useCallback(() => {
+    if (selectedElements.length === 0) return;
+
+    pushUndo("Duplicate");
+
+    const newElements: SceneElement[] = [];
+    let nextId = idCounter;
+
+    for (const nodeId of selectedElements) {
+      const element = elements.find(el => el.nodeId === nodeId);
+      if (!element) continue;
+
+      nextId++;
+      const newNodeId = `node_${nextId}`;
+
+      // Deep-clone geometry
+      const newBrep = cloneBrep(element.brep);
+      const newPosition = element.position.clone().add(new THREE.Vector3(1, 1, 0));
+      const newRotation = element.rotation ? element.rotation.clone() : undefined;
+      const newEdgeGeometry = element.edgeGeometry ? element.edgeGeometry.clone() : undefined;
+      const newPathData = element.pathData
+        ? { points: element.pathData.points.map(p => ({ ...p })) }
+        : undefined;
+
+      // Create mesh
+      let mesh: THREE.Group;
+      if (newEdgeGeometry) {
+        const faces = getAllFaces(newBrep);
+        const geom = createGeometryFromBRep(faces);
+        mesh = createMeshFromGeometry(geom, newEdgeGeometry);
+      } else if (newPathData) {
+        mesh = createMeshFromPath(newPathData.points);
+      } else {
+        mesh = createMeshFromBrep(newBrep);
+      }
+      mesh.position.copy(newPosition);
+      if (newRotation) mesh.rotation.copy(newRotation);
+      mesh.userData.nodeId = newNodeId;
+
+      // Add to scene if possible
+      const oldObj = objectsMap.get(nodeId);
+      if (oldObj && oldObj.parent) {
+        oldObj.parent.add(mesh);
+      }
+      objectsMap.set(newNodeId, mesh);
+
+      const newElement: SceneElement = {
+        brep: newBrep,
+        nodeId: newNodeId,
+        position: newPosition,
+        selected: false,
+        rotation: newRotation,
+        elementType: element.elementType,
+        pathData: newPathData,
+        occBrep: element.occBrep,
+        edgeGeometry: newEdgeGeometry,
+        sketchPlane: element.sketchPlane,
+      };
+      newElements.push(newElement);
+    }
+
+    setElements(prev => [...prev, ...newElements]);
+    setIdCounter(nextId);
+
+    // Select only the new copies
+    setSelectedElements(newElements.map(el => el.nodeId));
+
+    // Add body nodes to feature tree
+    setFeatureTree(prev => {
+      let tree = [...prev];
+      for (const newEl of newElements) {
+        // Find the original element's node name
+        const originalNodeId = selectedElements[newElements.indexOf(newEl)];
+        let originalName = "Body";
+        const findName = (nodes: FeatureNode[]): string | null => {
+          for (const n of nodes) {
+            if (n.elementId === originalNodeId) return n.name;
+            if (n.children) {
+              const found = findName(n.children);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        const found = findName(tree);
+        if (found) originalName = found;
+
+        tree = [...tree, {
+          id: `body_${newEl.nodeId}`,
+          type: "body" as const,
+          name: `Copy of ${originalName}`,
+          visible: true,
+          elementId: newEl.nodeId,
+        }];
+      }
+      return tree;
+    });
+  }, [elements, selectedElements, idCounter, objectsMap, pushUndo]);
 
   const getObjectImpl = useCallback(
     (nodeId: string) => {
@@ -997,10 +1215,10 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     }
   }, []);
 
-  const finishSketch = useCallback(async () => {
+  const finishSketch = useCallback(async (): Promise<boolean> => {
     if (!activeSketch) {
       console.warn("No active sketch to finish");
-      return;
+      return false;
     }
 
     pushUndo("Finish Sketch");
@@ -1019,8 +1237,75 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       // Store the finished sketch
       setSketches((prev) => [...prev, finishedSketch]);
 
-      // Convert sketch to multiple profiles (Fusion 360-style)
       const sketchService = SketchToBrepService.getInstance();
+
+      // Check if sketch is open (path for sweep) vs closed (profiles)
+      if (!sketchService.isSketchClosed(finishedSketch)) {
+        console.log("[finishSketch] Open sketch detected — creating path element for sweep");
+        const wireResult = await sketchService.convertSketchToWire(finishedSketch);
+
+        if (wireResult && wireResult.points.length >= 2) {
+          // Create a minimal BRep (edges only, no faces) for the path element
+          const vertices = wireResult.points.map(p => new Vertex(p.x, p.y, p.z));
+          const edges: Edge[] = [];
+          for (let i = 0; i < vertices.length - 1; i++) {
+            edges.push(new Edge(vertices[i], vertices[i + 1]));
+          }
+          const pathBrep = new Brep(vertices, edges, []);
+
+          // Create element manually (same pattern as profiles)
+          const currentId = idCounter + 1;
+          const nodeId = `node_${currentId}`;
+          const position = new THREE.Vector3(0, 0, 0);
+
+          const mesh = createMeshFromPath(wireResult.points);
+          mesh.position.copy(position);
+          mesh.userData.nodeId = nodeId;
+          objectsMap.set(nodeId, mesh);
+
+          const pathElement: SceneElement = {
+            brep: pathBrep,
+            nodeId,
+            position: position.clone(),
+            selected: false,
+            elementType: "path",
+            pathData: { points: wireResult.points },
+          };
+
+          setElements((prev) => [...prev, pathElement]);
+          setIdCounter(currentId);
+
+          // Add to feature tree
+          const sketchNode: FeatureNode = {
+            id: finishedSketch.id,
+            type: "sketch",
+            name: `Sketch ${sketches.length + 1} (Path)`,
+            visible: true,
+            expanded: true,
+            children: [{
+              id: `${finishedSketch.id}_path`,
+              type: "body",
+              name: "Path",
+              visible: true,
+              sourceSketchId: finishedSketch.id,
+              elementId: nodeId,
+            }],
+            sourceSketchId: finishedSketch.id,
+          };
+          setFeatureTree((prev) => [...prev, sketchNode]);
+
+          console.log(`[finishSketch] Created path element: ${nodeId}, ${wireResult.points.length} points`);
+        } else {
+          console.warn("[finishSketch] Open sketch produced no valid wire");
+        }
+
+        setActiveSketch(null);
+        setMode(previousMode);
+        setOperationPending(false);
+        return true;
+      }
+
+      // Convert sketch to multiple profiles (Fusion 360-style)
       const conversionResult = await sketchService.convertSketchToProfiles(finishedSketch);
 
       if (conversionResult.success && conversionResult.profiles.length > 0) {
@@ -1072,6 +1357,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
               nodeId,
               position: position.clone(),
               selected: false,
+              sketchPlane: finishedSketch.plane,
             };
             newElements.push(newElement);
 
@@ -1133,6 +1419,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setActiveSketch(null);
       setMode(previousMode);
       setOperationPending(false);
+      return true;
     } catch (error) {
       console.error("Error finishing sketch:", error);
       // Pop the undo snapshot on error
@@ -1142,6 +1429,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setActiveSketch(null);
       setMode(previousMode);
       setOperationPending(false);
+      return false;
     }
   }, [activeSketch, previousMode, addElementInternal, sketches.length, pushUndo]);
 
@@ -1352,6 +1640,8 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         createMeshFromBrep,
         ungroupSelectedElement: ungroupSelectedElementImpl,
         updateElementBrep,
+        loftElements: loftElementsImpl,
+        duplicateSelectedElements: duplicateSelectedElementsImpl,
         // Sketch-related
         activeSketch,
         sketches,

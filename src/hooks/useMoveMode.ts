@@ -312,6 +312,7 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
   const resetObjectVisuals = (nodeId: string) => {
     const obj = getObject(nodeId);
     if (!obj) return;
+    // Reset material color (skip edge overlays and helpers)
     obj.traverse((child) => {
       if (child.userData.isEdgeOverlay || child.userData.isHelper) return;
       if ((child as THREE.Mesh).isMesh) {
@@ -320,6 +321,9 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
           (mat as THREE.MeshStandardMaterial).color.setHex(BODY.default);
         }
       }
+    });
+    // Hide helpers in a separate pass
+    obj.traverse((child) => {
       if (
         child.userData.helperType === "edge" ||
         child.userData.helperType === "vertex"

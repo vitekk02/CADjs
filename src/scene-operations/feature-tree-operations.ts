@@ -192,6 +192,70 @@ export function applyFilletToTree(
 }
 
 /**
+ * Apply a sweep operation to the feature tree.
+ * Updates the profile node to a sweep operation and removes the path node.
+ */
+export function applySweepToTree(
+  tree: FeatureNode[],
+  profileElementId: string,
+  pathElementId: string,
+  operationName: string,
+): FeatureNode[] {
+  // Remove path node
+  const pathIdSet = new Set([pathElementId]);
+  const { updatedTree } = removeNodesByElementId(tree, pathIdSet);
+
+  // Convert profile node to sweep operation
+  function updateNodes(nodes: FeatureNode[]): FeatureNode[] {
+    return nodes.map((node) => {
+      if (node.elementId === profileElementId) {
+        return {
+          ...node,
+          type: "operation" as const,
+          name: operationName,
+          operationType: "sweep" as const,
+        };
+      }
+      if (node.children) {
+        return { ...node, children: updateNodes(node.children) };
+      }
+      return node;
+    });
+  }
+
+  return updateNodes(updatedTree);
+}
+
+/**
+ * Apply a revolve operation to the feature tree.
+ * Finds the profile node by elementId and converts it to an operation node.
+ */
+export function applyRevolveToTree(
+  tree: FeatureNode[],
+  elementId: string,
+  operationName: string,
+): FeatureNode[] {
+  function updateNodes(nodes: FeatureNode[]): FeatureNode[] {
+    return nodes.map((node) => {
+      if (node.elementId === elementId) {
+        return {
+          ...node,
+          type: "operation" as const,
+          name: operationName,
+          operationType: "revolve" as const,
+        };
+      }
+      if (node.children) {
+        return { ...node, children: updateNodes(node.children) };
+      }
+      return node;
+    });
+  }
+
+  return updateNodes(tree);
+}
+
+/**
  * Apply an ungroup operation to the feature tree.
  * Finds the operation node by elementId, replaces it with its children
  * re-mapped with new elementIds.

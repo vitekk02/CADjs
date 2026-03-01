@@ -11,6 +11,8 @@ import {
   DifferenceIcon,
   IntersectionIcon,
   ExtrudeIcon,
+  SweepIcon,
+  LoftIcon,
   EyeIcon,
   EyeOffIcon,
   ChevronIcon,
@@ -58,6 +60,10 @@ const ItemIcon: FC<{ itemType: BrowserItem["itemType"]; operationType?: Operatio
           return <IntersectionIcon className={cls} />;
         case "extrude":
           return <ExtrudeIcon className={cls} />;
+        case "sweep":
+          return <SweepIcon className={cls} />;
+        case "loft":
+          return <LoftIcon className={cls} />;
         default:
           return <BodyIcon className={cls} />;
       }
