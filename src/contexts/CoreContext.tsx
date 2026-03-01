@@ -1045,10 +1045,22 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         return;
       }
 
+      // Temporarily fix edited points so the solver pins them in place
+      // (same pattern as drag: startDrag sets fixed=true, solver respects it)
+      const editedPointIds = new Set(updates.keys());
+      const sketchWithFixed: Sketch = {
+        ...sketchToSolve,
+        primitives: sketchToSolve.primitives.map((p) =>
+          editedPointIds.has(p.id) && p.type === "point"
+            ? { ...p, fixed: true } as SketchPrimitive
+            : p
+        ),
+      };
+
       // Now solve with the updated sketch
       try {
         const solver = SketchSolverService.getInstance();
-        const result = await solver.solve(sketchToSolve);
+        const result = await solver.solve(sketchWithFixed);
 
         // Check version again after async solve completes
         if (solveVersionRef.current !== currentVersion) {
@@ -1056,7 +1068,16 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         }
 
         if (result.success) {
-          setActiveSketch(result.sketch);
+          // Strip the temporary fixed flags before storing
+          const cleanSketch: Sketch = {
+            ...result.sketch,
+            primitives: result.sketch.primitives.map((p) =>
+              editedPointIds.has(p.id) && p.type === "point"
+                ? { ...p, fixed: false } as SketchPrimitive
+                : p
+            ),
+          };
+          setActiveSketch(cleanSketch);
         }
       } catch (error) {
         console.error("Sketch solve error during drag:", error);

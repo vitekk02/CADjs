@@ -4,7 +4,7 @@ import { VIEWCUBE } from "../theme";
 import { NamedView } from "../hooks/useCameraAnimation";
 
 interface ViewCubeProps {
-  camera: THREE.PerspectiveCamera | null;
+  camera: THREE.Camera | null;
   onViewChange: (viewName: NamedView) => void;
 }
 
@@ -60,8 +60,11 @@ const ViewCube: FC<ViewCubeProps> = ({ camera, onViewChange }) => {
   const faceMeshesRef = useRef<THREE.Mesh[]>([]);
   const animFrameRef = useRef<number | null>(null);
   const hoveredFaceRef = useRef<string | null>(null);
+  // Track main camera via ref so the mini-scene doesn't re-create on projection toggle
+  const mainCameraRef = useRef(camera);
+  useEffect(() => { mainCameraRef.current = camera; }, [camera]);
 
-  // Initialize the mini scene
+  // Initialize the mini scene (once)
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -146,17 +149,17 @@ const ViewCube: FC<ViewCubeProps> = ({ camera, onViewChange }) => {
     const ambient = new THREE.AmbientLight(0xffffff, 1.0);
     cubeScene.add(ambient);
 
-    // Animation loop — sync with main camera
+    // Animation loop — sync with main camera via ref
     const animate = () => {
       animFrameRef.current = requestAnimationFrame(animate);
 
-      if (camera && cubeCameraRef.current) {
+      if (mainCameraRef.current && cubeCameraRef.current) {
         // Match the main camera's orientation
         const dir = new THREE.Vector3();
-        camera.getWorldDirection(dir);
+        mainCameraRef.current.getWorldDirection(dir);
         const dist = 3;
         cubeCameraRef.current.position.copy(dir.multiplyScalar(-dist));
-        cubeCameraRef.current.up.copy(camera.up);
+        cubeCameraRef.current.up.copy(mainCameraRef.current.up);
         cubeCameraRef.current.lookAt(0, 0, 0);
       }
 
@@ -166,12 +169,25 @@ const ViewCube: FC<ViewCubeProps> = ({ camera, onViewChange }) => {
 
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      // Dispose all scene resources
+      cubeScene.traverse((obj) => {
+        if (obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.LineSegments) {
+          obj.geometry?.dispose();
+          const mat = obj.material;
+          if (Array.isArray(mat)) {
+            mat.forEach((m) => { (m as THREE.Material & { map?: THREE.Texture }).map?.dispose(); m.dispose(); });
+          } else if (mat) {
+            (mat as THREE.Material & { map?: THREE.Texture }).map?.dispose();
+            (mat as THREE.Material).dispose();
+          }
+        }
+      });
       if (container.contains(cubeRenderer.domElement)) {
         container.removeChild(cubeRenderer.domElement);
       }
       cubeRenderer.dispose();
     };
-  }, [camera]);
+  }, []); // Only initialize once
 
   // Handle click on a cube face
   const handleClick = useCallback(

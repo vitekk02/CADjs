@@ -59,7 +59,7 @@ function easeOutQuad(t: number): number {
 }
 
 export function useCameraAnimation(
-  camera: THREE.PerspectiveCamera | null,
+  camera: THREE.Camera | null,
   controls: OrbitControls | null
 ) {
   const animFrameRef = useRef<number | null>(null);
@@ -151,8 +151,23 @@ export function useCameraAnimation(
       box.getSize(size);
 
       const maxDim = Math.max(size.x, size.y, size.z, 1);
-      const fov = camera.fov * (Math.PI / 180);
-      const distance = (maxDim / (2 * Math.tan(fov / 2))) * 1.5;
+
+      let distance: number;
+      if (camera instanceof THREE.PerspectiveCamera) {
+        const fov = camera.fov * (Math.PI / 180);
+        distance = (maxDim / (2 * Math.tan(fov / 2))) * 1.5;
+      } else {
+        // OrthographicCamera: keep current distance, update frustum to fit
+        distance = camera.position.distanceTo(controls.target);
+        const ortho = camera as THREE.OrthographicCamera;
+        const aspect = window.innerWidth / window.innerHeight;
+        const halfHeight = (maxDim / 2) * 1.5;
+        ortho.left = -halfHeight * aspect;
+        ortho.right = halfHeight * aspect;
+        ortho.top = halfHeight;
+        ortho.bottom = -halfHeight;
+        ortho.updateProjectionMatrix();
+      }
 
       // Animate to fit position
       const startPos = camera.position.clone();

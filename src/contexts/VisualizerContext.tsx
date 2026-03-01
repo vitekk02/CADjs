@@ -16,9 +16,11 @@ import { SCENE, LIGHTING, BODY, SELECTION, HELPERS, DRAW } from "../theme";
 
 export type ShapeType = "rectangle" | "triangle" | "circle" | "custom";
 
+export type ProjectionType = "perspective" | "orthographic";
+
 interface CadVisualizerContextType {
   scene: THREE.Scene | null;
-  camera: THREE.PerspectiveCamera | null;
+  camera: THREE.Camera | null;
   renderer: THREE.WebGLRenderer | null;
   controls: OrbitControls | null;
 
@@ -57,6 +59,10 @@ interface CadVisualizerContextType {
 
   setCameraRotationEnabled: (enabled: boolean) => void;
   setDrawingPlane: (normal: THREE.Vector3, constant?: number) => void;
+
+  projectionType: ProjectionType;
+  setProjectionType: (type: ProjectionType) => void;
+  toggleProjection: () => void;
 }
 
 export const CadVisualizerContext = createContext<
@@ -69,11 +75,14 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   const { addElement, elements, getObject } = useCadCore();
 
   const sceneRef = useRef<THREE.Scene | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const cameraRef = useRef<THREE.Camera | null>(null);
+  const perspCameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const orthoCameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const [projectionType, setProjectionTypeState] = useState<ProjectionType>("perspective");
   const [customShapePoints, setCustomShapePoints] = useState<THREE.Vector3[]>(
     [],
   );
@@ -100,6 +109,77 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     drawingPlaneRef.current.set(normal, constant);
   }, []);
 
+  const switchProjection = useCallback((newType: ProjectionType) => {
+    const persp = perspCameraRef.current;
+    const ortho = orthoCameraRef.current;
+    const renderer = rendererRef.current;
+    const controls = controlsRef.current;
+    if (!persp || !ortho || !renderer || !controls) return;
+
+    const currentCamera = cameraRef.current;
+    if (!currentCamera) return;
+
+    // Determine target camera
+    const targetCamera = newType === "perspective" ? persp : ortho;
+    if (targetCamera === currentCamera) return; // already active
+
+    // Copy position, up, quaternion from current → target
+    targetCamera.position.copy(currentCamera.position);
+    targetCamera.up.copy(currentCamera.up);
+    targetCamera.quaternion.copy(currentCamera.quaternion);
+
+    // If switching to orthographic, compute frustum from perspective FOV + distance
+    if (newType === "orthographic") {
+      const distance = currentCamera.position.distanceTo(controls.target);
+      const fovRad = (persp.fov * Math.PI) / 180;
+      const halfHeight = distance * Math.tan(fovRad / 2);
+      const aspect = persp.aspect;
+      ortho.left = -halfHeight * aspect;
+      ortho.right = halfHeight * aspect;
+      ortho.top = halfHeight;
+      ortho.bottom = -halfHeight;
+      ortho.updateProjectionMatrix();
+    }
+
+    // Save current controls state
+    const target = controls.target.clone();
+    const enableRotate = controls.enableRotate;
+    const enableZoom = controls.enableZoom;
+    const enablePan = controls.enablePan;
+
+    // Dispose old controls and create new ones (required for proper zoom behavior)
+    controls.dispose();
+    const newControls = new OrbitControls(targetCamera, renderer.domElement);
+    newControls.mouseButtons = {
+      LEFT: null,
+      MIDDLE: THREE.MOUSE.ROTATE,
+      RIGHT: THREE.MOUSE.RIGHT,
+    };
+    newControls.target.copy(target);
+    newControls.enableRotate = enableRotate;
+    newControls.enableZoom = enableZoom;
+    newControls.enablePan = enablePan;
+    newControls.update();
+
+    controlsRef.current = newControls;
+    cameraRef.current = targetCamera;
+    setProjectionTypeState(newType);
+
+    if (import.meta.env.DEV) {
+      (window as any).__cadCamera = targetCamera;
+    }
+  }, []);
+
+  const setProjectionType = useCallback((type: ProjectionType) => {
+    switchProjection(type);
+  }, [switchProjection]);
+
+  const toggleProjection = useCallback(() => {
+    const current = cameraRef.current instanceof THREE.PerspectiveCamera
+      ? "perspective" : "orthographic";
+    switchProjection(current === "perspective" ? "orthographic" : "perspective");
+  }, [switchProjection]);
+
   const initSceneObjects = useCallback(() => {
     const scene = new THREE.Scene();
 
@@ -117,13 +197,23 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     bgTexture.needsUpdate = true;
     scene.background = bgTexture;
 
-    const camera = new THREE.PerspectiveCamera(
-      75,
-      window.innerWidth / window.innerHeight,
-      0.1,
-      1000,
+    const aspect = window.innerWidth / window.innerHeight;
+
+    const perspCamera = new THREE.PerspectiveCamera(75, aspect, 0.1, 1000);
+    perspCamera.position.set(0, 0, 10);
+
+    // Compute initial ortho frustum from perspective FOV at distance 10
+    const distance = 10;
+    const fovRad = (75 * Math.PI) / 180;
+    const halfHeight = distance * Math.tan(fovRad / 2);
+    const orthoCamera = new THREE.OrthographicCamera(
+      -halfHeight * aspect, halfHeight * aspect,
+      halfHeight, -halfHeight,
+      0.1, 1000,
     );
-    camera.position.set(0, 0, 10);
+    orthoCamera.position.set(0, 0, 10);
+
+    const camera = perspCamera; // perspective is default
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -160,6 +250,8 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     scene.add(fillLight);
 
     sceneRef.current = scene;
+    perspCameraRef.current = perspCamera;
+    orthoCameraRef.current = orthoCamera;
     cameraRef.current = camera;
     rendererRef.current = renderer;
 
@@ -191,10 +283,13 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       controls.enablePan = true;
       controlsRef.current = controls;
 
+      // Use refs in the animation loop so camera/controls stay current after projection switch
       const animate = () => {
         requestAnimationFrame(animate);
-        controls.update();
-        renderer.render(scene, camera);
+        controlsRef.current?.update();
+        if (cameraRef.current) {
+          renderer.render(scene, cameraRef.current);
+        }
       };
       animate();
 
@@ -202,8 +297,26 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       setSceneReady(true);
 
       const handleResize = () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
+        const aspect = window.innerWidth / window.innerHeight;
+        // Update perspective camera
+        if (perspCameraRef.current) {
+          perspCameraRef.current.aspect = aspect;
+          perspCameraRef.current.updateProjectionMatrix();
+        }
+        // Update orthographic camera frustum only when ortho is active
+        if (
+          cameraRef.current instanceof THREE.OrthographicCamera &&
+          orthoCameraRef.current && controlsRef.current && perspCameraRef.current
+        ) {
+          const dist = orthoCameraRef.current.position.distanceTo(controlsRef.current.target);
+          const fov = (perspCameraRef.current.fov * Math.PI) / 180;
+          const hh = dist * Math.tan(fov / 2);
+          orthoCameraRef.current.left = -hh * aspect;
+          orthoCameraRef.current.right = hh * aspect;
+          orthoCameraRef.current.top = hh;
+          orthoCameraRef.current.bottom = -hh;
+          orthoCameraRef.current.updateProjectionMatrix();
+        }
         renderer.setSize(window.innerWidth, window.innerHeight);
       };
       window.addEventListener("resize", handleResize);
@@ -211,7 +324,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       // Store cleanup function for proper disposal
       cleanupRef.current = () => {
         window.removeEventListener("resize", handleResize);
-        controls.dispose();
+        // Dispose whichever controls are currently active (not the initial ones)
+        controlsRef.current?.dispose();
+        controlsRef.current = null;
       };
     },
     [initSceneObjects],
@@ -969,6 +1084,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         sceneReady,
         setCameraRotationEnabled,
         setDrawingPlane,
+        projectionType,
+        setProjectionType,
+        toggleProjection,
       }}
     >
       {children}

@@ -19,6 +19,7 @@ import SketchToolbar from "../src/navbar/SketchToolbar";
 import DimensionInput from "../src/components/DimensionInput";
 import SketchContextMenu from "../src/components/SketchContextMenu";
 import BrowserPanel from "../src/components/FeatureTree";
+import SketchPropertiesPanel from "../src/components/SketchPropertiesPanel";
 import { buildBrowserSections } from "../src/scene-operations/browser-sections";
 import { SKETCH_PLANE, HELPERS } from "../src/theme";
 import FileMenu from "../src/components/FileMenu";
@@ -71,6 +72,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     canRedoSketch,
     isOperationPending,
     duplicateSelectedElements,
+    updatePrimitivesAndSolve,
   } = useCadCore();
   const {
     createEdgeHelpers,
@@ -91,6 +93,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     cursorPosition,
     updateCursorPosition,
     controls,
+    projectionType,
+    toggleProjection,
   } = useCadVisualizer();
   const { showToast } = useToast();
 
@@ -527,6 +531,11 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
           animateToView("isometric");
           event.preventDefault();
           break;
+        case "5":
+        case "Numpad5":
+          toggleProjection();
+          event.preventDefault();
+          break;
         case "f":
           // F = Fit All, only in move mode to avoid conflict with fillet's F key
           if (mode === "move") {
@@ -541,7 +550,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     return () => {
       window.removeEventListener("keydown", handleViewKeys);
     };
-  }, [mode, animateToView, handleFitAll]);
+  }, [mode, animateToView, handleFitAll, toggleProjection]);
 
   // Prevent default browser context menu in sketch mode
   useEffect(() => {
@@ -1802,12 +1811,29 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
           </div>
         )}
 
+        {/* Canvas + right panel row */}
+        <div className="flex-1 flex flex-row min-h-0">
         {/* Canvas area */}
         <div className="flex-1 relative min-h-0 overflow-hidden">
           <div ref={mountRef} className="absolute inset-0" />
 
           {/* ViewCube */}
           <ViewCube camera={camera} onViewChange={handleViewCubeClick} />
+
+          {/* Projection toggle */}
+          <button
+            onClick={toggleProjection}
+            title={`Switch to ${projectionType === "perspective" ? "Orthographic" : "Perspective"} (5)`}
+            className="absolute top-[140px] right-[16px] z-10 px-2 py-1 rounded text-xs font-medium transition-colors"
+            style={{
+              width: 120,
+              backgroundColor: "rgba(90, 90, 90, 0.85)",
+              color: "#e0e0e0",
+              border: "1px solid #444",
+            }}
+          >
+            {projectionType === "perspective" ? "Perspective" : "Orthographic"}
+          </button>
 
           {/* Constraint feedback toast */}
           {constraintFeedback && (
@@ -2019,6 +2045,19 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               })()}
           </div>
         </div>
+
+        {/* Sketch Properties Panel - right side, below toolbar */}
+        {mode === "sketch" && activeSketch && (
+          <div className="flex-none w-60 bg-gray-800 bg-opacity-90 border-l border-gray-700 overflow-hidden">
+            <SketchPropertiesPanel
+              activeSketch={activeSketch}
+              selectedPrimitives={selectedPrimitives}
+              onUpdatePoint={updatePrimitivesAndSolve}
+            />
+          </div>
+        )}
+        </div>
+        {/* end canvas + right panel row */}
       </div>
       {/* end center column */}
     </div>

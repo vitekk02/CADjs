@@ -7,7 +7,7 @@ interface PlaneSelectorProps {
   onSelectPlane: (planeType: SketchPlaneType, offset?: number) => void;
   onCancel: () => void;
   renderer: THREE.WebGLRenderer | null;
-  camera: THREE.PerspectiveCamera | null;
+  camera: THREE.Camera | null;
 }
 
 interface PlaneConfig {
@@ -57,6 +57,9 @@ const PlaneSelector: FC<PlaneSelectorProps> = ({
   const cubeRendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cubeRef = useRef<THREE.Group | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  // Track main camera via ref to avoid re-creating mini-scene on projection toggle
+  const mainCameraRef = useRef(camera);
+  useEffect(() => { mainCameraRef.current = camera; }, [camera]);
 
   // Initialize mini cube scene
   useEffect(() => {
@@ -155,10 +158,10 @@ const PlaneSelector: FC<PlaneSelectorProps> = ({
       animationFrameRef.current = requestAnimationFrame(animate);
 
       // Sync cube rotation with main camera if available
-      if (camera && cubeRef.current) {
+      if (mainCameraRef.current && cubeRef.current) {
         // Get camera direction
         const cameraDirection = new THREE.Vector3();
-        camera.getWorldDirection(cameraDirection);
+        mainCameraRef.current.getWorldDirection(cameraDirection);
 
         // Position cube camera to match main camera orientation
         const distance = 4;
@@ -180,7 +183,7 @@ const PlaneSelector: FC<PlaneSelectorProps> = ({
       }
       cubeRendererRef.current?.dispose();
     };
-  }, [visible, camera]);
+  }, [visible]);
 
   // Handle cube click
   const handleCubeClick = useCallback(

@@ -254,6 +254,8 @@ export function useSketchMode(): UseSketchModeResult {
     sceneReady,
     setCameraRotationEnabled,
     setDrawingPlane,
+    projectionType,
+    setProjectionType,
   } = useCadVisualizer();
 
   const [sketchSubMode, setSketchSubMode] = useState<SketchSubMode>("line");
@@ -276,6 +278,10 @@ export function useSketchMode(): UseSketchModeResult {
 
   // Ctrl-key override: when held, suppress all inference (snapping, guidelines, auto H/V)
   const ctrlHeldRef = useRef(false);
+
+  // Track current projection type via ref to avoid stale closures in callbacks
+  const projectionTypeRef = useRef(projectionType);
+  useEffect(() => { projectionTypeRef.current = projectionType; }, [projectionType]);
 
   // Body dimming state - stores original material properties for restoration
   const dimmedMaterialsRef = useRef<Map<string, { color: number; opacity: number; transparent: boolean }>>(new Map());
@@ -1974,13 +1980,23 @@ export function useSketchMode(): UseSketchModeResult {
   // Store original camera position to restore if cancelled
   const originalCameraPositionRef = useRef<THREE.Vector3 | null>(null);
   const originalCameraUpRef = useRef<THREE.Vector3 | null>(null);
+  // Store original projection type to restore when leaving sketch mode
+  const originalProjectionRef = useRef<"perspective" | "orthographic" | null>(null);
+  // Camera animation cancellation ref (shared by orient + plane selection animations)
+  const cameraAnimFrameRef = useRef<number | null>(null);
   // Face highlight overlay for face-picking during plane selection
   const faceHighlightRef = useRef<THREE.Mesh | null>(null);
 
   // Orient camera to face a plane (for sketching)
   const orientCameraToPlane = useCallback(
-    (plane: SketchPlane) => {
+    (plane: SketchPlane, onComplete?: () => void) => {
       if (!camera) return;
+
+      // Cancel any in-flight camera animation
+      if (cameraAnimFrameRef.current !== null) {
+        cancelAnimationFrame(cameraAnimFrameRef.current);
+        cameraAnimFrameRef.current = null;
+      }
 
       const distance = 15;
       const duration = 500; // Animation duration in ms
@@ -2006,11 +2022,14 @@ export function useSketchMode(): UseSketchModeResult {
         camera.lookAt(lookAtTarget);
 
         if (t < 1) {
-          requestAnimationFrame(animateCamera);
+          cameraAnimFrameRef.current = requestAnimationFrame(animateCamera);
+        } else {
+          cameraAnimFrameRef.current = null;
+          onComplete?.();
         }
       };
 
-      animateCamera();
+      cameraAnimFrameRef.current = requestAnimationFrame(animateCamera);
     },
     [camera]
   );
@@ -2018,6 +2037,12 @@ export function useSketchMode(): UseSketchModeResult {
   // Position camera at isometric view to see all 3 planes
   const positionCameraForPlaneSelection = useCallback(() => {
     if (!camera) return;
+
+    // Cancel any in-flight camera animation
+    if (cameraAnimFrameRef.current !== null) {
+      cancelAnimationFrame(cameraAnimFrameRef.current);
+      cameraAnimFrameRef.current = null;
+    }
 
     // Save original camera position
     originalCameraPositionRef.current = camera.position.clone();
@@ -2044,11 +2069,13 @@ export function useSketchMode(): UseSketchModeResult {
       camera.lookAt(0, 0, 0);
 
       if (t < 1) {
-        requestAnimationFrame(animateCamera);
+        cameraAnimFrameRef.current = requestAnimationFrame(animateCamera);
+      } else {
+        cameraAnimFrameRef.current = null;
       }
     };
 
-    animateCamera();
+    cameraAnimFrameRef.current = requestAnimationFrame(animateCamera);
   }, [camera]);
 
   // Create the 3 selection planes in the scene
@@ -2587,6 +2614,9 @@ export function useSketchMode(): UseSketchModeResult {
       // Disable camera rotation in sketch mode (only allow pan/zoom)
       setCameraRotationEnabled(false);
 
+      // Save current projection type to restore on sketch exit
+      originalProjectionRef.current = projectionTypeRef.current;
+
       // Dim existing 3D bodies so sketch stands out
       dimSceneBodies();
 
@@ -2594,8 +2624,12 @@ export function useSketchMode(): UseSketchModeResult {
       const planeConstant = -plane.normal.dot(plane.origin);
       setDrawingPlane(plane.normal, planeConstant);
 
-      // Orient camera to the plane
-      orientCameraToPlane(plane);
+      // Orient camera to the plane, then switch to orthographic after animation
+      orientCameraToPlane(plane, () => {
+        if (projectionTypeRef.current !== "orthographic") {
+          setProjectionType("orthographic");
+        }
+      });
 
       // Create grid on the plane (smaller grid for face planes)
       const isFacePlane = plane.type === "face";
@@ -2604,7 +2638,7 @@ export function useSketchMode(): UseSketchModeResult {
       // Start sketch on selected plane
       startSketch(plane);
     },
-    [removeSelectionPlanes, orientCameraToPlane, createSketchGrid, startSketch, showGroundPlane, toggleGroundPlane, setCameraRotationEnabled, dimSceneBodies, setDrawingPlane]
+    [removeSelectionPlanes, orientCameraToPlane, createSketchGrid, startSketch, showGroundPlane, toggleGroundPlane, setCameraRotationEnabled, dimSceneBodies, setDrawingPlane, setProjectionType]
   );
 
   // Start new sketch - enters plane selection mode
@@ -2783,23 +2817,21 @@ export function useSketchMode(): UseSketchModeResult {
     (id: string, addToSelection: boolean) => {
       setSelectedPrimitives((prev) => {
         if (addToSelection) {
-          // Shift+click: add to selection (single primitive)
+          // Shift+click: toggle in/out of selection
           if (prev.includes(id)) {
             return prev.filter((p) => p !== id);
           }
           return [...prev, id];
         } else {
-          // Regular click: select this primitive and all connected ones
-          if (prev.length > 0 && prev.includes(id)) {
-            // Clicking already selected element, deselect all
+          // Regular click: select ONLY this primitive
+          if (prev.length === 1 && prev[0] === id) {
             return [];
           }
-          // Select the connected shape
-          return findConnectedPrimitives(id);
+          return [id];
         }
       });
     },
-    [findConnectedPrimitives]
+    []
   );
 
   const clearSelection = useCallback(() => {
@@ -3959,6 +3991,12 @@ export function useSketchMode(): UseSketchModeResult {
   // Cleanup inference objects, grid, and selection planes when leaving sketch mode
   useEffect(() => {
     if (mode !== "sketch") {
+      // Cancel any in-flight camera animation
+      if (cameraAnimFrameRef.current !== null) {
+        cancelAnimationFrame(cameraAnimFrameRef.current);
+        cameraAnimFrameRef.current = null;
+      }
+
       cleanupInferenceObjects();
       cleanupSketchGrid();
       removeSelectionPlanes();
@@ -3985,13 +4023,19 @@ export function useSketchMode(): UseSketchModeResult {
         originalCameraUpRef.current = null;
       }
 
+      // Restore original projection type
+      if (originalProjectionRef.current !== null) {
+        setProjectionType(originalProjectionRef.current);
+        originalProjectionRef.current = null;
+      }
+
       // Re-enable camera rotation when leaving sketch mode
       setCameraRotationEnabled(true);
 
       // Reset drawing plane to default XY
       setDrawingPlane(new THREE.Vector3(0, 0, 1));
     }
-  }, [mode, camera, cleanupInferenceObjects, cleanupSketchGrid, removeSelectionPlanes, toggleGroundPlane, setCameraRotationEnabled, restoreSceneBodies, setDrawingPlane]);
+  }, [mode, camera, cleanupInferenceObjects, cleanupSketchGrid, removeSelectionPlanes, toggleGroundPlane, setCameraRotationEnabled, restoreSceneBodies, setDrawingPlane, setProjectionType]);
 
   return {
     sketchSubMode,
