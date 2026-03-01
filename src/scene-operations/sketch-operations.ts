@@ -446,33 +446,92 @@ export function trimLineAtSegment(
   }
 
   if (isStartSegment) {
-    // Trim from start: move p1 to endParam position
+    // Trim from start: remove original line, create new point at intersection + new shorter line
+    // This avoids moving a shared corner point which would corrupt adjacent edges
     const newX = p1.x + endParam * (p2.x - p1.x);
     const newY = p1.y + endParam * (p2.y - p1.y);
-    const updatedSketch = updatePrimitiveInSketch(sketch, line.p1Id, { x: newX, y: newY });
-    // Drop dimensional constraints on the line
-    const filteredConstraints = updatedSketch.constraints.filter(c => {
-      if (!c.primitiveIds.includes(lineId)) return true;
-      return !["distance", "distanceX", "distanceY"].includes(c.type);
-    });
+    let nextId = idCounter;
+
+    // Remove original line (but NOT its endpoints — they may be shared)
+    let updatedPrimitives = sketch.primitives.filter(p => p.id !== lineId);
+
+    // Create new point at intersection
+    nextId++;
+    const newPtId = `point_${nextId}`;
+    const newPoint: SketchPoint = { id: newPtId, type: "point", x: newX, y: newY };
+
+    // Create new shorter line from intersection point to original p2
+    nextId++;
+    const newLineId = `line_${nextId}`;
+    const newLine: SketchLine = {
+      id: newLineId,
+      type: "line",
+      p1Id: newPtId,
+      p2Id: line.p2Id,
+      construction: line.construction,
+    };
+
+    updatedPrimitives = [...updatedPrimitives, newPoint, newLine];
+
+    // Transfer geometric constraints from old line to new line; drop dimensional
+    const updatedConstraints = sketch.constraints.map(c => {
+      if (!c.primitiveIds.includes(lineId)) return c;
+      if (["horizontal", "vertical", "parallel", "perpendicular", "equal"].includes(c.type)) {
+        return { ...c, primitiveIds: c.primitiveIds.map(id => id === lineId ? newLineId : id) };
+      }
+      if (c.type === "coincident") return c;
+      if (["distance", "distanceX", "distanceY"].includes(c.type)) return null;
+      return c;
+    }).filter((c): c is SketchConstraint => c !== null);
+
     return {
-      sketch: { ...updatedSketch, constraints: filteredConstraints, status: "underconstrained" },
-      nextId: idCounter,
+      sketch: { ...sketch, primitives: updatedPrimitives, constraints: updatedConstraints, status: "underconstrained" },
+      nextId,
     };
   }
 
   if (isEndSegment) {
-    // Trim from end: move p2 to startParam position
+    // Trim from end: remove original line, create new point at intersection + new shorter line
+    // This avoids moving a shared corner point which would corrupt adjacent edges
     const newX = p1.x + startParam * (p2.x - p1.x);
     const newY = p1.y + startParam * (p2.y - p1.y);
-    const updatedSketch = updatePrimitiveInSketch(sketch, line.p2Id, { x: newX, y: newY });
-    const filteredConstraints = updatedSketch.constraints.filter(c => {
-      if (!c.primitiveIds.includes(lineId)) return true;
-      return !["distance", "distanceX", "distanceY"].includes(c.type);
-    });
+    let nextId = idCounter;
+
+    // Remove original line (but NOT its endpoints — they may be shared)
+    let updatedPrimitives = sketch.primitives.filter(p => p.id !== lineId);
+
+    // Create new point at intersection
+    nextId++;
+    const newPtId = `point_${nextId}`;
+    const newPoint: SketchPoint = { id: newPtId, type: "point", x: newX, y: newY };
+
+    // Create new shorter line from original p1 to intersection point
+    nextId++;
+    const newLineId = `line_${nextId}`;
+    const newLine: SketchLine = {
+      id: newLineId,
+      type: "line",
+      p1Id: line.p1Id,
+      p2Id: newPtId,
+      construction: line.construction,
+    };
+
+    updatedPrimitives = [...updatedPrimitives, newPoint, newLine];
+
+    // Transfer geometric constraints from old line to new line; drop dimensional
+    const updatedConstraints = sketch.constraints.map(c => {
+      if (!c.primitiveIds.includes(lineId)) return c;
+      if (["horizontal", "vertical", "parallel", "perpendicular", "equal"].includes(c.type)) {
+        return { ...c, primitiveIds: c.primitiveIds.map(id => id === lineId ? newLineId : id) };
+      }
+      if (c.type === "coincident") return c;
+      if (["distance", "distanceX", "distanceY"].includes(c.type)) return null;
+      return c;
+    }).filter((c): c is SketchConstraint => c !== null);
+
     return {
-      sketch: { ...updatedSketch, constraints: filteredConstraints, status: "underconstrained" },
-      nextId: idCounter,
+      sketch: { ...sketch, primitives: updatedPrimitives, constraints: updatedConstraints, status: "underconstrained" },
+      nextId,
     };
   }
 
@@ -586,5 +645,37 @@ export function convertCircleToArc(
     },
     arcId: arc.id,
     nextId,
+  };
+}
+
+/** Remove orphaned points — points not referenced by any line, circle, or arc */
+export function cleanupOrphanedPoints(sketch: Sketch): { sketch: Sketch; removedIds: string[] } {
+  const usedPointIds = new Set<string>();
+  for (const p of sketch.primitives) {
+    if (isSketchLine(p)) {
+      usedPointIds.add(p.p1Id);
+      usedPointIds.add(p.p2Id);
+    }
+    if (isSketchCircle(p)) {
+      usedPointIds.add(p.centerId);
+    }
+    if (isSketchArc(p)) {
+      usedPointIds.add(p.centerId);
+      usedPointIds.add(p.startId);
+      usedPointIds.add(p.endId);
+    }
+  }
+  const orphanIds = sketch.primitives
+    .filter(p => isSketchPoint(p) && !usedPointIds.has(p.id))
+    .map(p => p.id);
+  if (orphanIds.length === 0) return { sketch, removedIds: [] };
+  const removeSet = new Set(orphanIds);
+  return {
+    sketch: {
+      ...sketch,
+      primitives: sketch.primitives.filter(p => !removeSet.has(p.id)),
+      constraints: sketch.constraints.filter(c => !c.primitiveIds.some(id => removeSet.has(id))),
+    },
+    removedIds: orphanIds,
   };
 }

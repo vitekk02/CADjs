@@ -30,6 +30,10 @@ import {
   identifyTrimSegment,
   findClosestEndpoint,
   findNearestExtendTarget,
+  findNearestArcExtendTarget,
+  normalizeAngle,
+  isAngleInArcRange,
+  getArcAngles,
 } from "../scene-operations/sketch-intersection-utils";
 import {
   trimLineAtSegment,
@@ -157,6 +161,15 @@ function createLine2FromPoints(
   const line = new Line2(geometry, material);
   line.computeLineDistances();
   return line;
+}
+
+/** Convert a pixel radius to sketch-space units based on current camera zoom */
+function screenPxToSketchUnits(camera: THREE.Camera, renderer: THREE.WebGLRenderer, px: number): number {
+  const p1 = new THREE.Vector3(0, 0, 0).project(camera);
+  const p2 = new THREE.Vector3(1, 0, 0).project(camera);
+  const rect = renderer.domElement.getBoundingClientRect();
+  const pixelsPerUnit = Math.abs(p2.x - p1.x) * 0.5 * rect.width;
+  return pixelsPerUnit > 0 ? px / pixelsPerUnit : 0.5;
 }
 
 /** Helper: create a constraint glyph sprite at a given position */
@@ -344,6 +357,14 @@ export function useSketchMode(): UseSketchModeResult {
   // Trim mode state
   const trimHighlightRef = useRef<THREE.Object3D | null>(null);
   const trimHoveredPrimRef = useRef<{ primId: string; startParam: number; endParam: number } | null>(null);
+
+  // Extend mode state
+  const extendHoveredRef = useRef<{
+    primId: string;
+    pointId: string;
+    isStart: boolean;
+    targetPoint: { x: number; y: number };
+  } | null>(null);
 
   // Shared raycaster to avoid creating new one on every mouse event
   const raycasterRef = useRef(new THREE.Raycaster());
@@ -574,16 +595,24 @@ export function useSketchMode(): UseSketchModeResult {
       }
       previewObjectRef.current = null;
     }
-    // Clean up trim highlight
+    // Clean up trim/extend highlight
     if (trimHighlightRef.current && scene) {
       scene.remove(trimHighlightRef.current);
-      if (trimHighlightRef.current instanceof THREE.Line) {
+      if (trimHighlightRef.current instanceof THREE.Group) {
+        trimHighlightRef.current.traverse((child) => {
+          if (child instanceof Line2 || child instanceof THREE.Line || child instanceof THREE.Mesh) {
+            child.geometry.dispose();
+            (child.material as THREE.Material).dispose();
+          }
+        });
+      } else if (trimHighlightRef.current instanceof Line2 || trimHighlightRef.current instanceof THREE.Line) {
         trimHighlightRef.current.geometry.dispose();
         (trimHighlightRef.current.material as THREE.Material).dispose();
       }
       trimHighlightRef.current = null;
     }
     trimHoveredPrimRef.current = null;
+    extendHoveredRef.current = null;
   }, [scene]);
 
   // Cleanup inference visualization objects
@@ -852,18 +881,26 @@ export function useSketchMode(): UseSketchModeResult {
   const cleanupTrimHighlight = useCallback(() => {
     if (trimHighlightRef.current && scene) {
       scene.remove(trimHighlightRef.current);
-      if (trimHighlightRef.current instanceof THREE.Line) {
+      if (trimHighlightRef.current instanceof THREE.Group) {
+        trimHighlightRef.current.traverse((child) => {
+          if (child instanceof Line2 || child instanceof THREE.Line || child instanceof THREE.Mesh) {
+            child.geometry.dispose();
+            (child.material as THREE.Material).dispose();
+          }
+        });
+      } else if (trimHighlightRef.current instanceof Line2 || trimHighlightRef.current instanceof THREE.Line) {
         trimHighlightRef.current.geometry.dispose();
         (trimHighlightRef.current.material as THREE.Material).dispose();
       }
       trimHighlightRef.current = null;
     }
     trimHoveredPrimRef.current = null;
+    extendHoveredRef.current = null;
   }, [scene]);
 
   // ── Trim mode handler ──
   const handleTrimMode = useCallback(
-    (event: MouseEvent, point: THREE.Vector3) => {
+    async (event: MouseEvent, point: THREE.Vector3) => {
       if (!activeSketch) return;
 
       const pt2d = worldToSketch2D(point, activeSketch.plane);
@@ -875,7 +912,9 @@ export function useSketchMode(): UseSketchModeResult {
 
         // Find closest primitive to cursor
         let bestPrimId: string | null = null;
-        let bestDist = 0.5; // snap distance in sketch units
+        let bestDist = (camera && renderer)
+          ? screenPxToSketchUnits(camera, renderer, 15)
+          : 0.5; // snap distance in sketch units, zoom-aware
 
         for (const prim of activeSketch.primitives) {
           if (isSketchPoint(prim)) continue;
@@ -895,7 +934,14 @@ export function useSketchMode(): UseSketchModeResult {
           } else if (isSketchArc(prim)) {
             const center = activeSketch.primitives.find(p => p.id === prim.centerId && isSketchPoint(p)) as SketchPoint | undefined;
             if (center) {
-              dist = Math.abs(Math.hypot(cursorPoint.x - center.x, cursorPoint.y - center.y) - prim.radius);
+              const radialDist = Math.abs(Math.hypot(cursorPoint.x - center.x, cursorPoint.y - center.y) - prim.radius);
+              const arcAngles = getArcAngles(activeSketch, prim);
+              if (arcAngles) {
+                const cursorAngle = Math.atan2(cursorPoint.y - center.y, cursorPoint.x - center.x);
+                if (isAngleInArcRange(cursorAngle, arcAngles.startAngle, arcAngles.endAngle)) {
+                  dist = radialDist;
+                }
+              }
             }
           }
 
@@ -916,27 +962,50 @@ export function useSketchMode(): UseSketchModeResult {
               endParam: segment.endParam,
             };
 
-            // Visualize the segment to be trimmed (in red)
+            // Visualize the segment to be trimmed (in red) using Line2
             const prim = activeSketch.primitives.find(p => p.id === bestPrimId);
-            if (prim && isSketchLine(prim) && sketchTo3DRef.current) {
-              const p1 = activeSketch.primitives.find(p => p.id === prim.p1Id && isSketchPoint(p)) as SketchPoint | undefined;
-              const p2 = activeSketch.primitives.find(p => p.id === prim.p2Id && isSketchPoint(p)) as SketchPoint | undefined;
-              if (p1 && p2) {
-                const s = segment.startParam;
-                const e = segment.endParam;
-                const sx = p1.x + s * (p2.x - p1.x);
-                const sy = p1.y + s * (p2.y - p1.y);
-                const ex = p1.x + e * (p2.x - p1.x);
-                const ey = p1.y + e * (p2.y - p1.y);
-                const start3d = sketchTo3DRef.current(sx, sy, 0.01);
-                const end3d = sketchTo3DRef.current(ex, ey, 0.01);
-                const geom = new THREE.BufferGeometry().setFromPoints([start3d, end3d]);
-                const mat = new THREE.LineBasicMaterial({
-                  color: SKETCH_THEME.trimHighlight,
-                  linewidth: 3,
-                  depthTest: false,
-                });
-                const line = new THREE.Line(geom, mat);
+            if (prim && sketchTo3DRef.current) {
+              let positions: number[] | null = null;
+
+              if (isSketchLine(prim)) {
+                const p1 = activeSketch.primitives.find(p => p.id === prim.p1Id && isSketchPoint(p)) as SketchPoint | undefined;
+                const p2 = activeSketch.primitives.find(p => p.id === prim.p2Id && isSketchPoint(p)) as SketchPoint | undefined;
+                if (p1 && p2) {
+                  const s = segment.startParam;
+                  const e = segment.endParam;
+                  const sx = p1.x + s * (p2.x - p1.x);
+                  const sy = p1.y + s * (p2.y - p1.y);
+                  const ex = p1.x + e * (p2.x - p1.x);
+                  const ey = p1.y + e * (p2.y - p1.y);
+                  const start3d = sketchTo3DRef.current(sx, sy, 0.02);
+                  const end3d = sketchTo3DRef.current(ex, ey, 0.02);
+                  positions = [start3d.x, start3d.y, start3d.z, end3d.x, end3d.y, end3d.z];
+                }
+              } else if (isSketchCircle(prim) || isSketchArc(prim)) {
+                const center = activeSketch.primitives.find(
+                  p => p.id === (isSketchCircle(prim) ? prim.centerId : (prim as SketchArc).centerId) && isSketchPoint(p)
+                ) as SketchPoint | undefined;
+                if (center) {
+                  const radius = isSketchCircle(prim) ? prim.radius : (prim as SketchArc).radius;
+                  const sAngle = segment.startParam;
+                  const eAngle = segment.endParam;
+                  let angleDiff = eAngle - sAngle;
+                  if (angleDiff <= 0) angleDiff += Math.PI * 2;
+                  const segCount = Math.max(16, Math.ceil(angleDiff / (Math.PI / 16)));
+                  positions = [];
+                  for (let i = 0; i <= segCount; i++) {
+                    const t = i / segCount;
+                    const angle = sAngle + angleDiff * t;
+                    const lx = center.x + Math.cos(angle) * radius;
+                    const ly = center.y + Math.sin(angle) * radius;
+                    const pt3d = sketchTo3DRef.current!(lx, ly, 0.02);
+                    positions.push(pt3d.x, pt3d.y, pt3d.z);
+                  }
+                }
+              }
+
+              if (positions && positions.length >= 6) {
+                const line = createLine2FromPoints(positions, SKETCH_THEME.trimHighlight, 3.0);
                 line.renderOrder = 1000;
                 if (scene) scene.add(line);
                 trimHighlightRef.current = line;
@@ -969,15 +1038,33 @@ export function useSketchMode(): UseSketchModeResult {
             // Only segment — remove entire line
             removePrimitive(primId);
           } else if (isStartSegment) {
-            // Trim from start: move p1 to endParam position
+            // Trim from start: remove original line, create new point at intersection + new shorter line
             const newX = p1.x + endParam * (p2.x - p1.x);
             const newY = p1.y + endParam * (p2.y - p1.y);
-            updatePrimitive(prim.p1Id, { x: newX, y: newY });
+            removePrimitive(primId);
+            const newPtId = generateId("point");
+            addPrimitive({ id: newPtId, type: "point", x: newX, y: newY });
+            addPrimitive({
+              id: generateId("line"),
+              type: "line" as const,
+              p1Id: newPtId,
+              p2Id: prim.p2Id,
+              construction: prim.construction,
+            });
           } else if (isEndSegment) {
-            // Trim from end: move p2 to startParam position
+            // Trim from end: remove original line, create new point at intersection + new shorter line
             const newX = p1.x + startParam * (p2.x - p1.x);
             const newY = p1.y + startParam * (p2.y - p1.y);
-            updatePrimitive(prim.p2Id, { x: newX, y: newY });
+            removePrimitive(primId);
+            const newPtId = generateId("point");
+            addPrimitive({ id: newPtId, type: "point", x: newX, y: newY });
+            addPrimitive({
+              id: generateId("line"),
+              type: "line" as const,
+              p1Id: prim.p1Id,
+              p2Id: newPtId,
+              construction: prim.construction,
+            });
           } else {
             // Middle segment: remove original line, create two new segments
             // Create new intersection points at split locations
@@ -1025,9 +1112,12 @@ export function useSketchMode(): UseSketchModeResult {
               }
             }
 
-            // Add all segments except the clicked one
+            // Add all segments except the clicked one, track which point IDs are used
+            const usedPtIds = new Set<string>();
             for (let i = 0; i < newLines.length; i++) {
               if (i === skipIdx) continue;
+              usedPtIds.add(newLines[i].p1Id);
+              usedPtIds.add(newLines[i].p2Id);
               addPrimitive({
                 id: newLines[i].id,
                 type: "line" as const,
@@ -1036,81 +1126,300 @@ export function useSketchMode(): UseSketchModeResult {
                 construction: prim.construction,
               });
             }
+
+
           }
         } else if (isSketchCircle(prim)) {
           if (intersections.length >= 2) {
-            // Remove circle first
             const center = activeSketch.primitives.find(p => p.id === prim.centerId && isSketchPoint(p)) as SketchPoint | undefined;
             if (!center) return;
 
-            // The surviving arc goes from endParam to startParam
-            const startPtId = generateId("point");
-            const endPtId = generateId("point");
-            const arcId = generateId("arc");
+            // Deduplicate intersection angles (same logic as identifyCircleTrimSegment)
+            const ANGLE_DEDUP_TOL = 0.01;
+            const rawAngles = intersections.map(ix => normalizeAngle(ix.tSource)).sort((a, b) => a - b);
+            const angles: number[] = [];
+            for (const a of rawAngles) {
+              if (angles.length === 0 || a - angles[angles.length - 1] > ANGLE_DEDUP_TOL) {
+                angles.push(a);
+              }
+            }
+            if (angles.length >= 2 && (angles[0] + 2 * Math.PI - angles[angles.length - 1]) < ANGLE_DEDUP_TOL) {
+              angles.pop();
+            }
+
+            if (angles.length < 2) return;
 
             removePrimitive(primId);
 
+            // Find which segment index is the clicked one
+            const isAngleClose = (a: number, b: number) => {
+              const diff = Math.abs(a - b);
+              return diff < 0.02 || Math.abs(diff - 2 * Math.PI) < 0.02;
+            };
+            let skipIdx = -1;
+            for (let i = 0; i < angles.length; i++) {
+              const segStart = angles[i];
+              const segEnd = angles[(i + 1) % angles.length];
+              if (isAngleClose(normalizeAngle(startParam), segStart) &&
+                  isAngleClose(normalizeAngle(endParam), segEnd)) {
+                skipIdx = i;
+                break;
+              }
+            }
+
+            // Create intersection points on the circle
+            const anglePtIds: string[] = [];
+            for (const angle of angles) {
+              const ptId = generateId("point");
+              anglePtIds.push(ptId);
+              addPrimitive({
+                id: ptId,
+                type: "point" as const,
+                x: center.x + prim.radius * Math.cos(angle),
+                y: center.y + prim.radius * Math.sin(angle),
+              });
+            }
+
+            // Create surviving arcs (one per segment, skipping the clicked one)
+            for (let i = 0; i < angles.length; i++) {
+              if (i === skipIdx) continue;
+              const arcStartPtId = anglePtIds[i];
+              const arcEndPtId = anglePtIds[(i + 1) % angles.length];
+              addPrimitive({
+                id: generateId("arc"),
+                type: "arc" as const,
+                centerId: prim.centerId,
+                startId: arcStartPtId,
+                endId: arcEndPtId,
+                radius: prim.radius,
+                construction: prim.construction,
+              });
+            }
+          }
+        } else if (isSketchArc(prim)) {
+          const center = activeSketch.primitives.find(p => p.id === prim.centerId && isSketchPoint(p)) as SketchPoint | undefined;
+          const arcAngles = getArcAngles(activeSketch, prim);
+          if (!center || !arcAngles) return;
+
+          // Filter out boundary intersections (at arc's own start/end points)
+          const BOUNDARY_TOL = 0.03;
+          const sA = normalizeAngle(arcAngles.startAngle);
+          const eA = normalizeAngle(arcAngles.endAngle);
+          const filteredIntersections = intersections.filter(ix => {
+            const ixAngle = normalizeAngle(ix.tSource);
+            const dStart = Math.min(Math.abs(ixAngle - sA), 2 * Math.PI - Math.abs(ixAngle - sA));
+            const dEnd = Math.min(Math.abs(ixAngle - eA), 2 * Math.PI - Math.abs(ixAngle - eA));
+            return dStart > BOUNDARY_TOL && dEnd > BOUNDARY_TOL;
+          });
+
+          if (filteredIntersections.length === 0) {
+            // No interior intersections — remove entire arc only
+            // Don't remove start/end points — they may be shared with adjacent arcs
+            removePrimitive(primId);
+            await solveSketch();
+            return;
+          }
+
+          const isAngleCloseArc = (a: number, b: number) => {
+            const diff = Math.abs(normalizeAngle(a) - normalizeAngle(b));
+            return diff < 0.02 || Math.abs(diff - 2 * Math.PI) < 0.02;
+          };
+
+          const isStartSegment = isAngleCloseArc(startParam, arcAngles.startAngle);
+          const isEndSegment = isAngleCloseArc(endParam, arcAngles.endAngle);
+
+          if (isStartSegment && isEndSegment) {
+            // Only segment — remove entire arc
+            // Don't remove start/end points — they may be shared with adjacent arcs
+            removePrimitive(primId);
+          } else if (isStartSegment) {
+            // Trim from start: remove original arc, create new point at intersection + new shorter arc
+            // (Same pattern as line trim — avoids moving a shared point)
+            const newX = center.x + prim.radius * Math.cos(endParam);
+            const newY = center.y + prim.radius * Math.sin(endParam);
+            removePrimitive(primId);
+            const newPtId = generateId("point");
+            addPrimitive({ id: newPtId, type: "point" as const, x: newX, y: newY });
             addPrimitive({
-              id: startPtId,
-              type: "point" as const,
-              x: center.x + prim.radius * Math.cos(endParam),
-              y: center.y + prim.radius * Math.sin(endParam),
-            });
-            addPrimitive({
-              id: endPtId,
-              type: "point" as const,
-              x: center.x + prim.radius * Math.cos(startParam),
-              y: center.y + prim.radius * Math.sin(startParam),
-            });
-            addPrimitive({
-              id: arcId,
+              id: generateId("arc"),
               type: "arc" as const,
               centerId: prim.centerId,
-              startId: startPtId,
-              endId: endPtId,
+              startId: newPtId,
+              endId: prim.endId,
               radius: prim.radius,
               construction: prim.construction,
             });
+          } else if (isEndSegment) {
+            // Trim from end: remove original arc, create new point at intersection + new shorter arc
+            const newX = center.x + prim.radius * Math.cos(startParam);
+            const newY = center.y + prim.radius * Math.sin(startParam);
+            removePrimitive(primId);
+            const newPtId = generateId("point");
+            addPrimitive({ id: newPtId, type: "point" as const, x: newX, y: newY });
+            addPrimitive({
+              id: generateId("arc"),
+              type: "arc" as const,
+              centerId: prim.centerId,
+              startId: prim.startId,
+              endId: newPtId,
+              radius: prim.radius,
+              construction: prim.construction,
+            });
+          } else {
+            // Middle segment: split arc into multiple surviving arcs
+            // Build intersection angles within the arc range, sorted relative to arc start
+            const arcStart = normalizeAngle(arcAngles.startAngle);
+            const ixAngles = filteredIntersections
+              .map(ix => normalizeAngle(ix.tSource))
+              .filter(a => isAngleInArcRange(a, arcAngles.startAngle, arcAngles.endAngle))
+              .sort((a, b) => {
+                // Sort by angular distance from arc start (handles wrap-around)
+                const da = normalizeAngle(a - arcStart);
+                const db = normalizeAngle(b - arcStart);
+                return da - db;
+              });
+
+            // Full angle list: arc start, intersections, arc end
+            const allAngles = [arcStart, ...ixAngles, normalizeAngle(arcAngles.endAngle)];
+
+            // Find which segment is clicked (direct boundary comparison)
+            let skipIdx = -1;
+            for (let i = 0; i < allAngles.length - 1; i++) {
+              if (isAngleCloseArc(normalizeAngle(startParam), allAngles[i]) &&
+                  isAngleCloseArc(normalizeAngle(endParam), allAngles[i + 1])) {
+                skipIdx = i;
+                break;
+              }
+            }
+
+            // Remove original arc
+            removePrimitive(primId);
+
+            // Create intersection points
+            const anglePtIds: string[] = [];
+            for (const angle of ixAngles) {
+              const ptId = generateId("point");
+              anglePtIds.push(ptId);
+              addPrimitive({
+                id: ptId,
+                type: "point" as const,
+                x: center.x + prim.radius * Math.cos(angle),
+                y: center.y + prim.radius * Math.sin(angle),
+              });
+            }
+
+            // Full point ID list: original startId, intersection points, original endId
+            const allPtIds = [prim.startId, ...anglePtIds, prim.endId];
+
+            // Create surviving arcs (skip clicked segment)
+            for (let i = 0; i < allPtIds.length - 1; i++) {
+              if (i === skipIdx) continue;
+              addPrimitive({
+                id: generateId("arc"),
+                type: "arc" as const,
+                centerId: prim.centerId,
+                startId: allPtIds[i],
+                endId: allPtIds[i + 1],
+                radius: prim.radius,
+                construction: prim.construction,
+              });
+            }
+
+
           }
         }
 
         // Solve after trim
-        solveSketch();
+        await solveSketch();
       }
     },
-    [activeSketch, worldToSketch2D, scene, cleanupTrimHighlight, pushSketchUndo, solveSketch, removePrimitive, updatePrimitive, addPrimitive, generateId],
+    [activeSketch, worldToSketch2D, scene, camera, renderer, cleanupTrimHighlight, pushSketchUndo, solveSketch, removePrimitive, updatePrimitive, addPrimitive, generateId],
   );
 
   // ── Extend mode handler ──
   const handleExtendMode = useCallback(
     (event: MouseEvent, point: THREE.Vector3) => {
-      if (!activeSketch || event.type !== "mousedown") return;
+      if (!activeSketch) return;
 
       const pt2d = worldToSketch2D(point, activeSketch.plane);
       if (!pt2d) return;
       const cursorPoint = { x: pt2d.x, y: pt2d.y };
 
-      // Find closest line/arc endpoint
-      const endpoint = findClosestEndpoint(activeSketch, cursorPoint, 0.5);
-      if (!endpoint) return;
+      const snapDist = (camera && renderer)
+        ? screenPxToSketchUnits(camera, renderer, 15)
+        : 0.5;
 
-      const prim = activeSketch.primitives.find(p => p.id === endpoint.primitiveId);
-      if (!prim) return;
+      if (event.type === "mousemove") {
+        cleanupTrimHighlight();
 
-      if (isSketchLine(prim)) {
-        const target = findNearestExtendTarget(activeSketch, endpoint.primitiveId, endpoint.isStart);
+        // Find closest line/arc endpoint
+        const endpoint = findClosestEndpoint(activeSketch, cursorPoint, snapDist);
+        if (!endpoint) return;
+
+        const prim = activeSketch.primitives.find(p => p.id === endpoint.primitiveId);
+        if (!prim) return;
+
+        // Find extend target based on primitive type
+        let target: { point: { x: number; y: number }; targetPrimId: string } | null = null;
+        if (isSketchLine(prim)) {
+          target = findNearestExtendTarget(activeSketch, endpoint.primitiveId, endpoint.isStart);
+        } else if (isSketchArc(prim)) {
+          target = findNearestArcExtendTarget(activeSketch, endpoint.primitiveId, endpoint.isStart);
+        }
         if (!target) return;
 
+        // Build preview: dashed line from endpoint to target + circle on endpoint
+        if (sketchTo3DRef.current) {
+          const endpointPrim = activeSketch.primitives.find(p => p.id === endpoint.pointId && isSketchPoint(p)) as SketchPoint | undefined;
+          if (!endpointPrim) return;
+
+          const group = new THREE.Group();
+
+          // Dashed line from endpoint to target
+          const from3d = sketchTo3DRef.current(endpointPrim.x, endpointPrim.y, 0.02);
+          const to3d = sketchTo3DRef.current(target.point.x, target.point.y, 0.02);
+          const positions = [from3d.x, from3d.y, from3d.z, to3d.x, to3d.y, to3d.z];
+          const dashedLine = createLine2FromPoints(positions, SKETCH_THEME.extendPreview, 3.0, true);
+          dashedLine.renderOrder = 1000;
+          group.add(dashedLine);
+
+          // Circle on endpoint
+          const circleRadius = screenPxToSketchUnits(camera!, renderer!, 6);
+          const circleGeom = new THREE.CircleGeometry(circleRadius, 24);
+          const circleMat = new THREE.MeshBasicMaterial({
+            color: SKETCH_THEME.extendPreview,
+            depthTest: false,
+            transparent: true,
+            opacity: 0.8,
+          });
+          const circleMesh = new THREE.Mesh(circleGeom, circleMat);
+          const circlePt3d = sketchTo3DRef.current(endpointPrim.x, endpointPrim.y, 0.03);
+          circleMesh.position.set(circlePt3d.x, circlePt3d.y, circlePt3d.z);
+          circleMesh.renderOrder = 1000;
+          group.add(circleMesh);
+
+          if (scene) scene.add(group);
+          trimHighlightRef.current = group;
+
+          extendHoveredRef.current = {
+            primId: endpoint.primitiveId,
+            pointId: endpoint.pointId,
+            isStart: endpoint.isStart,
+            targetPoint: target.point,
+          };
+        }
+      } else if (event.type === "mousedown") {
+        if (!extendHoveredRef.current) return;
+
+        const { pointId, targetPoint } = extendHoveredRef.current;
+        cleanupTrimHighlight();
+
         pushSketchUndo();
-
-        // Update the endpoint position to the intersection point
-        updatePrimitive(endpoint.pointId, { x: target.point.x, y: target.point.y });
-
-        // Solve after extend
+        updatePrimitive(pointId, { x: targetPoint.x, y: targetPoint.y });
         solveSketch();
       }
     },
-    [activeSketch, worldToSketch2D, pushSketchUndo, solveSketch, updatePrimitive],
+    [activeSketch, worldToSketch2D, camera, renderer, scene, cleanupTrimHighlight, pushSketchUndo, solveSketch, updatePrimitive],
   );
 
   // Handle line drawing - Fusion 360 style click-to-click with chaining
@@ -1532,12 +1841,39 @@ export function useSketchMode(): UseSketchModeResult {
               const { id: startId } = getOrCreatePoint(arcStartPointRef.current);
               const { id: endId } = getOrCreatePoint(arcEndPointRef.current);
 
+              // Determine if start/end need swapping so the CCW rendering
+              // convention produces the arc on the same side as the bulge point.
+              const startAngle = Math.atan2(
+                arcStartPointRef.current.y - center.y,
+                arcStartPointRef.current.x - center.x
+              );
+              const endAngle = Math.atan2(
+                arcEndPointRef.current.y - center.y,
+                arcEndPointRef.current.x - center.x
+              );
+              const bulgeAngle = Math.atan2(
+                point.y - center.y,
+                point.x - center.x
+              );
+
+              // Normalize CCW sweep from start to end
+              let angleDiff = endAngle - startAngle;
+              while (angleDiff < 0) angleDiff += Math.PI * 2;
+              while (angleDiff > Math.PI * 2) angleDiff -= Math.PI * 2;
+
+              // Check if bulge falls within that CCW sweep
+              let bulgeOffset = bulgeAngle - startAngle;
+              while (bulgeOffset < 0) bulgeOffset += Math.PI * 2;
+              while (bulgeOffset > Math.PI * 2) bulgeOffset -= Math.PI * 2;
+
+              const bulgeOnCCW = bulgeOffset <= angleDiff;
+
               const arc: SketchArc = {
                 id: generateId("arc"),
                 type: "arc",
                 centerId,
-                startId,
-                endId,
+                startId: bulgeOnCCW ? startId : endId,
+                endId: bulgeOnCCW ? endId : startId,
                 radius,
               };
               addPrimitive(arc);
@@ -1947,27 +2283,37 @@ export function useSketchMode(): UseSketchModeResult {
       const gridSize = gridSizeOverride ?? 20;
       const gridDivisions = gridSize * 2;
 
-      // Create grid lines using plane vectors
+      // Create grid lines using plane vectors (two-tone: major every 1 unit, minor every 0.5 unit)
       const step = gridSize / gridDivisions;
       const halfSize = gridSize / 2;
 
-      // Grid line material
-      const gridMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.grid });
+      const majorMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.gridMajor });
+      const minorMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.gridMinor });
 
-      const gridPoints: THREE.Vector3[] = [];
+      const majorPoints: THREE.Vector3[] = [];
+      const minorPoints: THREE.Vector3[] = [];
 
       for (let i = -halfSize; i <= halfSize; i += step) {
+        // Determine if this is a major (integer) or minor (half-unit) line
+        const isMajor = Math.abs(i - Math.round(i)) < 1e-6;
+        const pts = isMajor ? majorPoints : minorPoints;
+
         // Lines along yAxis direction
-        gridPoints.push(plane.origin.clone().addScaledVector(plane.xAxis, i).addScaledVector(plane.yAxis, -halfSize));
-        gridPoints.push(plane.origin.clone().addScaledVector(plane.xAxis, i).addScaledVector(plane.yAxis, halfSize));
+        pts.push(plane.origin.clone().addScaledVector(plane.xAxis, i).addScaledVector(plane.yAxis, -halfSize));
+        pts.push(plane.origin.clone().addScaledVector(plane.xAxis, i).addScaledVector(plane.yAxis, halfSize));
         // Lines along xAxis direction
-        gridPoints.push(plane.origin.clone().addScaledVector(plane.yAxis, i).addScaledVector(plane.xAxis, -halfSize));
-        gridPoints.push(plane.origin.clone().addScaledVector(plane.yAxis, i).addScaledVector(plane.xAxis, halfSize));
+        pts.push(plane.origin.clone().addScaledVector(plane.yAxis, i).addScaledVector(plane.xAxis, -halfSize));
+        pts.push(plane.origin.clone().addScaledVector(plane.yAxis, i).addScaledVector(plane.xAxis, halfSize));
       }
 
-      const gridGeometry = new THREE.BufferGeometry().setFromPoints(gridPoints);
-      const gridLines = new THREE.LineSegments(gridGeometry, gridMaterial);
-      gridGroup.add(gridLines);
+      if (minorPoints.length > 0) {
+        const minorGeometry = new THREE.BufferGeometry().setFromPoints(minorPoints);
+        gridGroup.add(new THREE.LineSegments(minorGeometry, minorMaterial));
+      }
+      if (majorPoints.length > 0) {
+        const majorGeometry = new THREE.BufferGeometry().setFromPoints(majorPoints);
+        gridGroup.add(new THREE.LineSegments(majorGeometry, majorMaterial));
+      }
 
       // Add origin axes indicator (red = xAxis, green = yAxis, ~1 unit each)
       const axisLength = Math.min(gridSize / 10, 1.0);
@@ -2999,8 +3345,8 @@ export function useSketchMode(): UseSketchModeResult {
       // Apply grid snapping first
       point = snapToGrid(point);
 
-      // Calculate inference points for snapping (suppressed when Ctrl held)
-      if (activeSketch && event.type === "mousemove") {
+      // Calculate inference points for snapping (suppressed when Ctrl held or in trim mode)
+      if (activeSketch && event.type === "mousemove" && sketchSubMode !== "trim" && sketchSubMode !== "extend") {
         if (ctrlHeldRef.current) {
           // Ctrl held: clear any visible inference objects and skip snapping
           setCurrentInferencePoint(null);
@@ -3033,8 +3379,8 @@ export function useSketchMode(): UseSketchModeResult {
         }
       }
 
-      // On mousedown, also check for snap (suppressed when Ctrl held)
-      if (activeSketch && event.type === "mousedown" && !ctrlHeldRef.current) {
+      // On mousedown, also check for snap (suppressed when Ctrl held or in trim mode)
+      if (activeSketch && event.type === "mousedown" && !ctrlHeldRef.current && sketchSubMode !== "trim" && sketchSubMode !== "extend") {
         const inferencePoints = findInferencePoints(activeSketch);
         const nearestSnap = findNearestSnap(point, inferencePoints, INFERENCE_SNAP_DISTANCE);
         if (nearestSnap) {
@@ -3185,12 +3531,15 @@ export function useSketchMode(): UseSketchModeResult {
         pointMap.set(primitive.id, { x: primitive.x, y: primitive.y });
 
         // Render point as small flat circle (Fusion 360 style)
-        const size = isSelected ? 0.1 : 0.07;
+        // Dim points during trim mode so they don't obscure edges
+        const isTrimMode = sketchSubMode === "trim";
+        const size = isTrimMode ? 0.04 : (isSelected ? 0.1 : 0.07);
         const geometry = new THREE.CircleGeometry(size, 16);
         const pointColor = isSelected ? COLORS.selectedPoint : COLORS.point;
         const material = new THREE.MeshBasicMaterial({
           color: pointColor,
           depthTest: false,
+          ...(isTrimMode ? { transparent: true, opacity: 0.25 } : {}),
         });
         const mesh = new THREE.Mesh(geometry, material);
         const pos = sketchTo3D(primitive.x, primitive.y, 0.1);
@@ -3568,7 +3917,7 @@ export function useSketchMode(): UseSketchModeResult {
     }
 
     sketchObjectsRef.current = newObjects;
-  }, [activeSketch, scene, sceneReady, selectedPrimitives]);
+  }, [activeSketch, scene, sceneReady, selectedPrimitives, sketchSubMode]);
 
   // Update LineMaterial resolution on window resize for correct line widths
   useEffect(() => {

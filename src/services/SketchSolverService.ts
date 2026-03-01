@@ -38,6 +38,11 @@ export class SketchSolverService {
     return SketchSolverService.instance;
   }
 
+  resetInit(): void {
+    this.gcsWrapper = null;
+    this.initPromise = null;
+  }
+
   async getGCS(): Promise<GcsWrapper> {
     if (this.gcsWrapper) {
       return this.gcsWrapper;
@@ -157,7 +162,7 @@ export class SketchSolverService {
       } else if (isSketchCircle(primitive)) {
         result.push(this.circleToGcs(primitive));
       } else if (isSketchArc(primitive)) {
-        result.push(this.arcToGcs(primitive));
+        result.push(this.arcToGcs(primitive, primitives));
       }
     }
 
@@ -192,7 +197,24 @@ export class SketchSolverService {
     };
   }
 
-  private arcToGcs(arc: SketchArc): GcsSketchArc {
+  private arcToGcs(arc: SketchArc, primitives: SketchPrimitive[]): GcsSketchArc {
+    const centerPrim = primitives.find(
+      p => p.id === arc.centerId && isSketchPoint(p)
+    ) as SketchPoint | undefined;
+    const startPrim = primitives.find(
+      p => p.id === arc.startId && isSketchPoint(p)
+    ) as SketchPoint | undefined;
+    const endPrim = primitives.find(
+      p => p.id === arc.endId && isSketchPoint(p)
+    ) as SketchPoint | undefined;
+
+    let startAngle = 0;
+    let endAngle = Math.PI;
+    if (centerPrim && startPrim && endPrim) {
+      startAngle = Math.atan2(startPrim.y - centerPrim.y, startPrim.x - centerPrim.x);
+      endAngle = Math.atan2(endPrim.y - centerPrim.y, endPrim.x - centerPrim.x);
+    }
+
     return {
       id: arc.id,
       type: "arc",
@@ -200,8 +222,8 @@ export class SketchSolverService {
       start_id: arc.startId,
       end_id: arc.endId,
       radius: arc.radius,
-      start_angle: 0,
-      end_angle: Math.PI,
+      start_angle: startAngle,
+      end_angle: endAngle,
     };
   }
 

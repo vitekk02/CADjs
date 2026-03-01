@@ -1159,28 +1159,30 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
   const removePrimitive = useCallback(
     (primitiveId: string) => {
-      if (!activeSketch) {
-        console.warn("No active sketch to remove primitive from");
-        return;
-      }
-
-      const result = removePrimitiveFromSketch(activeSketch, primitiveId);
-      setActiveSketch(result.sketch);
+      setActiveSketch((currentSketch) => {
+        if (!currentSketch) {
+          console.warn("No active sketch to remove primitive from");
+          return null;
+        }
+        const result = removePrimitiveFromSketch(currentSketch, primitiveId);
+        return result.sketch;
+      });
     },
-    [activeSketch]
+    []
   );
 
   const removeConstraint = useCallback(
     (constraintId: string) => {
-      if (!activeSketch) {
-        console.warn("No active sketch to remove constraint from");
-        return;
-      }
-
-      const result = removeConstraintFromSketch(activeSketch, constraintId);
-      setActiveSketch(result.sketch);
+      setActiveSketch((currentSketch) => {
+        if (!currentSketch) {
+          console.warn("No active sketch to remove constraint from");
+          return null;
+        }
+        const result = removeConstraintFromSketch(currentSketch, constraintId);
+        return result.sketch;
+      });
     },
-    [activeSketch]
+    []
   );
 
   const solveSketch = useCallback(async (): Promise<Sketch | null> => {

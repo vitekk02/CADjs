@@ -51,6 +51,11 @@ export class OpenCascadeService {
     return OpenCascadeService.instance;
   }
 
+  resetInit(): void {
+    this.oc = null;
+    this.initPromise = null;
+  }
+
   async getOC(): Promise<OpenCascadeInstance> {
     if (this.oc) {
       return this.oc;

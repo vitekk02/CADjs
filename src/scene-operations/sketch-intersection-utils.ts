@@ -137,13 +137,13 @@ export function circleCircleIntersect(
 
 // ── Helper: check if angle is within arc range ──
 
-function normalizeAngle(a: number): number {
+export function normalizeAngle(a: number): number {
   while (a < 0) a += 2 * Math.PI;
   while (a >= 2 * Math.PI) a -= 2 * Math.PI;
   return a;
 }
 
-function isAngleInArcRange(angle: number, startAngle: number, endAngle: number): boolean {
+export function isAngleInArcRange(angle: number, startAngle: number, endAngle: number): boolean {
   const a = normalizeAngle(angle);
   const s = normalizeAngle(startAngle);
   const e = normalizeAngle(endAngle);
@@ -178,7 +178,7 @@ function getCircleCenter(sketch: Sketch, prim: SketchCircle | SketchArc): { x: n
   return center ? { x: center.x, y: center.y } : null;
 }
 
-function getArcAngles(sketch: Sketch, arc: SketchArc): { startAngle: number; endAngle: number } | null {
+export function getArcAngles(sketch: Sketch, arc: SketchArc): { startAngle: number; endAngle: number } | null {
   const center = getPointById(sketch, arc.centerId);
   const startPt = getPointById(sketch, arc.startId);
   const endPt = getPointById(sketch, arc.endId);
@@ -267,6 +267,11 @@ function intersectLineLine(
   l1: SketchLine,
   l2: SketchLine,
 ): Omit<IntersectionResult, "otherPrimId">[] {
+  // Skip lines that share an endpoint — shared vertices are not real intersections
+  if (l1.p1Id === l2.p1Id || l1.p1Id === l2.p2Id || l1.p2Id === l2.p1Id || l1.p2Id === l2.p2Id) {
+    return [];
+  }
+
   const e1 = getLineEndpoints(sketch, l1);
   const e2 = getLineEndpoints(sketch, l2);
   if (!e1 || !e2) return [];
@@ -442,8 +447,21 @@ function identifyCircleTrimSegment(
     Math.atan2(cursorPoint.y - center.y, cursorPoint.x - center.x),
   );
 
-  // Sort intersection angles
-  const angles = intersections.map(ix => normalizeAngle(ix.tSource)).sort((a, b) => a - b);
+  // Sort intersection angles and deduplicate near-identical values
+  const rawAngles = intersections.map(ix => normalizeAngle(ix.tSource)).sort((a, b) => a - b);
+  const ANGLE_DEDUP_TOL = 0.01; // ~0.57 degrees
+  const angles: number[] = [];
+  for (const a of rawAngles) {
+    if (angles.length === 0 || a - angles[angles.length - 1] > ANGLE_DEDUP_TOL) {
+      angles.push(a);
+    }
+  }
+  // Also check wrap-around: last angle close to first + 2π
+  if (angles.length >= 2 && (angles[0] + 2 * Math.PI - angles[angles.length - 1]) < ANGLE_DEDUP_TOL) {
+    angles.pop();
+  }
+
+  if (angles.length < 2) return null;
 
   // Find which arc segment contains cursorAngle
   for (let i = 0; i < angles.length; i++) {
@@ -469,12 +487,34 @@ function identifyArcTrimSegment(
 
   const cursorAngle = Math.atan2(cursorPoint.y - center.y, cursorPoint.x - center.x);
 
-  // Build segments: arc start angle, intersections, arc end angle
-  const tValues = [
-    arcAngles.startAngle,
-    ...intersections.map(ix => ix.tSource).sort((a, b) => a - b),
-    arcAngles.endAngle,
-  ];
+  // Filter out boundary intersections (at arc's own start/end points)
+  const BOUNDARY_TOL = 0.03;
+  const sA = normalizeAngle(arcAngles.startAngle);
+  const eA = normalizeAngle(arcAngles.endAngle);
+  const filteredIx = intersections.filter(ix => {
+    const ixAngle = normalizeAngle(ix.tSource);
+    const dStart = Math.min(Math.abs(ixAngle - sA), 2 * Math.PI - Math.abs(ixAngle - sA));
+    const dEnd = Math.min(Math.abs(ixAngle - eA), 2 * Math.PI - Math.abs(ixAngle - eA));
+    return dStart > BOUNDARY_TOL && dEnd > BOUNDARY_TOL;
+  });
+
+  if (filteredIx.length === 0) {
+    const arcStart = normalizeAngle(arcAngles.startAngle);
+    const arcEnd = normalizeAngle(arcAngles.endAngle);
+    if (isAngleInArcRange(cursorAngle, arcStart, arcEnd)) {
+      return { startParam: arcStart, endParam: arcEnd };
+    }
+    return null;
+  }
+
+  // Sort by angular distance from arc start (handles wrap-around)
+  const arcStart = normalizeAngle(arcAngles.startAngle);
+  const ixAngles = filteredIx
+    .map(ix => normalizeAngle(ix.tSource))
+    .filter(a => isAngleInArcRange(a, arcAngles.startAngle, arcAngles.endAngle))
+    .sort((a, b) => normalizeAngle(a - arcStart) - normalizeAngle(b - arcStart));
+
+  const tValues = [arcStart, ...ixAngles, normalizeAngle(arcAngles.endAngle)];
 
   // Find which segment contains cursorAngle
   for (let i = 0; i < tValues.length - 1; i++) {
@@ -608,6 +648,94 @@ export function findNearestExtendTarget(
       if (dist < bestDist) {
         bestDist = dist;
         bestResult = { point: ix.point, targetPrimId: otherPrim.id };
+      }
+    }
+  }
+
+  return bestResult;
+}
+
+/**
+ * Find the nearest intersection point when extending an arc from its endpoint.
+ * Extends the arc along its circle beyond the given endpoint and finds the closest
+ * intersection with any other primitive on the correct side.
+ */
+export function findNearestArcExtendTarget(
+  sketch: Sketch,
+  arcId: string,
+  isStart: boolean,
+): { point: { x: number; y: number }; targetPrimId: string } | null {
+  const arc = sketch.primitives.find(p => p.id === arcId && isSketchArc(p)) as SketchArc | undefined;
+  if (!arc) return null;
+
+  const center = getCircleCenter(sketch, arc);
+  const angles = getArcAngles(sketch, arc);
+  if (!center || !angles) return null;
+
+  const { startAngle, endAngle } = angles;
+
+  // The extension boundary angle: from start we extend backward (decreasing angle),
+  // from end we extend forward (increasing angle)
+  const extendAngle = isStart ? startAngle : endAngle;
+
+  let bestAngularDist = Infinity;
+  let bestResult: { point: { x: number; y: number }; targetPrimId: string } | null = null;
+
+  for (const otherPrim of sketch.primitives) {
+    if (otherPrim.id === arcId) continue;
+    if (isSketchPoint(otherPrim)) continue;
+
+    let intersectionAngles: { angle: number; point: { x: number; y: number }; primId: string }[] = [];
+
+    if (isSketchLine(otherPrim)) {
+      const otherEnds = getLineEndpoints(sketch, otherPrim);
+      if (!otherEnds) continue;
+      const ixs = lineCircleIntersect(otherEnds.p1, otherEnds.p2, center, arc.radius);
+      for (const ix of ixs) {
+        // Intersection must be on the finite line segment
+        if (ix.t >= -1e-6 && ix.t <= 1 + 1e-6) {
+          intersectionAngles.push({ angle: ix.angle, point: ix.point, primId: otherPrim.id });
+        }
+      }
+    } else if (isSketchCircle(otherPrim)) {
+      const otherCenter = getCircleCenter(sketch, otherPrim);
+      if (!otherCenter) continue;
+      const ixs = circleCircleIntersect(center, arc.radius, otherCenter, otherPrim.radius);
+      for (const ix of ixs) {
+        intersectionAngles.push({ angle: ix.angle1, point: ix.point, primId: otherPrim.id });
+      }
+    } else if (isSketchArc(otherPrim)) {
+      const otherCenter = getCircleCenter(sketch, otherPrim);
+      const otherAngles = getArcAngles(sketch, otherPrim);
+      if (!otherCenter || !otherAngles) continue;
+      const ixs = circleCircleIntersect(center, arc.radius, otherCenter, otherPrim.radius);
+      for (const ix of ixs) {
+        // Must be on the other arc
+        if (isAngleInArcRange(ix.angle2, otherAngles.startAngle, otherAngles.endAngle)) {
+          intersectionAngles.push({ angle: ix.angle1, point: ix.point, primId: otherPrim.id });
+        }
+      }
+    }
+
+    // Filter to intersections outside the current arc range, on the correct extension side
+    for (const ix of intersectionAngles) {
+      // Skip intersections that are already on the arc
+      if (isAngleInArcRange(ix.angle, startAngle, endAngle)) continue;
+
+      // Angular distance from the extend endpoint to this intersection
+      // For start extension: we go backward (clockwise), so distance = extendAngle - ix.angle
+      // For end extension: we go forward (counter-clockwise), so distance = ix.angle - extendAngle
+      let angDist: number;
+      if (isStart) {
+        angDist = normalizeAngle(extendAngle - ix.angle);
+      } else {
+        angDist = normalizeAngle(ix.angle - extendAngle);
+      }
+
+      // Must be a positive angular distance (on the correct side)
+      if (angDist > 1e-6 && angDist < bestAngularDist) {
+        bestAngularDist = angDist;
+        bestResult = { point: ix.point, targetPrimId: ix.primId };
       }
     }
   }

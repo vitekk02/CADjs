@@ -969,10 +969,16 @@ export class SketchToBrepService {
 
     if (lines.length === 0 && arcs.length === 0) return false;
 
-    // Build adjacency: count how many edges each point is connected to
-    const pointEdgeCount = new Map<string, number>();
+    // Build adjacency using coordinate keys (not point IDs).
+    // After trimming, two different point IDs may exist at the same geometric
+    // location (e.g. a trimmed line end and a trimmed arc start). Using
+    // coordinate-based keys treats them as the same vertex.
+    const coordEdgeCount = new Map<string, number>();
     const addEdge = (pId: string) => {
-      pointEdgeCount.set(pId, (pointEdgeCount.get(pId) || 0) + 1);
+      const pt = pointMap.get(pId);
+      if (!pt) return;
+      const key = this.pointToKey([pt.x, pt.y, 0]);
+      coordEdgeCount.set(key, (coordEdgeCount.get(key) || 0) + 1);
     };
     for (const line of lines) {
       addEdge(line.p1Id);
@@ -985,7 +991,7 @@ export class SketchToBrepService {
 
     // In a closed loop, every vertex has exactly 2 edges (even degree).
     // If any vertex has odd degree, the graph has open endpoints.
-    for (const [, count] of pointEdgeCount) {
+    for (const [, count] of coordEdgeCount) {
       if (count % 2 !== 0) return false;
     }
 

@@ -87,6 +87,8 @@ export const SKETCH_PLANE = {
   edge: 0xffffff,
   origin: 0xffffff,
   grid: 0x888888,
+  gridMajor: 0xbbbbbb,
+  gridMinor: 0xd0d0d0,
 } as const;
 
 // ── Extrude Mode ───────────────────────────────────────────────────
