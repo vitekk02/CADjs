@@ -2379,4 +2379,174 @@ export class OpenCascadeService {
 
     return shape;
   }
+
+  // ─── Measurement Methods ─────────────────────────────────────────────
+
+  /**
+   * Get the precise length of an edge (including curved edges like arcs).
+   * Uses GProp_GProps + BRepGProp.LinearProperties for accurate measurement.
+   */
+  async getEdgeLength(
+    shape: TopoDS_Shape,
+    edgeIndex: number,
+    skipFix: boolean = false,
+  ): Promise<number> {
+    const oc = await this.getOC();
+
+    let fixedShape: TopoDS_Shape;
+    if (skipFix) {
+      fixedShape = shape;
+    } else {
+      const progressRange = new oc.Message_ProgressRange_1();
+      const fixer = new oc.ShapeFix_Shape_2(shape);
+      fixer.SetPrecision(1e-6);
+      fixer.Perform(progressRange);
+      fixedShape = fixer.Shape();
+    }
+
+    const { edgeMap, count } = await this.getEdgeMap(fixedShape);
+
+    if (edgeIndex < 1 || edgeIndex > count) {
+      edgeMap.delete();
+      throw new Error(`[OpenCascadeService] getEdgeLength: edgeIndex ${edgeIndex} out of range [1, ${count}]`);
+    }
+
+    const edgeShape = edgeMap.FindKey(edgeIndex);
+    const edge = oc.TopoDS.Edge_1(edgeShape);
+
+    const props = new oc.GProp_GProps_1();
+    oc.BRepGProp.LinearProperties(edge, props, false, false);
+    const length = props.Mass();
+
+    props.delete();
+    edgeMap.delete();
+
+    return length;
+  }
+
+  /**
+   * Get the tangent direction vector at the midpoint of an edge.
+   * Returns a normalized direction.
+   */
+  async getEdgeDirectionAtMidpoint(
+    shape: TopoDS_Shape,
+    edgeIndex: number,
+    skipFix: boolean = false,
+  ): Promise<{ x: number; y: number; z: number }> {
+    const oc = await this.getOC();
+
+    let fixedShape: TopoDS_Shape;
+    if (skipFix) {
+      fixedShape = shape;
+    } else {
+      const progressRange = new oc.Message_ProgressRange_1();
+      const fixer = new oc.ShapeFix_Shape_2(shape);
+      fixer.SetPrecision(1e-6);
+      fixer.Perform(progressRange);
+      fixedShape = fixer.Shape();
+    }
+
+    const { edgeMap, count } = await this.getEdgeMap(fixedShape);
+
+    if (edgeIndex < 1 || edgeIndex > count) {
+      edgeMap.delete();
+      throw new Error(`[OpenCascadeService] getEdgeDirectionAtMidpoint: edgeIndex ${edgeIndex} out of range [1, ${count}]`);
+    }
+
+    const edgeShape = edgeMap.FindKey(edgeIndex);
+    const edge = oc.TopoDS.Edge_1(edgeShape);
+    const curve = new oc.BRepAdaptor_Curve_2(edge);
+
+    const first = curve.FirstParameter();
+    const last = curve.LastParameter();
+    const midParam = (first + last) / 2;
+
+    const tangent = curve.DN(midParam, 1);
+    const mag = tangent.Magnitude();
+
+    let result: { x: number; y: number; z: number };
+    if (mag < 1e-12) {
+      const p1 = curve.Value(first);
+      const p2 = curve.Value(last);
+      const dx = p2.X() - p1.X();
+      const dy = p2.Y() - p1.Y();
+      const dz = p2.Z() - p1.Z();
+      const chordLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (chordLen < 1e-12) {
+        result = { x: 0, y: 0, z: 1 };
+      } else {
+        result = { x: dx / chordLen, y: dy / chordLen, z: dz / chordLen };
+      }
+      p1.delete();
+      p2.delete();
+    } else {
+      const normalized = tangent.Normalized();
+      result = { x: normalized.X(), y: normalized.Y(), z: normalized.Z() };
+      normalized.delete();
+    }
+
+    tangent.delete();
+    curve.delete();
+    edgeMap.delete();
+
+    return result;
+  }
+
+  /**
+   * Get the surface normal at the parametric center of a face.
+   * Returns a normalized direction accounting for face orientation.
+   */
+  async getFaceNormal(
+    shape: TopoDS_Shape,
+    faceIndex: number,
+  ): Promise<{ x: number; y: number; z: number }> {
+    const oc = await this.getOC();
+
+    const faceMap = new oc.TopTools_IndexedMapOfShape_1();
+    oc.TopExp.MapShapes_1(shape, oc.TopAbs_ShapeEnum.TopAbs_FACE, faceMap);
+    const count = faceMap.Size();
+
+    if (faceIndex < 1 || faceIndex > count) {
+      faceMap.delete();
+      throw new Error(`[OpenCascadeService] getFaceNormal: faceIndex ${faceIndex} out of range [1, ${count}]`);
+    }
+
+    const faceShape = faceMap.FindKey(faceIndex);
+    const face = oc.TopoDS.Face_1(faceShape);
+
+    const surface = new oc.BRepAdaptor_Surface_2(face, true);
+
+    const uMid = (surface.FirstUParameter() + surface.LastUParameter()) / 2;
+    const vMid = (surface.FirstVParameter() + surface.LastVParameter()) / 2;
+
+    const pnt = new oc.gp_Pnt_1();
+    const d1u = new oc.gp_Vec_1();
+    const d1v = new oc.gp_Vec_1();
+    surface.D1(uMid, vMid, pnt, d1u, d1v);
+
+    const normal = d1u.Crossed(d1v);
+    const mag = normal.Magnitude();
+
+    let result: { x: number; y: number; z: number };
+    if (mag < 1e-12) {
+      result = { x: 0, y: 0, z: 1 };
+    } else {
+      const normalized = normal.Normalized();
+      result = { x: normalized.X(), y: normalized.Y(), z: normalized.Z() };
+      normalized.delete();
+    }
+
+    if (face.Orientation_1() === oc.TopAbs_Orientation.TopAbs_REVERSED) {
+      result = { x: -result.x, y: -result.y, z: -result.z };
+    }
+
+    normal.delete();
+    d1u.delete();
+    d1v.delete();
+    pnt.delete();
+    surface.delete();
+    faceMap.delete();
+
+    return result;
+  }
 }

@@ -30,7 +30,7 @@ export function useSweepMode() {
     selectElement,
     deselectAll,
   } = useCadCore();
-  const { camera, renderer, scene, forceSceneUpdate } = useCadVisualizer();
+  const { camera, renderer, scene, forceSceneUpdate, navToolActiveRef } = useCadVisualizer();
   const { showToast } = useToast();
 
   const [state, setState] = useState<SweepState>({
@@ -115,7 +115,7 @@ export function useSweepMode() {
    * Handle mouse down — select profile or path based on current phase
    */
   const handleMouseDown = useCallback((event: MouseEvent) => {
-    if (!camera || !renderer || event.button !== 0 || state.isApplying) return;
+    if (!camera || !renderer || event.button !== 0 || event.altKey || navToolActiveRef.current || state.isApplying) return;
 
     const raycaster = new THREE.Raycaster();
     const rect = renderer.domElement.getBoundingClientRect();

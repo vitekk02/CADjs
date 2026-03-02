@@ -68,6 +68,8 @@ import {
 } from "../scene-operations/undo-types";
 import { ImportExportService } from "../services/ImportExportService";
 import { importElements as importElementsOp } from "../scene-operations/import-operations";
+import { Measurement } from "../scene-operations/measure-types";
+import { disposeMeasureOverlay } from "../scene-operations/measure-operations";
 
 export interface CadCoreContextType {
   elements: SceneElement[];
@@ -142,6 +144,12 @@ export interface CadCoreContextType {
   importFile: (file: File) => Promise<void>;
   exportFile: (format: "step" | "stl" | "iges") => Promise<void>;
 
+  // Measurements
+  pinnedMeasurements: Measurement[];
+  addPinnedMeasurement: (measurement: Measurement) => void;
+  removePinnedMeasurement: (id: string) => void;
+  clearPinnedMeasurements: () => void;
+
   // Operation lock
   isOperationPending: boolean;
 }
@@ -164,6 +172,9 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   const [activeSketch, setActiveSketch] = useState<Sketch | null>(null);
   const [sketches, setSketches] = useState<Sketch[]>([]);
   const [previousMode, setPreviousMode] = useState<SceneMode>("move");
+
+  // Pinned measurements state
+  const [pinnedMeasurements, setPinnedMeasurements] = useState<Measurement[]>([]);
 
   // Feature tree state
   const [featureTree, setFeatureTree] = useState<FeatureNode[]>([]);
@@ -359,6 +370,34 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     : null;
   const canUndoSketch = undoRedoVersion >= 0 && sketchUndoStackRef.current.length > 0;
   const canRedoSketch = undoRedoVersion >= 0 && sketchRedoStackRef.current.length > 0;
+
+  // ─── Pinned measurements ─────────────────────────────────────────
+  const addPinnedMeasurement = useCallback((measurement: Measurement) => {
+    setPinnedMeasurements((prev) => [...prev, { ...measurement, pinned: true }]);
+  }, []);
+
+  const removePinnedMeasurement = useCallback((id: string) => {
+    setPinnedMeasurements((prev) => {
+      const measurement = prev.find((m) => m.id === id);
+      if (measurement) {
+        for (const obj of measurement.overlayObjects) {
+          disposeMeasureOverlay(obj);
+        }
+      }
+      return prev.filter((m) => m.id !== id);
+    });
+  }, []);
+
+  const clearPinnedMeasurements = useCallback(() => {
+    setPinnedMeasurements((prev) => {
+      for (const measurement of prev) {
+        for (const obj of measurement.overlayObjects) {
+          disposeMeasureOverlay(obj);
+        }
+      }
+      return [];
+    });
+  }, []);
 
   const handleSetMode = useCallback(
     (newMode: SceneMode) => {
@@ -1707,6 +1746,11 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         // Import/Export
         importFile,
         exportFile,
+        // Measurements
+        pinnedMeasurements,
+        addPinnedMeasurement,
+        removePinnedMeasurement,
+        clearPinnedMeasurements,
         // Operation lock
         isOperationPending,
       }}

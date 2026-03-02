@@ -63,6 +63,9 @@ interface CadVisualizerContextType {
   projectionType: ProjectionType;
   setProjectionType: (type: ProjectionType) => void;
   toggleProjection: () => void;
+
+  navToolActiveRef: React.MutableRefObject<boolean>;
+  controlsRef: React.MutableRefObject<OrbitControls | null>;
 }
 
 export const CadVisualizerContext = createContext<
@@ -82,6 +85,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   const controlsRef = useRef<OrbitControls | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const navToolActiveRef = useRef<boolean>(false);
   const [projectionType, setProjectionTypeState] = useState<ProjectionType>("perspective");
   const [customShapePoints, setCustomShapePoints] = useState<THREE.Vector3[]>(
     [],
@@ -159,6 +163,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     newControls.enableRotate = enableRotate;
     newControls.enableZoom = enableZoom;
     newControls.enablePan = enablePan;
+    newControls.listenToKeyEvents(window);
     newControls.update();
 
     controlsRef.current = newControls;
@@ -281,7 +286,31 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       controls.enableZoom = true;
       controls.enableRotate = true;
       controls.enablePan = true;
+      controls.listenToKeyEvents(window);
       controlsRef.current = controls;
+
+      // Alt+Left-click orbit: remap LEFT button while Alt is held
+      const handleAltKeyDown = (e: KeyboardEvent) => {
+        if (e.key === "Alt" && controlsRef.current && !navToolActiveRef.current) {
+          controlsRef.current.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+          renderer.domElement.style.cursor = "grab";
+        }
+      };
+      const handleAltKeyUp = (e: KeyboardEvent) => {
+        if (e.key === "Alt" && controlsRef.current && !navToolActiveRef.current) {
+          controlsRef.current.mouseButtons.LEFT = null as any;
+          renderer.domElement.style.cursor = "";
+        }
+      };
+      const handleWindowBlur = () => {
+        if (controlsRef.current && !navToolActiveRef.current) {
+          controlsRef.current.mouseButtons.LEFT = null as any;
+          renderer.domElement.style.cursor = "";
+        }
+      };
+      window.addEventListener("keydown", handleAltKeyDown);
+      window.addEventListener("keyup", handleAltKeyUp);
+      window.addEventListener("blur", handleWindowBlur);
 
       // Use refs in the animation loop so camera/controls stay current after projection switch
       const animate = () => {
@@ -324,6 +353,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       // Store cleanup function for proper disposal
       cleanupRef.current = () => {
         window.removeEventListener("resize", handleResize);
+        window.removeEventListener("keydown", handleAltKeyDown);
+        window.removeEventListener("keyup", handleAltKeyUp);
+        window.removeEventListener("blur", handleWindowBlur);
         // Dispose whichever controls are currently active (not the initial ones)
         controlsRef.current?.dispose();
         controlsRef.current = null;
@@ -956,7 +988,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         child.userData.isOriginHelper === true ||
         child.type === "TransformControlsGizmo" ||
         child.userData.isSketchPrimitive === true ||
-        child.userData.primitiveId !== undefined
+        child.userData.primitiveId !== undefined ||
+        child.userData.isMeasureOverlay === true ||
+        child.userData.isMeasureEdgeOverlay === true
       ) {
         return false;
       }
@@ -1087,6 +1121,8 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         projectionType,
         setProjectionType,
         toggleProjection,
+        navToolActiveRef,
+        controlsRef,
       }}
     >
       {children}

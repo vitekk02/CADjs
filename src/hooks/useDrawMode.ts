@@ -45,8 +45,10 @@ export function useDrawMode(): UseDrawModeResult {
     [showGroundPlane]
   );
 
+  const { navToolActiveRef } = useCadVisualizer();
+
   const handleDrawMode = (event: MouseEvent) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || event.altKey || navToolActiveRef.current) return;
 
     let point = getMouseIntersection(event);
     if (!point) return;

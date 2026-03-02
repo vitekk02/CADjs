@@ -31,7 +31,7 @@ interface EdgeSegmentData {
 
 export function useFilletMode() {
   const { elements, getObject, updateElementBrep } = useCadCore();
-  const { camera, renderer, scene, forceSceneUpdate } = useCadVisualizer();
+  const { camera, renderer, scene, forceSceneUpdate, navToolActiveRef } = useCadVisualizer();
   const { showToast } = useToast();
 
   const [state, setState] = useState<FilletState>({
@@ -344,7 +344,7 @@ export function useFilletMode() {
    */
   const handleMouseDown = useCallback(
     (event: MouseEvent) => {
-      if (!camera || !renderer || event.button !== 0 || state.isApplying) return;
+      if (!camera || !renderer || event.button !== 0 || event.altKey || navToolActiveRef.current || state.isApplying) return;
 
       const raycaster = new THREE.Raycaster();
       const rect = renderer.domElement.getBoundingClientRect();

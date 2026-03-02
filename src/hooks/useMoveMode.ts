@@ -28,6 +28,7 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     controls: orbitControls,
     forceSceneUpdate,
     showGroundPlane,
+    navToolActiveRef,
   } = useCadVisualizer();
 
   const showGroundPlaneRef = useRef(showGroundPlane);
@@ -366,7 +367,7 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
   const handleMouseDown = (event: MouseEvent) => {
     // Skip handling if this is a gizmo interaction
     if (transformControlsRef.current?.dragging) return;
-    if (!camera || !renderer || event.button !== 0) return;
+    if (!camera || !renderer || event.button !== 0 || event.altKey || navToolActiveRef.current) return;
 
     // Create raycaster for object selection
     const raycaster = new THREE.Raycaster();

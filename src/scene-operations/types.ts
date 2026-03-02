@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { Brep, BrepGraph } from "../geometry";
 import { SketchPlane } from "../types/sketch-types";
 
-export type SceneMode = "move" | "union" | "difference" | "intersection" | "sketch" | "extrude" | "fillet" | "sweep" | "loft" | "revolve";
+export type SceneMode = "move" | "union" | "difference" | "intersection" | "sketch" | "extrude" | "fillet" | "sweep" | "loft" | "revolve" | "measure";
 
 export interface SceneElement {
   brep: Brep;

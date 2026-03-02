@@ -30,7 +30,7 @@ function getFlatAxis(brep: Brep): "x" | "y" | "z" {
 export function useResizeMode() {
   const { elements, getObject, updateElementPosition, objectsMap } =
     useCadCore();
-  const { camera, renderer, scene, getMouseIntersection, forceSceneUpdate } =
+  const { camera, renderer, scene, getMouseIntersection, forceSceneUpdate, navToolActiveRef } =
     useCadVisualizer();
 
   const [selectedElement, setSelectedElement] = useState<string | null>(null);
@@ -136,7 +136,7 @@ export function useResizeMode() {
 
   const handleMouseDown = useCallback(
     (event: MouseEvent) => {
-      if (!camera || !renderer || event.button !== 0) return;
+      if (!camera || !renderer || event.button !== 0 || event.altKey || navToolActiveRef.current) return;
 
       const raycaster = new THREE.Raycaster();
       const rect = renderer.domElement.getBoundingClientRect();

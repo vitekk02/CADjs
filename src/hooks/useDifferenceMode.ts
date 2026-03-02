@@ -29,6 +29,7 @@ export function useDifferenceMode(): UseDifferenceModeResult {
     forceSceneUpdate,
     highlightElement,
     unhighlightElement,
+    navToolActiveRef,
   } = useCadVisualizer();
 
   const { showToast } = useToast();
@@ -37,7 +38,7 @@ export function useDifferenceMode(): UseDifferenceModeResult {
   const selectedCount = selectedElements.length;
 
   const handleDifferenceModeClick = (event: MouseEvent) => {
-    if (event.button !== 0 || !renderer || !camera) return;
+    if (event.button !== 0 || event.altKey || navToolActiveRef.current || !renderer || !camera) return;
 
     const rect = renderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(

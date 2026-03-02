@@ -37,7 +37,7 @@ export function useRevolveMode() {
     getObject,
     updateElementBrep,
   } = useCadCore();
-  const { camera, renderer, scene, forceSceneUpdate } = useCadVisualizer();
+  const { camera, renderer, scene, forceSceneUpdate, navToolActiveRef } = useCadVisualizer();
   const { showToast } = useToast();
 
   const [state, setState] = useState<RevolveState>({
@@ -285,7 +285,7 @@ export function useRevolveMode() {
    * Handle mouse down
    */
   const handleMouseDown = useCallback((event: MouseEvent) => {
-    if (!renderer || !camera || event.button !== 0) return;
+    if (!renderer || !camera || event.button !== 0 || event.altKey || navToolActiveRef.current) return;
     if (state.isApplying) return;
 
     const rect = renderer.domElement.getBoundingClientRect();

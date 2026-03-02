@@ -31,7 +31,7 @@ interface ExtrudeState {
  */
 export function useExtrudeMode() {
   const { elements, getObject, updateElementBrep } = useCadCore();
-  const { camera, renderer, scene, getMouseIntersection, forceSceneUpdate } =
+  const { camera, renderer, scene, getMouseIntersection, forceSceneUpdate, navToolActiveRef } =
     useCadVisualizer();
   const { showToast } = useToast();
 
@@ -715,7 +715,7 @@ export function useExtrudeMode() {
    */
   const handleMouseDown = useCallback(
     (event: MouseEvent) => {
-      if (!camera || !renderer || event.button !== 0) return;
+      if (!camera || !renderer || event.button !== 0 || event.altKey || navToolActiveRef.current) return;
 
       const raycaster = new THREE.Raycaster();
       const rect = renderer.domElement.getBoundingClientRect();

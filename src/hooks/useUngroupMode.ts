@@ -28,6 +28,7 @@ export function useUngroupMode(): UseUngroupModeResult {
     forceSceneUpdate,
     highlightElement,
     unhighlightElement,
+    navToolActiveRef,
   } = useCadVisualizer();
 
   const canUngroup = useMemo(() => {
@@ -48,7 +49,7 @@ export function useUngroupMode(): UseUngroupModeResult {
   }, [selectedElements, elements]);
 
   const handleUngroupModeClick = (event: MouseEvent) => {
-    if (event.button !== 0 || !renderer || !camera) return;
+    if (event.button !== 0 || event.altKey || navToolActiveRef.current || !renderer || !camera) return;
 
     const rect = renderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(

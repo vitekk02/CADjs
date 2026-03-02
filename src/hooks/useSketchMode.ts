@@ -256,6 +256,7 @@ export function useSketchMode(): UseSketchModeResult {
     setDrawingPlane,
     projectionType,
     setProjectionType,
+    navToolActiveRef,
   } = useCadVisualizer();
 
   const [sketchSubMode, setSketchSubMode] = useState<SketchSubMode>("line");
@@ -3363,8 +3364,8 @@ export function useSketchMode(): UseSketchModeResult {
         return;
       }
 
-      // Only handle left-click for drawing
-      if (event.button !== 0) return;
+      // Only handle left-click for drawing; skip if nav tool active
+      if (event.button !== 0 || event.altKey || navToolActiveRef.current) return;
 
       const point3D = getMouseIntersection(event);
       if (!point3D) return;

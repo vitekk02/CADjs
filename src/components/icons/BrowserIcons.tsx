@@ -106,6 +106,35 @@ export const EyeOffIcon: FC<IconProps> = ({ className = "w-3.5 h-3.5" }) => (
   </svg>
 );
 
+export const OrbitIcon: FC<IconProps> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <path d="M8 2a6 6 0 1 1-4.24 1.76" strokeLinecap="round" />
+    <path d="M5 1l-1.5 3L7 5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+export const PanIcon: FC<IconProps> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <path d="M8 2v12M2 8h12" strokeLinecap="round" />
+    <path d="M8 2l-2 2M8 2l2 2M8 14l-2-2M8 14l2-2M2 8l2-2M2 8l2 2M14 8l-2-2M14 8l-2 2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+export const ZoomIcon: FC<IconProps> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <circle cx="7" cy="7" r="4.5" />
+    <path d="M10.5 10.5L14 14" strokeLinecap="round" />
+    <path d="M5 7h4M7 5v4" strokeLinecap="round" />
+  </svg>
+);
+
+export const FitAllIcon: FC<IconProps> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" strokeLinecap="round" strokeLinejoin="round" />
+    <rect x="5" y="5" width="6" height="6" rx="0.5" />
+  </svg>
+);
+
 export const ChevronIcon: FC<IconProps & { expanded?: boolean }> = ({ className = "w-3 h-3", expanded }) => (
   <svg
     className={`${className} transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}

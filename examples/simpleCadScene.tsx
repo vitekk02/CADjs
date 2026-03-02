@@ -13,6 +13,7 @@ import { useFilletMode } from "../src/hooks/useFilletMode";
 import { useSweepMode } from "../src/hooks/useSweepMode";
 import { useLoftMode } from "../src/hooks/useLoftMode";
 import { useRevolveMode } from "../src/hooks/useRevolveMode";
+import { useMeasureMode } from "../src/hooks/useMeasureMode";
 import { useCameraAnimation, NamedView } from "../src/hooks/useCameraAnimation";
 import ViewCube from "../src/components/ViewCube";
 import SketchToolbar from "../src/navbar/SketchToolbar";
@@ -23,6 +24,7 @@ import SketchPropertiesPanel from "../src/components/SketchPropertiesPanel";
 import { buildBrowserSections } from "../src/scene-operations/browser-sections";
 import { SKETCH_PLANE, HELPERS } from "../src/theme";
 import FileMenu from "../src/components/FileMenu";
+import NavigationBar from "../src/components/NavigationBar";
 import { useToast } from "../src/contexts/ToastContext";
 
 interface SimpleCadSceneProps {
@@ -73,6 +75,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     isOperationPending,
     duplicateSelectedElements,
     updatePrimitivesAndSolve,
+    pinnedMeasurements,
   } = useCadCore();
   const {
     createEdgeHelpers,
@@ -95,6 +98,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     controls,
     projectionType,
     toggleProjection,
+    navToolActiveRef,
+    controlsRef,
   } = useCadVisualizer();
   const { showToast } = useToast();
 
@@ -221,6 +226,23 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     performRevolve,
     cleanup: cleanupRevolve,
   } = useRevolveMode();
+
+  const {
+    subMode: measureSubMode,
+    statusText: measureStatusText,
+    handleMouseDown: handleMeasureMouseDown,
+    handleMouseMove: handleMeasureMouseMove,
+    handleKeyDown: handleMeasureKeyDown,
+    setSubMode: setMeasureSubMode,
+    clearTemporaryMeasurements,
+    cleanup: cleanupMeasure,
+    measurements: temporaryMeasurements,
+    selectedMeasurementId,
+    selectMeasurement,
+    pinMeasurement,
+    unpinMeasurement,
+    deleteMeasurement,
+  } = useMeasureMode();
 
   // Camera animation (named views + fit all)
   const { animateToView, fitAll } = useCameraAnimation(camera, controls);
@@ -445,6 +467,42 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       window.removeEventListener("keydown", handleRevolveKeyDown);
     };
   }, [mode, handleRevolveKeyDown]);
+
+  // Global keyboard listener for measure mode
+  useEffect(() => {
+    if (mode !== "measure") return;
+
+    const handleMeasureKeys = (event: KeyboardEvent) => {
+      if ((event.target as HTMLElement)?.tagName === "INPUT") return;
+      const key = event.key.toLowerCase();
+      if (key === "p") {
+        // Pin selected or last measurement (pinMeasurement has fallback-to-last)
+        pinMeasurement();
+      } else if (key === "c") {
+        clearTemporaryMeasurements();
+      } else if (event.key === "Delete" || event.key === "Backspace") {
+        deleteMeasurement();
+      } else {
+        // Delegate D/E/A/Escape to the hook's handler
+        handleMeasureKeyDown(event);
+      }
+    };
+
+    window.addEventListener("keydown", handleMeasureKeys);
+
+    return () => {
+      window.removeEventListener("keydown", handleMeasureKeys);
+    };
+  }, [mode, handleMeasureKeyDown, clearTemporaryMeasurements, pinMeasurement, deleteMeasurement]);
+
+  // Cleanup temporary measurements when leaving measure mode
+  const prevModeRef = useRef(mode);
+  useEffect(() => {
+    if (prevModeRef.current === "measure" && mode !== "measure") {
+      cleanupMeasure();
+    }
+    prevModeRef.current = mode;
+  }, [mode, cleanupMeasure]);
 
   // Global keyboard listener for undo/redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
   // In sketch mode with active sketch, routes to sketch undo/redo exclusively
@@ -808,6 +866,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     } else if (mode === "revolve") {
       renderer.domElement.addEventListener("mousedown", handleRevolveMouseDown);
       renderer.domElement.addEventListener("mousemove", handleRevolveMouseMove);
+    } else if (mode === "measure") {
+      renderer.domElement.addEventListener("mousedown", handleMeasureMouseDown);
+      renderer.domElement.addEventListener("mousemove", handleMeasureMouseMove);
     }
 
     return () => {
@@ -853,6 +914,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.removeEventListener("mousemove", handleLoftMouseMove);
       renderer.domElement.removeEventListener("mousedown", handleRevolveMouseDown);
       renderer.domElement.removeEventListener("mousemove", handleRevolveMouseMove);
+      renderer.domElement.removeEventListener("mousedown", handleMeasureMouseDown);
+      renderer.domElement.removeEventListener("mousemove", handleMeasureMouseMove);
     };
   }, [
     mode,
@@ -880,6 +943,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleLoftMouseMove,
     handleRevolveMouseDown,
     handleRevolveMouseMove,
+    handleMeasureMouseDown,
+    handleMeasureMouseMove,
   ]);
 
   // Plane selection event listeners
@@ -1084,6 +1149,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         return "Loft";
       case "revolve":
         return "Revolve";
+      case "measure":
+        return "Measure";
       default:
         return mode.charAt(0).toUpperCase() + mode.slice(1);
     }
@@ -1105,7 +1172,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     mode === "fillet" ||
     mode === "sweep" ||
     mode === "loft" ||
-    mode === "revolve";
+    mode === "revolve" ||
+    mode === "measure";
 
   return (
     <div className="w-full h-screen flex overflow-hidden">
@@ -1331,6 +1399,23 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               }}
             >
               Revolve
+            </button>
+
+            {/* Separator */}
+            <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
+
+            <button
+              className={`flex-none px-3 py-1.5 text-sm rounded ${
+                isLocked
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                  : mode === "measure"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+              }`}
+              disabled={isLocked}
+              onClick={() => setMode("measure")}
+            >
+              Measure
             </button>
 
             {/* Separator */}
@@ -1807,6 +1892,72 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                   </span>
                 </div>
               )}
+
+              {/* Measure mode controls */}
+              {mode === "measure" && (
+                <div className="flex items-center gap-2">
+                  <button
+                    className={`flex-none px-2 py-1 text-xs rounded ${
+                      measureSubMode === "distance"
+                        ? "bg-green-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setMeasureSubMode("distance")}
+                    title="Distance (D)"
+                  >
+                    Distance
+                  </button>
+                  <button
+                    className={`flex-none px-2 py-1 text-xs rounded ${
+                      measureSubMode === "edge-length"
+                        ? "bg-green-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setMeasureSubMode("edge-length")}
+                    title="Edge Length (E)"
+                  >
+                    Edge Length
+                  </button>
+                  <button
+                    className={`flex-none px-2 py-1 text-xs rounded ${
+                      measureSubMode === "angle"
+                        ? "bg-green-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setMeasureSubMode("angle")}
+                    title="Angle (A)"
+                  >
+                    Angle
+                  </button>
+
+                  <div className="w-px h-4 bg-gray-600 mx-1" />
+
+                  <button
+                    className="flex-none px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    onClick={() => pinMeasurement()}
+                    title="Pin selected or last measurement (P)"
+                  >
+                    Pin
+                  </button>
+                  <button
+                    className="flex-none px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    onClick={clearTemporaryMeasurements}
+                    title="Clear temporary (C)"
+                  >
+                    Clear
+                  </button>
+
+                  <div className="w-px h-4 bg-gray-600 mx-1" />
+
+                  <span className="text-sm text-gray-400">
+                    {measureStatusText}
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    D/E/A: mode | P: pin | C: clear | Del: delete | Esc: cancel
+                  </span>
+
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1819,6 +1970,78 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
 
           {/* ViewCube */}
           <ViewCube camera={camera} onViewChange={handleViewCubeClick} />
+
+          {/* Measurement list panel */}
+          {mode === "measure" && (temporaryMeasurements.length > 0 || pinnedMeasurements.length > 0) && (
+            <div className="absolute top-2 right-[152px] z-20 w-56 max-h-[200px] overflow-y-auto bg-gray-800/90 border border-gray-700 rounded shadow-lg">
+              <div className="px-2 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-700">
+                Measurements
+              </div>
+              {temporaryMeasurements.map((m) => (
+                <div
+                  key={m.id}
+                  className={`flex items-center justify-between px-2 py-0.5 cursor-pointer hover:bg-gray-700 ${
+                    selectedMeasurementId === m.id ? "bg-gray-600" : ""
+                  }`}
+                  onClick={() => selectMeasurement(selectedMeasurementId === m.id ? null : m.id)}
+                >
+                  <span className="text-xs text-gray-300 truncate">
+                    {m.type === "distance" ? `Dist: ${m.distance.toFixed(3)}` :
+                     m.type === "edge-length" ? `Edge: ${m.length.toFixed(3)}` :
+                     `Angle: ${m.angleDegrees.toFixed(1)}°`}
+                  </span>
+                  <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                    <button
+                      className="px-1 py-0 text-[10px] rounded bg-gray-700 hover:bg-blue-600 text-gray-400 hover:text-white"
+                      onClick={(e) => { e.stopPropagation(); pinMeasurement(m.id); }}
+                      title="Pin"
+                    >
+                      Pin
+                    </button>
+                    <button
+                      className="px-1 py-0 text-[10px] rounded bg-gray-700 hover:bg-red-600 text-gray-400 hover:text-white"
+                      onClick={(e) => { e.stopPropagation(); deleteMeasurement(m.id); }}
+                      title="Delete"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {pinnedMeasurements.map((m) => (
+                <div
+                  key={m.id}
+                  className={`flex items-center justify-between px-2 py-0.5 cursor-pointer hover:bg-gray-700 ${
+                    selectedMeasurementId === m.id ? "bg-gray-600" : ""
+                  }`}
+                  onClick={() => selectMeasurement(selectedMeasurementId === m.id ? null : m.id)}
+                >
+                  <span className="text-xs text-blue-400 truncate">
+                    {m.type === "distance" ? `Dist: ${m.distance.toFixed(3)}` :
+                     m.type === "edge-length" ? `Edge: ${m.length.toFixed(3)}` :
+                     `Angle: ${m.angleDegrees.toFixed(1)}°`}
+                    <span className="text-blue-500 ml-1">(pinned)</span>
+                  </span>
+                  <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                    <button
+                      className="px-1 py-0 text-[10px] rounded bg-gray-700 hover:bg-yellow-600 text-gray-400 hover:text-white"
+                      onClick={(e) => { e.stopPropagation(); unpinMeasurement(m.id); }}
+                      title="Unpin"
+                    >
+                      Unpin
+                    </button>
+                    <button
+                      className="px-1 py-0 text-[10px] rounded bg-gray-700 hover:bg-red-600 text-gray-400 hover:text-white"
+                      onClick={(e) => { e.stopPropagation(); deleteMeasurement(m.id); }}
+                      title="Delete"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Projection toggle */}
           <button
@@ -1975,6 +2198,13 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               </div>
             </div>
           )}
+
+          {/* Navigation bar - above status bar */}
+          <NavigationBar
+            controlsRef={controlsRef}
+            navToolActiveRef={navToolActiveRef}
+            onFitAll={handleFitAll}
+          />
 
           {/* Bottom status bar */}
           <div className="absolute bottom-0 left-0 right-0 h-8 bg-gray-900 bg-opacity-90 border-t border-gray-700 flex items-center px-3 text-xs text-gray-400 font-mono z-10 overflow-hidden whitespace-nowrap">

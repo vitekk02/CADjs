@@ -29,6 +29,7 @@ export function useIntersectionMode(): UseIntersectionModeResult {
     forceSceneUpdate,
     highlightElement,
     unhighlightElement,
+    navToolActiveRef,
   } = useCadVisualizer();
 
   const { showToast } = useToast();
@@ -36,7 +37,7 @@ export function useIntersectionMode(): UseIntersectionModeResult {
   const canIntersect = selectedElements.length >= 2;
 
   const handleIntersectionModeClick = (event: MouseEvent) => {
-    if (event.button !== 0 || !renderer || !camera) return;
+    if (event.button !== 0 || event.altKey || navToolActiveRef.current || !renderer || !camera) return;
     const rect = renderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,

@@ -135,6 +135,19 @@ export const REVOLVE = {
   previewOpacity: 0.6,
 } as const;
 
+// ── Measure Mode ──────────────────────────────────────────────────
+export const MEASURE = {
+  line: 0x00cc44,           // Green measurement lines
+  lineHover: 0x44ff88,      // Lighter green hover
+  point: 0xff4444,          // Red measurement points
+  text: 0x00cc44,           // Green label text
+  textBg: 0x222222,         // Dark label background
+  angleArc: 0xffaa00,       // Orange angle arc
+  edgeHighlight: 0x00cc44,  // Green edge highlight
+  pinnedLine: 0x2e75b6,     // Blue for pinned measurements
+  pinnedText: 0x2e75b6,     // Blue pinned label text
+} as const;
+
 // ── Resize Mode ────────────────────────────────────────────────────
 export const RESIZE = {
   handle: 0xffcc00,       // Yellow handle

@@ -29,6 +29,7 @@ export function useUnionMode(): UseUnionModeResult {
     forceSceneUpdate,
     highlightElement,
     unhighlightElement,
+    navToolActiveRef,
   } = useCadVisualizer();
 
   const { showToast } = useToast();
@@ -36,7 +37,7 @@ export function useUnionMode(): UseUnionModeResult {
   const canUnion = selectedElements.length >= 2;
 
   const handleUnionModeClick = (event: MouseEvent) => {
-    if (event.button !== 0 || !renderer || !camera) return;
+    if (event.button !== 0 || event.altKey || navToolActiveRef.current || !renderer || !camera) return;
 
     const rect = renderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(
