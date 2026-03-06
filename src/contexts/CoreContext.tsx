@@ -242,10 +242,11 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
       for (const el of snapshot.elements) {
         let mesh: THREE.Group;
-        if (el.edgeGeometry) {
-          const faces = getAllFaces(el.brep);
-          const faceGeometry = createGeometryFromBRep(faces);
-          mesh = createMeshFromGeometry(faceGeometry, el.edgeGeometry);
+        if (el.elementType === "path" && el.pathData) {
+          mesh = createMeshFromPath(el.pathData.points);
+        } else if (el.edgeGeometry) {
+          const geom = el.faceGeometry ?? createGeometryFromBRep(getAllFaces(el.brep));
+          mesh = createMeshFromGeometry(geom, el.edgeGeometry);
         } else {
           mesh = createMeshFromBrep(el.brep);
         }
@@ -732,7 +733,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setElements((prevElements) =>
         prevElements.map((element) => {
           if (element.nodeId === nodeId) {
-            return { ...element, brep: newBrep, position, occBrep, edgeGeometry, vertexPositions };
+            return { ...element, brep: newBrep, position, occBrep, edgeGeometry, faceGeometry, vertexPositions };
           }
           return element;
         })

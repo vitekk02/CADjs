@@ -3,6 +3,13 @@ import { transformBrepVertices } from "../convertBRepToGeometry";
 import * as THREE from "three";
 import { OpenCascadeService } from "../services/OpenCascadeService";
 
+export type SweepOrientation = "perpendicular" | "parallel";
+export type SweepCornerMode = "right" | "round";
+export interface SweepOptions {
+  orientation: SweepOrientation;
+  cornerMode: SweepCornerMode;
+}
+
 export interface SweepResult {
   brep: Brep;
   positionOffset: { x: number; y: number; z: number };
@@ -26,7 +33,9 @@ export interface SweepResult {
 export async function sweepBRep(
   profileBrep: Brep,
   profilePosition: THREE.Vector3,
-  pathPoints: { x: number; y: number; z: number }[]
+  pathPoints: { x: number; y: number; z: number }[],
+  options?: SweepOptions,
+  sourceOccBrep?: string,
 ): Promise<SweepResult> {
   if (!profileBrep.faces.length || pathPoints.length < 2) {
     return { brep: profileBrep, positionOffset: { x: 0, y: 0, z: 0 } };
@@ -36,7 +45,19 @@ export async function sweepBRep(
     const ocService = OpenCascadeService.getInstance();
 
     // 1. Build a clean planar face at LOCAL ORIGIN (same as extrusion)
-    const cleanFace = await ocService.buildPlanarFaceFromBoundary(profileBrep);
+    // Prefer deserializing sourceOccBrep (preserves analytic geometry like circles),
+    // fall back to extracting boundary from tessellated BRep.
+    let cleanFace;
+    if (sourceOccBrep) {
+      try {
+        cleanFace = await ocService.deserializeShape(sourceOccBrep);
+      } catch {
+        cleanFace = null;
+      }
+    }
+    if (!cleanFace) {
+      cleanFace = await ocService.buildPlanarFaceFromBoundary(profileBrep);
+    }
     if (!cleanFace) {
       console.error("[sweepBRep] Failed to build clean face from profile");
       return { brep: profileBrep, positionOffset: { x: 0, y: 0, z: 0 } };
@@ -59,7 +80,8 @@ export async function sweepBRep(
     }
 
     // 4. Sweep origin-centered face along local-space wire
-    const sweptShape = await ocService.sweepShape(cleanFace, pathWire);
+    const sweepOpts = options ?? { orientation: "perpendicular", cornerMode: "right" };
+    const sweptShape = await ocService.sweepShapeAdvanced(cleanFace, pathWire, sweepOpts);
 
     // 5. Get uncentered BRep to compute bounding box center
     const uncenteredBrep = await ocService.ocShapeToBRep(sweptShape, false);
@@ -88,16 +110,26 @@ export async function sweepBRep(
     try {
       edgeGeometry = await ocService.shapeToEdgeLineSegments(sweptShape, 0.003);
       edgeGeometry.translate(-localCenter.x, -localCenter.y, -localCenter.z);
+    } catch (e) {
+      console.warn("[sweepBRep] Edge geometry extraction failed:", e);
+    }
+
+    try {
       faceGeometry = await ocService.shapeToThreeGeometry(sweptShape, 0.003, 0.1);
       faceGeometry.translate(-localCenter.x, -localCenter.y, -localCenter.z);
+    } catch (e) {
+      console.warn("[sweepBRep] Face geometry extraction failed:", e);
+    }
+
+    try {
       vertexPositions = await ocService.shapeToVertexPositions(sweptShape);
       for (let i = 0; i < vertexPositions.length; i += 3) {
         vertexPositions[i] -= localCenter.x;
         vertexPositions[i + 1] -= localCenter.y;
         vertexPositions[i + 2] -= localCenter.z;
       }
-    } catch {
-      // Edge geometry is optional
+    } catch (e) {
+      console.warn("[sweepBRep] Vertex positions extraction failed:", e);
     }
 
     // Serialize sweep result in local space for lossless round-tripping

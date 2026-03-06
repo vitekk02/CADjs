@@ -29,6 +29,7 @@ export async function revolveBRep(
   axisOrigin: { x: number; y: number; z: number },
   axisDir: { x: number; y: number; z: number },
   angleRadians?: number,
+  sourceOccBrep?: string,
 ): Promise<RevolveResult> {
   if (!profileBrep.faces.length) {
     return { brep: profileBrep, positionOffset: { x: 0, y: 0, z: 0 } };
@@ -38,7 +39,19 @@ export async function revolveBRep(
     const ocService = OpenCascadeService.getInstance();
 
     // 1. Build a clean planar face (at raw BRep coords — brepCenter frame)
-    const cleanFace = await ocService.buildPlanarFaceFromBoundary(profileBrep);
+    // Prefer deserializing sourceOccBrep (preserves analytic geometry like circles),
+    // fall back to extracting boundary from tessellated BRep.
+    let cleanFace;
+    if (sourceOccBrep) {
+      try {
+        cleanFace = await ocService.deserializeShape(sourceOccBrep);
+      } catch {
+        cleanFace = null;
+      }
+    }
+    if (!cleanFace) {
+      cleanFace = await ocService.buildPlanarFaceFromBoundary(profileBrep);
+    }
     if (!cleanFace) {
       console.error("[revolveBRep] Failed to build clean face from profile");
       return { brep: profileBrep, positionOffset: { x: 0, y: 0, z: 0 } };
@@ -123,16 +136,26 @@ export async function revolveBRep(
     try {
       edgeGeometry = await ocService.shapeToEdgeLineSegments(revolvedShape, 0.003);
       edgeGeometry.translate(-localCenter.x, -localCenter.y, -localCenter.z);
+    } catch (e) {
+      console.warn("[revolveBRep] Edge geometry extraction failed:", e);
+    }
+
+    try {
       faceGeometry = await ocService.shapeToThreeGeometry(revolvedShape, 0.003, 0.1);
       faceGeometry.translate(-localCenter.x, -localCenter.y, -localCenter.z);
+    } catch (e) {
+      console.warn("[revolveBRep] Face geometry extraction failed:", e);
+    }
+
+    try {
       vertexPositions = await ocService.shapeToVertexPositions(revolvedShape);
       for (let i = 0; i < vertexPositions.length; i += 3) {
         vertexPositions[i] -= localCenter.x;
         vertexPositions[i + 1] -= localCenter.y;
         vertexPositions[i + 2] -= localCenter.z;
       }
-    } catch {
-      // Edge geometry is optional
+    } catch (e) {
+      console.warn("[revolveBRep] Vertex positions extraction failed:", e);
     }
 
     // Serialize revolve result in local space for lossless round-tripping

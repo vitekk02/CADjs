@@ -198,6 +198,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     selectedProfile: sweepSelectedProfile,
     selectedPath: sweepSelectedPath,
     isApplying: sweepIsApplying,
+    orientation: sweepOrientation,
+    cornerMode: sweepCornerMode,
+    setOrientation: setSweepOrientation,
+    setCornerMode: setSweepCornerMode,
     handleMouseDown: handleSweepMouseDown,
     handleMouseMove: handleSweepMouseMove,
     handleKeyDown: handleSweepKeyDown,
@@ -1931,6 +1935,48 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               {/* Sweep mode controls */}
               {mode === "sweep" && (
                 <div className="flex items-center gap-3">
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      sweepOrientation === "perpendicular"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setSweepOrientation("perpendicular")}
+                  >
+                    Perpendicular
+                  </button>
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      sweepOrientation === "parallel"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setSweepOrientation("parallel")}
+                  >
+                    Parallel
+                  </button>
+                  <div className="w-px h-4 bg-gray-600" />
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      sweepCornerMode === "right"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setSweepCornerMode("right")}
+                  >
+                    Right
+                  </button>
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      sweepCornerMode === "round"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setSweepCornerMode("round")}
+                  >
+                    Round
+                  </button>
+                  <div className="w-px h-4 bg-gray-600" />
                   <span className="text-sm text-gray-400">
                     {sweepIsApplying
                       ? "Applying sweep..."

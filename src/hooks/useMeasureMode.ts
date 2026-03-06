@@ -328,7 +328,7 @@ export function useMeasureMode() {
         }
 
         // Get ALL edges (not just sharp ones) — measurement needs all edges
-        const edgeData = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.05, hasOccBrep, true);
+        const edgeData = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.003, hasOccBrep, true);
         edgeSegmentsRef.current = edgeData;
         activeElementRef.current = nodeId;
 

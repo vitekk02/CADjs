@@ -113,7 +113,7 @@ export function useRevolveMode() {
     const shape = hasOccBrep
       ? await ocService.occBrepToOCShape(element.occBrep!, element.position)
       : await ocService.brepToOCShape(element.brep, element.position);
-    edgeDataArr = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.05, hasOccBrep, true);
+    edgeDataArr = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.003, hasOccBrep, true);
 
     if (!edgeDataArr || edgeDataArr.length === 0) return;
 
@@ -248,7 +248,7 @@ export function useRevolveMode() {
 
       let edgeDataArr;
       try {
-        edgeDataArr = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.05, hasOccBrep, true);
+        edgeDataArr = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.003, hasOccBrep, true);
       } catch {
         continue;
       }
@@ -425,6 +425,7 @@ export function useRevolveMode() {
         axisOrigin,
         axisDir,
         Math.abs(finalAngle - 360) < 0.01 ? undefined : angleRadians,
+        element.occBrep,
       );
 
       if (result.brep === element.brep) {

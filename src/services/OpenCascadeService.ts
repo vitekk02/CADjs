@@ -670,8 +670,8 @@ export class OpenCascadeService {
 
   async shapeToThreeGeometry(
     shape: TopoDS_Shape,
-    linearDeflection: number = 0.1,
-    angularDeflection: number = 0.5,
+    linearDeflection: number = 0.003,
+    angularDeflection: number = 0.1,
   ): Promise<THREE.BufferGeometry> {
     const oc = await this.getOC();
 
@@ -758,7 +758,7 @@ export class OpenCascadeService {
    */
   async shapeToEdgeLineSegments(
     shape: TopoDS_Shape,
-    linearDeflection: number = 0.05,
+    linearDeflection: number = 0.003,
   ): Promise<THREE.BufferGeometry> {
     const oc = await this.getOC();
 
@@ -1851,34 +1851,39 @@ export class OpenCascadeService {
     );
 
     for (let i = 1; i <= count; i++) {
-      const edgeShape = edgeMap.FindKey(i);
-      const edge = oc.TopoDS.Edge_1(edgeShape);
+      try {
+        const edgeShape = edgeMap.FindKey(i);
+        const edge = oc.TopoDS.Edge_1(edgeShape);
 
-      // Skip degenerate edges (zero-length point edges)
-      if (oc.BRep_Tool.Degenerated(edge)) continue;
+        // Skip degenerate edges (zero-length point edges)
+        if (oc.BRep_Tool.Degenerated(edge)) continue;
 
-      // Find this edge in the adjacency map
-      const adjIdx = edgeFaceMap.FindIndex(edgeShape);
-      if (adjIdx === 0) continue;
+        // Find this edge in the adjacency map
+        const adjIdx = edgeFaceMap.FindIndex(edgeShape);
+        if (adjIdx === 0) continue;
 
-      const faceList = edgeFaceMap.FindFromIndex(adjIdx);
+        const faceList = edgeFaceMap.FindFromIndex(adjIdx);
 
-      // Skip seam/boundary edges (need exactly 2 adjacent faces)
-      if (faceList.Size() !== 2) continue;
+        // Skip seam/boundary edges (need exactly 2 adjacent faces)
+        if (faceList.Size() !== 2) continue;
 
-      // Get the two adjacent faces
-      const face1 = oc.TopoDS.Face_1(faceList.First_1());
+        // Get the two adjacent faces
+        const face1 = oc.TopoDS.Face_1(faceList.First_1());
 
-      // Skip seam edges (edge with two pcurves on same face, e.g. cylinder/cone seams)
-      if (oc.BRep_Tool.IsClosed_2(edge, face1)) continue;
+        // Skip seam edges (edge with two pcurves on same face, e.g. cylinder/cone seams)
+        if (oc.BRep_Tool.IsClosed_2(edge, face1)) continue;
 
-      const face2 = oc.TopoDS.Face_1(faceList.Last_1());
+        const face2 = oc.TopoDS.Face_1(faceList.Last_1());
 
-      // Check continuity — smooth edges (G1/C1+) are fillet transitions
-      const continuity = oc.BRep_Tool.Continuity_1(edge, face1, face2);
-      if (continuity !== oc.GeomAbs_Shape.GeomAbs_C0) continue;
+        // Check continuity — smooth edges (G1/C1+) are fillet transitions
+        const continuity = oc.BRep_Tool.Continuity_1(edge, face1, face2);
+        if (continuity !== oc.GeomAbs_Shape.GeomAbs_C0) continue;
 
-      sharpIndices.add(i);
+        sharpIndices.add(i);
+      } catch {
+        // Skip edges that fail continuity/closure checks (e.g. pipe shell edges)
+        continue;
+      }
     }
 
     edgeFaceMap.delete();
@@ -1892,7 +1897,7 @@ export class OpenCascadeService {
    */
   async getEdgeLineSegmentsPerEdge(
     shape: TopoDS_Shape,
-    linearDeflection: number = 0.05,
+    linearDeflection: number = 0.003,
     skipFix: boolean = false,
     allEdges: boolean = false,
   ): Promise<Array<{ edgeIndex: number; segments: Float32Array; midpoint: { x: number; y: number; z: number } }>> {
@@ -1910,9 +1915,6 @@ export class OpenCascadeService {
       fixer.Perform(progressRange);
       fixedShape = fixer.Shape();
     }
-
-    // Ensure the fixed shape is meshed
-    new oc.BRepMesh_IncrementalMesh_2(fixedShape, linearDeflection, false, 0.5, false);
 
     const { edgeMap, count } = await this.getEdgeMap(fixedShape);
     // When allEdges is true, skip sharp-edge filter (e.g. for revolve axis selection on flat profiles)
@@ -2219,6 +2221,103 @@ export class OpenCascadeService {
     } finally {
       pipe?.delete();
       fixer?.delete();
+    }
+  }
+
+  /**
+   * Sweep a profile face along a path wire using BRepOffsetAPI_MakePipeShell.
+   * Supports orientation control and corner treatment modes.
+   * Falls back to sweepShape() (MakePipe) on failure.
+   */
+  async sweepShapeAdvanced(
+    profileFace: TopoDS_Shape,
+    pathWire: TopoDS_Wire,
+    options: {
+      orientation: "perpendicular" | "parallel";
+      cornerMode: "right" | "round";
+    }
+  ): Promise<TopoDS_Shape> {
+    const oc = await this.getOC();
+
+    let pipeShell: any = null;
+    let fixer: any = null;
+    let profileWire: any = null;
+    let ax2: any = null;
+    let axOrigin: any = null;
+    let axDir: any = null;
+    let axXDir: any = null;
+
+    try {
+      // Extract outer wire from face (MakePipeShell takes a wire, not a face)
+      const face = oc.TopoDS.Face_1(profileFace);
+      profileWire = oc.BRepTools.OuterWire(face);
+
+      // Create pipe shell builder
+      pipeShell = new oc.BRepOffsetAPI_MakePipeShell(pathWire);
+
+      // Set orientation mode
+      if (options.orientation === "perpendicular") {
+        pipeShell.SetDiscreteMode();
+      } else {
+        // "parallel" — fixed frame using profile's original plane orientation
+        // Use the XY plane as the reference frame (profile is built at origin on XY plane)
+        axOrigin = new oc.gp_Pnt_3(0, 0, 0);
+        axDir = new oc.gp_Dir_4(0, 0, 1);
+        axXDir = new oc.gp_Dir_4(1, 0, 0);
+        ax2 = new oc.gp_Ax2_3(axOrigin, axDir, axXDir);
+        pipeShell.SetMode_2(ax2);
+      }
+
+      // Set corner transition mode
+      if (options.cornerMode === "right") {
+        pipeShell.SetTransitionMode(
+          oc.BRepBuilderAPI_TransitionMode.BRepBuilderAPI_RightCorner as any
+        );
+      } else {
+        pipeShell.SetTransitionMode(
+          oc.BRepBuilderAPI_TransitionMode.BRepBuilderAPI_RoundCorner as any
+        );
+      }
+
+      // Add profile wire with WithCorrection=true for strict orthogonality
+      pipeShell.Add_1(profileWire, false, true);
+
+      // Build the pipe shell
+      pipeShell.Build(new oc.Message_ProgressRange_1());
+
+      if (!pipeShell.IsDone()) {
+        console.warn("[OpenCascadeService] MakePipeShell failed, falling back to MakePipe");
+        return this.sweepShape(profileFace, pathWire);
+      }
+
+      // Make solid (close end caps)
+      pipeShell.MakeSolid();
+
+      let result = pipeShell.Shape();
+
+      // Fix shape
+      fixer = new oc.ShapeFix_Shape_2(result);
+      fixer.Perform(new oc.Message_ProgressRange_1());
+      result = fixer.Shape();
+
+      // Orient as solid
+      try {
+        oc.BRepLib.OrientClosedSolid(oc.TopoDS.Solid_1(result));
+      } catch {
+        // Not a solid — fine for open sweeps
+      }
+
+      return result;
+    } catch (error) {
+      console.warn("[OpenCascadeService] sweepShapeAdvanced failed, falling back to MakePipe:", error);
+      return this.sweepShape(profileFace, pathWire);
+    } finally {
+      pipeShell?.delete();
+      fixer?.delete();
+      ax2?.delete();
+      axOrigin?.delete();
+      axDir?.delete();
+      axXDir?.delete();
     }
   }
 

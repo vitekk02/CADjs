@@ -4,7 +4,7 @@ import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
 import { useToast } from "../contexts/ToastContext";
 import { Brep } from "../geometry";
-import { sweepBRep } from "../scene-operations/sweep-operations";
+import { sweepBRep, SweepOrientation, SweepCornerMode } from "../scene-operations/sweep-operations";
 import { isDescendantOf, collectPickableMeshes } from "../scene-operations/mesh-operations";
 import { SWEEP, BODY, SELECTION } from "../theme";
 
@@ -15,6 +15,8 @@ interface SweepState {
   selectedProfile: string | null;
   selectedPath: string | null;
   isApplying: boolean;
+  orientation: SweepOrientation;
+  cornerMode: SweepCornerMode;
 }
 
 /**
@@ -38,6 +40,8 @@ export function useSweepMode() {
     selectedProfile: null,
     selectedPath: null,
     isApplying: false,
+    orientation: "perpendicular",
+    cornerMode: "right",
   });
 
   const hoveredElementRef = useRef<string | null>(null);
@@ -269,7 +273,9 @@ export function useSweepMode() {
       const result = await sweepBRep(
         profileEl.brep,
         profileEl.position,
-        pathEl.pathData.points
+        pathEl.pathData.points,
+        { orientation: state.orientation, cornerMode: state.cornerMode },
+        profileEl.occBrep,
       );
 
       if (result.brep.faces.length > 0) {
@@ -310,13 +316,14 @@ export function useSweepMode() {
       showToast("Sweep failed", "error");
     }
 
-    setState({
+    setState(prev => ({
+      ...prev,
       phase: "SELECT_PROFILE",
       selectedProfile: null,
       selectedPath: null,
       isApplying: false,
-    });
-  }, [state.selectedProfile, state.selectedPath, elements, updateElementBrep, removeElement, forceSceneUpdate]);
+    }));
+  }, [state.selectedProfile, state.selectedPath, state.orientation, state.cornerMode, elements, updateElementBrep, removeElement, forceSceneUpdate]);
 
   const canSweep = state.phase === "READY" && !!state.selectedProfile && !!state.selectedPath;
 
@@ -345,12 +352,13 @@ export function useSweepMode() {
           }
         }
         cleanupPreview();
-        setState({
+        setState(prev => ({
+          ...prev,
           phase: "SELECT_PROFILE",
           selectedProfile: null,
           selectedPath: null,
           isApplying: false,
-        });
+        }));
       }
     } else if (event.key === "Enter" && canSweep) {
       performSweep();
@@ -379,19 +387,32 @@ export function useSweepMode() {
       }
     }
 
-    setState({
+    setState(prev => ({
+      ...prev,
       phase: "SELECT_PROFILE",
       selectedProfile: null,
       selectedPath: null,
       isApplying: false,
-    });
+    }));
   }, [resetHover, cleanupPreview, state.selectedProfile, state.selectedPath, getObject, highlightSelected]);
+
+  const setOrientation = useCallback((orientation: SweepOrientation) => {
+    setState(prev => ({ ...prev, orientation }));
+  }, []);
+
+  const setCornerMode = useCallback((cornerMode: SweepCornerMode) => {
+    setState(prev => ({ ...prev, cornerMode }));
+  }, []);
 
   return {
     phase: state.phase,
     selectedProfile: state.selectedProfile,
     selectedPath: state.selectedPath,
     isApplying: state.isApplying,
+    orientation: state.orientation,
+    cornerMode: state.cornerMode,
+    setOrientation,
+    setCornerMode,
     handleMouseDown,
     handleMouseMove,
     handleKeyDown,

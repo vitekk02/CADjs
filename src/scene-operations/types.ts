@@ -14,6 +14,7 @@ export interface SceneElement {
   pathData?: { points: { x: number; y: number; z: number }[] };
   occBrep?: string;
   edgeGeometry?: THREE.BufferGeometry;
+  faceGeometry?: THREE.BufferGeometry;
   vertexPositions?: Float32Array;
   sketchPlane?: SketchPlane;
 }

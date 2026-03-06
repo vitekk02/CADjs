@@ -191,8 +191,11 @@ export function useLoftMode() {
       // Collect profile data in selection order
       const profiles = state.selectedProfiles.map(nodeId => {
         const el = elements.find(e => e.nodeId === nodeId);
-        return el ? { brep: el.brep, position: el.position } : null;
-      }).filter((p): p is { brep: Brep; position: THREE.Vector3 } => p !== null);
+        if (!el) return null;
+        const profile: { brep: Brep; position: THREE.Vector3; occBrep?: string } = { brep: el.brep, position: el.position };
+        if (el.occBrep) profile.occBrep = el.occBrep;
+        return profile;
+      }).filter((p): p is { brep: Brep; position: THREE.Vector3; occBrep?: string } => p !== null);
 
       if (profiles.length < 2) {
         console.error("[useLoftMode] Not enough valid profiles");

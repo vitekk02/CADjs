@@ -159,11 +159,11 @@ describe("sweep-operations", () => {
       expect(result.positionOffset).toEqual({ x: 0, y: 0, z: 0 });
     });
 
-    it("should return original BRep when sweepShape throws", async () => {
+    it("should return original BRep when sweepShapeAdvanced throws", async () => {
       const profileBrep = createRectBrep(2, 2);
       const position = new THREE.Vector3(0, 0, 0);
 
-      jest.spyOn(ocService, "sweepShape").mockRejectedValue(new Error("Sweep failed"));
+      jest.spyOn(ocService, "sweepShapeAdvanced").mockRejectedValue(new Error("Sweep failed"));
 
       const consoleSpy = jest.spyOn(console, "error").mockImplementation();
 

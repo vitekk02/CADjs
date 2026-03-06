@@ -23,7 +23,7 @@ export interface LoftResult {
  * @param isRuled Whether to use ruled surfaces (linear) vs smooth interpolation
  */
 export async function loftBReps(
-  profiles: { brep: Brep; position: THREE.Vector3 }[],
+  profiles: { brep: Brep; position: THREE.Vector3; occBrep?: string }[],
   isRuled: boolean = false
 ): Promise<LoftResult | null> {
   if (profiles.length < 2) {
@@ -39,9 +39,21 @@ export async function loftBReps(
     const worldFaces: any[] = [];
 
     for (let i = 0; i < profiles.length; i++) {
-      const { brep, position } = profiles[i];
+      const { brep, position, occBrep } = profiles[i];
 
-      const cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
+      // Prefer deserializing occBrep (preserves analytic geometry like circles),
+      // fall back to extracting boundary from tessellated BRep.
+      let cleanFace;
+      if (occBrep) {
+        try {
+          cleanFace = await ocService.deserializeShape(occBrep);
+        } catch {
+          cleanFace = null;
+        }
+      }
+      if (!cleanFace) {
+        cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
+      }
       if (!cleanFace) {
         console.error(`[loftBReps] Failed to build clean face for profile ${i}`);
         return null;
@@ -87,16 +99,26 @@ export async function loftBReps(
     try {
       edgeGeometry = await ocService.shapeToEdgeLineSegments(loftedShape, 0.003);
       edgeGeometry.translate(-centerPos.x, -centerPos.y, -centerPos.z);
+    } catch (e) {
+      console.warn("[loftBReps] Edge geometry extraction failed:", e);
+    }
+
+    try {
       faceGeometry = await ocService.shapeToThreeGeometry(loftedShape, 0.003, 0.1);
       faceGeometry.translate(-centerPos.x, -centerPos.y, -centerPos.z);
+    } catch (e) {
+      console.warn("[loftBReps] Face geometry extraction failed:", e);
+    }
+
+    try {
       vertexPositions = await ocService.shapeToVertexPositions(loftedShape);
       for (let i = 0; i < vertexPositions.length; i += 3) {
         vertexPositions[i] -= centerPos.x;
         vertexPositions[i + 1] -= centerPos.y;
         vertexPositions[i + 2] -= centerPos.z;
       }
-    } catch {
-      // Edge geometry is optional
+    } catch (e) {
+      console.warn("[loftBReps] Vertex positions extraction failed:", e);
     }
 
     // Serialize loft result in local space for lossless round-tripping

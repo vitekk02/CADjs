@@ -167,7 +167,7 @@ export function useFilletMode() {
             : await ocService.brepToOCShape(element.brep, element.position);
         }
         // Skip redundant ShapeFix when shape comes from deserialized occBrep
-        const edgeData = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.05, hasOccBrep);
+        const edgeData = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.003, hasOccBrep);
 
         edgeSegmentsRef.current = edgeData;
 
