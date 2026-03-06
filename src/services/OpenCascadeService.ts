@@ -2350,16 +2350,38 @@ export class OpenCascadeService {
       const isFullRevolution = angleRadians === undefined ||
         Math.abs(angleRadians - 2 * Math.PI) < 1e-6;
 
+      console.log("[revolveShape] Input shape type:", face.ShapeType());
+
       if (isFullRevolution) {
         revolBuilder = new oc.BRepPrimAPI_MakeRevol_2(face, axis, true);
       } else {
         revolBuilder = new oc.BRepPrimAPI_MakeRevol_1(face, axis, angleRadians!, true);
       }
 
-      revolBuilder.Build(new oc.Message_ProgressRange_1());
+      try {
+        revolBuilder.Build(new oc.Message_ProgressRange_1());
+      } catch (buildError) {
+        const buildMsg = buildError instanceof Error ? buildError.message : String(buildError);
+        throw new Error(`BRepPrimAPI_MakeRevol.Build() threw: ${buildMsg}`);
+      }
 
       if (!revolBuilder.IsDone()) {
-        throw new Error("BRepPrimAPI_MakeRevol failed");
+        // Best-effort diagnostics
+        try {
+          const analyzer = new oc.BRepCheck_Analyzer(face, true, false);
+          const isValid = analyzer.IsValid_2();
+          console.error("[revolveShape] Input face valid:", isValid);
+          analyzer.delete();
+        } catch { /* best effort */ }
+
+        try {
+          revolBuilder.Check();
+        } catch (checkError) {
+          const checkMsg = checkError instanceof Error ? checkError.message : String(checkError);
+          console.error("[revolveShape] Check() exception:", checkMsg);
+        }
+
+        throw new Error("BRepPrimAPI_MakeRevol: IsDone() returned false");
       }
 
       let result = revolBuilder.Shape();
@@ -2378,8 +2400,9 @@ export class OpenCascadeService {
 
       return result;
     } catch (error) {
-      console.error("[OpenCascadeService] revolveShape failed:", error);
-      throw error;
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error("[OpenCascadeService] revolveShape failed:", msg);
+      throw new Error(`Revolve failed: ${msg}`);
     } finally {
       origin?.delete();
       direction?.delete();

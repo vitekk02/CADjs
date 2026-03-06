@@ -21,7 +21,7 @@ import {
 import { unionSelectedElements as unionSelectedElementsOp } from "../scene-operations/union-operations";
 import { differenceSelectedElements as differenceSelectedElementsOp } from "../scene-operations/difference-operations";
 import { intersectionSelectedElements as intersectionSelectedElementsOp } from "../scene-operations/intersection-operations";
-import { SceneElement, SceneMode } from "../scene-operations/types";
+import { SceneElement, SceneMode, CombineOperationType, BooleanOperationOptions } from "../scene-operations/types";
 import {
   createMeshFromBrep,
   createMeshFromGeometry,
@@ -90,6 +90,7 @@ export interface CadCoreContextType {
   unionSelectedElements: () => Promise<boolean>;
   differenceSelectedElements: () => Promise<boolean>;
   intersectionSelectedElements: () => Promise<boolean>;
+  combineSelectedElements: (opType: CombineOperationType, options: BooleanOperationOptions) => Promise<boolean>;
   updateElementRotation: (nodeId: string, rotation: THREE.Euler) => void;
   getObject: (nodeId: string) => THREE.Object3D | undefined;
   getAllObjects: () => Map<string, THREE.Object3D>;
@@ -656,6 +657,57 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setOperationPending(false);
     }
   }, [elements, selectedElements, idCounter, brepGraph, objectsMap, pushUndo]);
+
+  const combineSelectedElementsImpl = useCallback(async (
+    opType: CombineOperationType,
+    options: BooleanOperationOptions,
+  ): Promise<boolean> => {
+    const effectiveSelected = [options.targetId, ...options.toolIds];
+    if (effectiveSelected.length < 2) return false;
+
+    const opLabel = opType === "join" ? "Join" : opType === "cut" ? "Cut" : "Intersect";
+    pushUndo(opLabel);
+    setOperationPending(true);
+
+    try {
+      let result;
+      if (opType === "join") {
+        result = await unionSelectedElementsOp(elements, effectiveSelected, idCounter, brepGraph, objectsMap, options);
+      } else if (opType === "cut") {
+        result = await differenceSelectedElementsOp(elements, effectiveSelected, idCounter, brepGraph, objectsMap, options);
+      } else {
+        result = await intersectionSelectedElementsOp(elements, effectiveSelected, idCounter, brepGraph, objectsMap, options);
+      }
+
+      if (!result) {
+        console.error(`${opLabel} operation failed`);
+        undoStackRef.current = undoStackRef.current.slice(0, -1);
+        setUndoRedoVersion((v) => v + 1);
+        return false;
+      }
+
+      setElements(result.updatedElements);
+      setSelectedElements(result.updatedSelectedElements);
+      setIdCounter(result.nextIdCounter);
+
+      // Update feature tree
+      const newNodeId = `node_${result.nextIdCounter}`;
+      const featureOpType = opType === "join" ? "union" : opType === "cut" ? "difference" : "intersection";
+      const consumedIds = options.keepTools ? [options.targetId] : effectiveSelected;
+      setFeatureTree((prev) => {
+        const name = `${opLabel} ${countOperationsOfType(prev, featureOpType) + 1}`;
+        return applyBooleanOperationToTree(prev, consumedIds, newNodeId, featureOpType, name);
+      });
+      return true;
+    } catch (error) {
+      console.error(`${opLabel} error:`, error);
+      undoStackRef.current = undoStackRef.current.slice(0, -1);
+      setUndoRedoVersion((v) => v + 1);
+      return false;
+    } finally {
+      setOperationPending(false);
+    }
+  }, [elements, idCounter, brepGraph, objectsMap, pushUndo]);
 
   const updateElementRotation = useCallback(
     (nodeId: string, rotation: THREE.Euler) => {
@@ -1737,6 +1789,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         unionSelectedElements: unionSelectedElementsImpl,
         differenceSelectedElements: differenceSelectedElementsImpl,
         intersectionSelectedElements: intersectionSelectedElementsImpl,
+        combineSelectedElements: combineSelectedElementsImpl,
         updateElementRotation,
         getObject: (nodeId) => getObjectImpl(nodeId),
         getAllObjects: () => getAllObjects(objectsMap),

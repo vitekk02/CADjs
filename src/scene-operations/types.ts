@@ -2,7 +2,15 @@ import * as THREE from "three";
 import { Brep, BrepGraph } from "../geometry";
 import { SketchPlane } from "../types/sketch-types";
 
-export type SceneMode = "move" | "union" | "difference" | "intersection" | "sketch" | "extrude" | "fillet" | "sweep" | "loft" | "revolve" | "measure";
+export type SceneMode = "move" | "combine" | "sketch" | "extrude" | "fillet" | "sweep" | "loft" | "revolve" | "measure";
+
+export type CombineOperationType = "join" | "cut" | "intersect";
+
+export interface BooleanOperationOptions {
+  targetId: string;
+  toolIds: string[];
+  keepTools?: boolean;
+}
 
 export interface SceneElement {
   brep: Brep;

@@ -11,6 +11,7 @@ import { LOFT, BODY, SELECTION } from "../theme";
 interface LoftState {
   selectedProfiles: string[];
   isApplying: boolean;
+  isRuled: boolean;
 }
 
 /**
@@ -29,6 +30,7 @@ export function useLoftMode() {
   const [state, setState] = useState<LoftState>({
     selectedProfiles: [],
     isApplying: false,
+    isRuled: false,
   });
 
   const hoveredElementRef = useRef<string | null>(null);
@@ -204,7 +206,7 @@ export function useLoftMode() {
         return;
       }
 
-      const result = await loftBReps(profiles);
+      const result = await loftBReps(profiles, state.isRuled);
 
       if (result && result.brep.faces.length > 0) {
         loftElements(state.selectedProfiles, result.brep, result.position, result.edgeGeometry, result.occBrep, result.vertexPositions, result.faceGeometry);
@@ -218,11 +220,16 @@ export function useLoftMode() {
       showToast("Loft failed", "error");
     }
 
-    setState({
+    setState(prev => ({
+      ...prev,
       selectedProfiles: [],
       isApplying: false,
-    });
-  }, [state.selectedProfiles, elements, loftElements, forceSceneUpdate]);
+    }));
+  }, [state.selectedProfiles, state.isRuled, elements, loftElements, forceSceneUpdate]);
+
+  const setIsRuled = useCallback((isRuled: boolean) => {
+    setState(prev => ({ ...prev, isRuled }));
+  }, []);
 
   const canLoft = state.selectedProfiles.length >= 2;
 
@@ -242,10 +249,11 @@ export function useLoftMode() {
           });
         }
       }
-      setState({
+      setState(prev => ({
+        ...prev,
         selectedProfiles: [],
         isApplying: false,
-      });
+      }));
     } else if (event.key === "Enter" && canLoft) {
       performLoft();
     }
@@ -266,15 +274,18 @@ export function useLoftMode() {
         });
       }
     }
-    setState({
+    setState(prev => ({
+      ...prev,
       selectedProfiles: [],
       isApplying: false,
-    });
+    }));
   }, [resetHover, state.selectedProfiles, getObject]);
 
   return {
     selectedProfiles: state.selectedProfiles,
     isApplying: state.isApplying,
+    isRuled: state.isRuled,
+    setIsRuled,
     handleMouseDown,
     handleMouseMove,
     handleKeyDown,

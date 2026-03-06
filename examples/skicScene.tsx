@@ -463,7 +463,7 @@ const SkicScene: React.FC = () => {
 
   // --- Union Mode ---
   useEffect(() => {
-    if (mode !== "union") return;
+    if (mode !== "combine") return;
     const renderer = rendererRef.current;
     const camera = cameraRef.current;
     if (!renderer || !camera) return;
@@ -568,7 +568,7 @@ const SkicScene: React.FC = () => {
 
   return (
     <div style={{ position: "relative" }} ref={mountRef}>
-      {mode === "union" && selectedElements.length >= 2 && (
+      {mode === "combine" && selectedElements.length >= 2 && (
         <button
           onClick={() => {
             unionSelectedElements();

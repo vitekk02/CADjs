@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Brep, BrepGraph, CompoundBrep } from "../geometry";
-import { SceneElement } from "./types";
+import { SceneElement, BooleanOperationOptions } from "./types";
 import { createMeshFromGeometry } from "./mesh-operations";
 import { OpenCascadeService } from "../services/OpenCascadeService";
 
@@ -10,23 +10,29 @@ export async function unionSelectedElements(
   idCounter: number,
   brepGraph: BrepGraph,
   objectsMap: Map<string, THREE.Object3D>,
+  options?: BooleanOperationOptions,
 ): Promise<{
   updatedElements: SceneElement[];
   updatedSelectedElements: string[];
   nextIdCounter: number;
 } | null> {
-  if (selectedElements.length < 2) {
+  // When options provided, build selectedElements from target+tools
+  const effectiveSelected = options
+    ? [options.targetId, ...options.toolIds]
+    : selectedElements;
+
+  if (effectiveSelected.length < 2) {
     return {
       updatedElements: elements,
-      updatedSelectedElements: selectedElements,
+      updatedSelectedElements: effectiveSelected,
       nextIdCounter: idCounter,
     };
   }
 
-  const selectedElementsData = elements.filter((el) =>
-    selectedElements.includes(el.nodeId),
-  );
-  const selectedNodeIds = [...selectedElements];
+  const selectedElementsData = effectiveSelected
+    .map((nodeId) => elements.find((el) => el.nodeId === nodeId))
+    .filter((el): el is SceneElement => el !== undefined);
+  const selectedNodeIds = [...effectiveSelected];
 
   const brepsToUnion: { brep: Brep; position: THREE.Vector3 }[] = [];
 
@@ -171,7 +177,7 @@ export async function unionSelectedElements(
     });
 
     const updatedElements = [
-      ...elements.filter((el) => !selectedElements.includes(el.nodeId)),
+      ...elements.filter((el) => !effectiveSelected.includes(el.nodeId)),
       newElement,
     ];
 

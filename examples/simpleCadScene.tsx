@@ -8,9 +8,7 @@ import { useCadCore } from "../src/contexts/CoreContext";
 import { SceneMode } from "../src/scene-operations";
 import { ShapeType, useCadVisualizer } from "../src/contexts/VisualizerContext";
 import useMoveMode from "../src/hooks/useMoveMode";
-import { useUnionMode } from "../src/hooks/useUnionMode";
-import { useDifferenceMode } from "../src/hooks/useDifferenceMode";
-import { useIntersectionMode } from "../src/hooks/useIntersectionMode";
+import { useCombineMode } from "../src/hooks/useCombineMode";
 import { useSketchMode } from "../src/hooks/useSketchMode";
 import { useExtrudeMode } from "../src/hooks/useExtrudeMode";
 import { useFilletMode } from "../src/hooks/useFilletMode";
@@ -48,7 +46,6 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     removeElement,
     selectedElements,
     setMode,
-    unionSelectedElements,
     updateElementPosition,
     activeSketch,
     finishSketch,
@@ -105,8 +102,6 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   } = useCadVisualizer();
   const { showToast } = useToast();
 
-  const [booleanMenuOpen, setBooleanMenuOpen] = useState(false);
-  const booleanMenuRef = useRef<HTMLDivElement>(null);
   const [undoDropdownOpen, setUndoDropdownOpen] = useState(false);
   const [redoDropdownOpen, setRedoDropdownOpen] = useState(false);
   const [planeOffset, setPlaneOffset] = useState(0);
@@ -117,15 +112,19 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     { selectedObject },
     { handleMouseDown, handleMouseMove, handleMouseUp, clearSelection },
   ] = useMoveMode();
-  const { handleUnionModeClick, performUnion, canUnion } = useUnionMode();
   const {
-    handleDifferenceModeClick,
-    performDifference,
-    canDifference,
-    selectedCount,
-  } = useDifferenceMode();
-  const { handleIntersectionModeClick, performIntersection, canIntersect } =
-    useIntersectionMode();
+    handleCombineMouseDown,
+    handleCombineMouseMove,
+    performCombine,
+    canCombine,
+    operationType: combineOpType,
+    setOperationType: setCombineOpType,
+    targetBody: combineTarget,
+    toolBodies: combineTools,
+    keepTools: combineKeepTools,
+    setKeepTools: setCombineKeepTools,
+    resetSelection: resetCombineSelection,
+  } = useCombineMode();
   const {
     sketchSubMode,
     setSketchSubMode,
@@ -213,6 +212,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   const {
     selectedProfiles: loftSelectedProfiles,
     isApplying: loftIsApplying,
+    isRuled: loftIsRuled,
+    setIsRuled: setLoftIsRuled,
     handleMouseDown: handleLoftMouseDown,
     handleMouseMove: handleLoftMouseMove,
     handleKeyDown: handleLoftKeyDown,
@@ -225,9 +226,14 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     phase: revolvePhase,
     isApplying: revolveIsApplying,
     angle: revolveAngle,
+    angle2: revolveAngle2,
+    direction: revolveDirection,
     showDimensionInput: revolveShowDimInput,
     dimensionInputPosition: revolveDimPos,
     setAngle: setRevolveAngle,
+    setAngle2: setRevolveAngle2,
+    setDirection: setRevolveDirection,
+    flipAxis: flipRevolveAxis,
     handleMouseDown: handleRevolveMouseDown,
     handleMouseMove: handleRevolveMouseMove,
     handleKeyDown: handleRevolveKeyDown,
@@ -894,25 +900,6 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     setDimensionSource(null);
   };
 
-  // Close boolean menu on click outside
-  useEffect(() => {
-    if (!booleanMenuOpen) return;
-
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        booleanMenuRef.current &&
-        !booleanMenuRef.current.contains(event.target as Node)
-      ) {
-        setBooleanMenuOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, [booleanMenuOpen]);
-
   // Close undo/redo dropdowns on click outside
   useEffect(() => {
     if (!undoDropdownOpen && !redoDropdownOpen) return;
@@ -957,18 +944,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.addEventListener("mousedown", handleMoveMode);
       renderer.domElement.addEventListener("mousemove", handleMoveMode);
       renderer.domElement.addEventListener("mouseup", handleMoveMode);
-    } else if (mode === "union") {
-      renderer.domElement.addEventListener("mousedown", handleUnionModeClick);
-    } else if (mode === "difference") {
-      renderer.domElement.addEventListener(
-        "mousedown",
-        handleDifferenceModeClick,
-      );
-    } else if (mode === "intersection") {
-      renderer.domElement.addEventListener(
-        "mousedown",
-        handleIntersectionModeClick,
-      );
+    } else if (mode === "combine") {
+      renderer.domElement.addEventListener("mousedown", handleCombineMouseDown);
+      renderer.domElement.addEventListener("mousemove", handleCombineMouseMove);
     } else if (mode === "sketch") {
       renderer.domElement.addEventListener("mousedown", handleSketchMode);
       renderer.domElement.addEventListener("mousemove", handleSketchMode);
@@ -999,18 +977,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       renderer.domElement.removeEventListener("mousedown", handleMoveMode);
       renderer.domElement.removeEventListener("mousemove", handleMoveMode);
       renderer.domElement.removeEventListener("mouseup", handleMoveMode);
-      renderer.domElement.removeEventListener(
-        "mousedown",
-        handleUnionModeClick,
-      );
-      renderer.domElement.removeEventListener(
-        "mousedown",
-        handleDifferenceModeClick,
-      );
-      renderer.domElement.removeEventListener(
-        "mousedown",
-        handleIntersectionModeClick,
-      );
+      renderer.domElement.removeEventListener("mousedown", handleCombineMouseDown);
+      renderer.domElement.removeEventListener("mousemove", handleCombineMouseMove);
       renderer.domElement.removeEventListener("mousedown", handleSketchMode);
       renderer.domElement.removeEventListener("mousemove", handleSketchMode);
       renderer.domElement.removeEventListener("mouseup", handleSketchMode);
@@ -1050,9 +1018,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleMouseDown,
     handleMouseMove,
     handleMouseUp,
-    handleUnionModeClick,
-    handleDifferenceModeClick,
-    handleIntersectionModeClick,
+    handleCombineMouseDown,
+    handleCombineMouseMove,
     clearSelection,
     handleSketchMode,
     handleExtrudeMouseDown,
@@ -1261,12 +1228,8 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         return filletOpType === "fillet" ? "Fillet" : "Chamfer";
       case "move":
         return "Move";
-      case "union":
-        return "Union";
-      case "difference":
-        return "Difference";
-      case "intersection":
-        return "Intersection";
+      case "combine":
+        return combineOpType === "join" ? "Join" : combineOpType === "cut" ? "Cut" : "Intersect";
       case "sweep":
         return "Sweep";
       case "loft":
@@ -1281,8 +1244,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   };
 
   // Check if we're in a boolean mode
-  const isBooleanMode =
-    mode === "union" || mode === "difference" || mode === "intersection";
+  const isBooleanMode = mode === "combine";
 
   // Lock UI during active sketch or async operations
   const inActiveSketch = mode === "sketch" && !!activeSketch;
@@ -1382,74 +1344,20 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             {/* Separator */}
             <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
 
-            {/* Boolean dropdown */}
-            <div className="relative flex-none" ref={booleanMenuRef}>
-              <button
-                className={`px-3 py-1.5 text-sm rounded flex items-center gap-1 ${
-                  isLocked
-                    ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-                    : isBooleanMode
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-700 hover:bg-gray-600 text-gray-200"
-                }`}
-                disabled={isLocked}
-                onClick={() =>
-                  !isLocked && setBooleanMenuOpen(!booleanMenuOpen)
-                }
-              >
-                Boolean
-                <svg
-                  className="w-3 h-3"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M19 9l-7 7-7-7"
-                  />
-                </svg>
-              </button>
-              {booleanMenuOpen && (
-                <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-600 rounded-md shadow-lg py-1 z-30 min-w-[160px]">
-                  <button
-                    className={`w-full px-4 py-2 text-sm text-left hover:bg-gray-700 text-gray-200 ${
-                      mode === "union" ? "bg-gray-700" : ""
-                    }`}
-                    onClick={() => {
-                      setMode("union");
-                      setBooleanMenuOpen(false);
-                    }}
-                  >
-                    Union
-                  </button>
-                  <button
-                    className={`w-full px-4 py-2 text-sm text-left hover:bg-gray-700 text-gray-200 ${
-                      mode === "difference" ? "bg-gray-700" : ""
-                    }`}
-                    onClick={() => {
-                      setMode("difference");
-                      setBooleanMenuOpen(false);
-                    }}
-                  >
-                    Difference
-                  </button>
-                  <button
-                    className={`w-full px-4 py-2 text-sm text-left hover:bg-gray-700 text-gray-200 ${
-                      mode === "intersection" ? "bg-gray-700" : ""
-                    }`}
-                    onClick={() => {
-                      setMode("intersection");
-                      setBooleanMenuOpen(false);
-                    }}
-                  >
-                    Intersection
-                  </button>
-                </div>
-              )}
-            </div>
+            {/* Combine (Boolean) button */}
+            <button
+              className={`flex-none px-3 py-1.5 text-sm rounded ${
+                isLocked
+                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                  : isBooleanMode
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+              }`}
+              disabled={isLocked}
+              onClick={() => setMode("combine")}
+            >
+              Combine
+            </button>
 
             {/* Fillet / Chamfer button */}
             <button
@@ -1805,50 +1713,70 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                 />
               )}
 
-              {/* Boolean mode controls */}
-              {mode === "union" && (
+              {/* Combine (Boolean) mode controls */}
+              {mode === "combine" && (
                 <div className="flex items-center gap-3">
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      combineOpType === "join"
+                        ? "bg-green-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setCombineOpType("join")}
+                  >
+                    Join
+                  </button>
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      combineOpType === "cut"
+                        ? "bg-orange-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setCombineOpType("cut")}
+                  >
+                    Cut
+                  </button>
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      combineOpType === "intersect"
+                        ? "bg-purple-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setCombineOpType("intersect")}
+                  >
+                    Intersect
+                  </button>
+                  <div className="w-px h-4 bg-gray-600" />
                   <span className="text-sm text-gray-400">
-                    Select 2+ shapes to union
+                    {!combineTarget
+                      ? "Select target body"
+                      : combineTools.length === 0
+                        ? "Select tool body(ies)"
+                        : `Target: 1, Tools: ${combineTools.length}`}
                   </span>
-                  {canUnion && (
-                    <button
-                      className="flex-none px-3 py-1 text-sm bg-green-600 hover:bg-green-500 text-white rounded"
-                      onClick={performUnion}
-                    >
-                      Union ({selectedElements.length})
-                    </button>
+                  {combineOpType !== "join" && (
+                    <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={combineKeepTools}
+                        onChange={(e) => setCombineKeepTools(e.target.checked)}
+                        className="w-3 h-3"
+                      />
+                      Keep Tools
+                    </label>
                   )}
-                </div>
-              )}
-
-              {mode === "difference" && (
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-gray-400">
-                    Select base, then tool(s)
-                  </span>
-                  {canDifference && (
+                  {canCombine && (
                     <button
-                      className="flex-none px-3 py-1 text-sm bg-orange-600 hover:bg-orange-500 text-white rounded"
-                      onClick={performDifference}
+                      className={`flex-none px-3 py-1 text-sm text-white rounded ${
+                        combineOpType === "join"
+                          ? "bg-green-600 hover:bg-green-500"
+                          : combineOpType === "cut"
+                            ? "bg-orange-600 hover:bg-orange-500"
+                            : "bg-purple-600 hover:bg-purple-500"
+                      }`}
+                      onClick={performCombine}
                     >
-                      Subtract ({selectedCount - 1})
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {mode === "intersection" && (
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-gray-400">
-                    Select 2+ shapes
-                  </span>
-                  {canIntersect && (
-                    <button
-                      className="flex-none px-3 py-1 text-sm bg-purple-600 hover:bg-purple-500 text-white rounded"
-                      onClick={performIntersection}
-                    >
-                      Intersect ({selectedElements.length})
+                      {combineOpType === "join" ? "Join" : combineOpType === "cut" ? "Cut" : "Intersect"} ({combineTools.length})
                     </button>
                   )}
                 </div>
@@ -2003,6 +1931,27 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               {/* Loft mode controls */}
               {mode === "loft" && (
                 <div className="flex items-center gap-3">
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      !loftIsRuled
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setLoftIsRuled(false)}
+                  >
+                    Smooth
+                  </button>
+                  <button
+                    className={`px-2 py-1 text-xs rounded ${
+                      loftIsRuled
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    }`}
+                    onClick={() => setLoftIsRuled(true)}
+                  >
+                    Ruled
+                  </button>
+                  <div className="w-px h-4 bg-gray-600" />
                   <span className="text-sm text-gray-400">
                     {loftIsApplying
                       ? "Applying loft..."
@@ -2061,6 +2010,45 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                   )}
                   {revolvePhase === "SET_ANGLE" && (
                     <>
+                      <button
+                        className={`px-2 py-1 text-xs rounded ${
+                          revolveDirection === "one"
+                            ? "bg-blue-600 text-white"
+                            : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                        }`}
+                        onClick={() => setRevolveDirection("one")}
+                      >
+                        One Side
+                      </button>
+                      <button
+                        className={`px-2 py-1 text-xs rounded ${
+                          revolveDirection === "two"
+                            ? "bg-blue-600 text-white"
+                            : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                        }`}
+                        onClick={() => setRevolveDirection("two")}
+                      >
+                        Two Sides
+                      </button>
+                      <button
+                        className={`px-2 py-1 text-xs rounded ${
+                          revolveDirection === "symmetric"
+                            ? "bg-blue-600 text-white"
+                            : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                        }`}
+                        onClick={() => setRevolveDirection("symmetric")}
+                      >
+                        Symmetric
+                      </button>
+                      <div className="w-px h-4 bg-gray-600" />
+                      <button
+                        className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded"
+                        onClick={flipRevolveAxis}
+                        title="Flip axis direction"
+                      >
+                        Flip
+                      </button>
+                      <div className="w-px h-4 bg-gray-600" />
                       <input
                         type="number"
                         className="w-20 px-2 py-1 text-sm bg-gray-700 text-white rounded border border-gray-600"
@@ -2070,6 +2058,19 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                         max={360}
                       />
                       <span className="text-xs text-gray-500">deg</span>
+                      {revolveDirection === "two" && (
+                        <>
+                          <input
+                            type="number"
+                            className="w-20 px-2 py-1 text-sm bg-gray-700 text-white rounded border border-gray-600"
+                            value={revolveAngle2}
+                            onChange={(e) => setRevolveAngle2(parseFloat(e.target.value) || 360)}
+                            min={1}
+                            max={360}
+                          />
+                          <span className="text-xs text-gray-500">deg</span>
+                        </>
+                      )}
                       <button
                         className="flex-none px-3 py-1 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded"
                         onClick={() => performRevolve(revolveAngle)}

@@ -7,7 +7,7 @@ import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
 import { useToast } from "../contexts/ToastContext";
 import { Brep } from "../geometry";
-import { revolveBRep } from "../scene-operations/revolve-operations";
+import { revolveBRep, type RevolveDirection } from "../scene-operations/revolve-operations";
 import { collectPickableMeshes } from "../scene-operations/mesh-operations";
 import { REVOLVE, BODY, SELECTION, FILLET } from "../theme";
 import { isSketchLine, isSketchPoint } from "../types/sketch-types";
@@ -21,6 +21,8 @@ interface RevolveState {
   axisEdgeStart: THREE.Vector3 | null;
   axisEdgeEnd: THREE.Vector3 | null;
   angle: number;
+  angle2: number;
+  direction: RevolveDirection;
   isApplying: boolean;
   showDimensionInput: boolean;
   dimensionInputPosition: { x: number; y: number };
@@ -52,6 +54,8 @@ export function useRevolveMode() {
     axisEdgeStart: null,
     axisEdgeEnd: null,
     angle: 360,
+    angle2: 360,
+    direction: "one",
     isApplying: false,
     showDimensionInput: false,
     dimensionInputPosition: { x: 0, y: 0 },
@@ -356,6 +360,25 @@ export function useRevolveMode() {
   }, [scene, forceSceneUpdate, removeAxisLine]);
 
   /**
+   * Flip the axis direction by swapping start and end points
+   */
+  const flipAxis = useCallback(() => {
+    if (state.phase !== "SET_ANGLE" || !state.axisEdgeStart || !state.axisEdgeEnd) return;
+
+    const newStart = state.axisEdgeEnd.clone();
+    const newEnd = state.axisEdgeStart.clone();
+
+    // Update axis visualization
+    showAxisLine(newStart, newEnd);
+
+    setState(prev => ({
+      ...prev,
+      axisEdgeStart: newStart,
+      axisEdgeEnd: newEnd,
+    }));
+  }, [state.phase, state.axisEdgeStart, state.axisEdgeEnd, showAxisLine]);
+
+  /**
    * Select a world origin axis (X, Y, or Z) as the revolve axis
    */
   const selectOriginAxis = useCallback((axis: "X" | "Y" | "Z") => {
@@ -396,6 +419,7 @@ export function useRevolveMode() {
     try {
       const finalAngle = angleDegrees ?? state.angle;
       const angleRadians = (finalAngle / 180) * Math.PI;
+      const angle2Radians = (state.angle2 / 180) * Math.PI;
 
       // Compute axis direction from edge endpoints
       const axisDir = {
@@ -426,10 +450,12 @@ export function useRevolveMode() {
         axisDir,
         Math.abs(finalAngle - 360) < 0.01 ? undefined : angleRadians,
         element.occBrep,
+        state.direction,
+        state.direction === "two" ? (Math.abs(state.angle2 - 360) < 0.01 ? undefined : angle2Radians) : undefined,
       );
 
       if (result.brep === element.brep) {
-        showToast("Revolve failed", "error");
+        showToast(result.errorReason || "Revolve failed", "error");
         setState(prev => ({ ...prev, isApplying: false }));
         return;
       }
@@ -456,7 +482,13 @@ export function useRevolveMode() {
         result.vertexPositions,
       );
 
-      showToast(`Revolved ${finalAngle}°`, "success");
+      const toastMsg =
+        state.direction === "symmetric"
+          ? `Revolved ${finalAngle / 2}° + ${finalAngle / 2}° symmetric`
+          : state.direction === "two"
+            ? `Revolved ${finalAngle}° + ${state.angle2}° two sides`
+            : `Revolved ${finalAngle}°`;
+      showToast(toastMsg, "success");
 
       // Reset state
       setState({
@@ -465,13 +497,16 @@ export function useRevolveMode() {
         axisEdgeStart: null,
         axisEdgeEnd: null,
         angle: 360,
+        angle2: 360,
+        direction: "one",
         isApplying: false,
         showDimensionInput: false,
         dimensionInputPosition: { x: 0, y: 0 },
       });
     } catch (error) {
       console.error("[useRevolveMode] Revolve failed:", error);
-      showToast("Revolve failed", "error");
+      const msg = error instanceof Error ? error.message : "Revolve failed";
+      showToast(msg, "error");
       setState(prev => ({ ...prev, isApplying: false }));
     }
   }, [state, elements, updateElementBrep, showToast, removeEdgeOverlay, removeAxisLine]);
@@ -794,6 +829,8 @@ export function useRevolveMode() {
       axisEdgeStart: null,
       axisEdgeEnd: null,
       angle: 360,
+      angle2: 360,
+      direction: "one",
       isApplying: false,
       showDimensionInput: false,
       dimensionInputPosition: { x: 0, y: 0 },
@@ -806,9 +843,14 @@ export function useRevolveMode() {
     selectedElement: state.selectedElement,
     isApplying: state.isApplying,
     angle: state.angle,
+    angle2: state.angle2,
+    direction: state.direction,
     showDimensionInput: state.showDimensionInput,
     dimensionInputPosition: state.dimensionInputPosition,
     setAngle: (angle: number) => setState(prev => ({ ...prev, angle })),
+    setAngle2: (angle2: number) => setState(prev => ({ ...prev, angle2 })),
+    setDirection: (direction: RevolveDirection) => setState(prev => ({ ...prev, direction })),
+    flipAxis,
     handleMouseDown,
     handleMouseMove,
     handleKeyDown,

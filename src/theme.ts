@@ -139,6 +139,14 @@ export const REVOLVE = {
   bodyEdgeAxis: 0xaaff44,      // Green tint for other body edges
 } as const;
 
+// ── Combine Mode (Boolean) ───────────────────────────────────────
+export const COMBINE = {
+  targetHighlight: 0x00b8d4,  // Teal — target body
+  toolHighlight: 0xff8800,    // Orange — tool bodies
+  targetHover: 0x4dd0e1,      // Lighter teal — hover when picking target
+  toolHover: 0xffaa44,        // Lighter orange — hover when picking tools
+} as const;
+
 // ── Measure Mode ──────────────────────────────────────────────────
 export const MEASURE = {
   line: 0x00cc44,           // Green measurement lines

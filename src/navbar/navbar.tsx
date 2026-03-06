@@ -40,14 +40,14 @@ const Navbar: FC = () => {
                 </button>
                 <button
                   onClick={() => {
-                    setMode("union");
+                    setMode("combine");
                     setActiveMenu(null);
                   }}
                   className={`px-4 py-2 rounded hover:bg-gray-700 focus:outline-none transition ${
-                    mode === "union" ? "bg-gray-700" : ""
+                    mode === "combine" ? "bg-gray-700" : ""
                   }`}
                 >
-                  Union
+                  Combine
                 </button>
               </div>
             </div>
