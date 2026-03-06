@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import {
   createMeshFromBrep,
   createMeshFromGeometry,
@@ -139,8 +140,8 @@ describe("mesh-operations", () => {
         BODY.default
       );
 
-      const edgeLines = group.children[1] as THREE.LineSegments;
-      expect(edgeLines).toBeInstanceOf(THREE.LineSegments);
+      const edgeLines = group.children[1];
+      expect(edgeLines).toBeInstanceOf(LineSegments2);
       expect(edgeLines.userData.isEdgeOverlay).toBe(true);
     });
 
@@ -155,9 +156,8 @@ describe("mesh-operations", () => {
       const group = createMeshFromGeometry(geometry, edgeGeometry);
 
       expect(group.children).toHaveLength(2);
-      const edgeLines = group.children[1] as THREE.LineSegments;
-      expect(edgeLines).toBeInstanceOf(THREE.LineSegments);
-      expect(edgeLines.geometry).toBe(edgeGeometry);
+      const edgeLines = group.children[1];
+      expect(edgeLines).toBeInstanceOf(LineSegments2);
       expect(edgeLines.userData.isEdgeOverlay).toBe(true);
     });
 

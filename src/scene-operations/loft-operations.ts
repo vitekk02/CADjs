@@ -6,7 +6,9 @@ export interface LoftResult {
   brep: Brep;
   position: THREE.Vector3;
   edgeGeometry?: THREE.BufferGeometry;
+  vertexPositions?: Float32Array;
   occBrep?: string;
+  faceGeometry?: THREE.BufferGeometry;
 }
 
 /**
@@ -78,11 +80,21 @@ export async function loftBReps(
     // Convert to centered BRep
     const centeredBrep = await ocService.ocShapeToBRep(loftedShape, true);
 
-    // Extract edge geometry
+    // Extract edge geometry, face geometry, and vertex positions
     let edgeGeometry: THREE.BufferGeometry | undefined;
+    let faceGeometry: THREE.BufferGeometry | undefined;
+    let vertexPositions: Float32Array | undefined;
     try {
-      edgeGeometry = await ocService.shapeToEdgeLineSegments(loftedShape, 0.05);
+      edgeGeometry = await ocService.shapeToEdgeLineSegments(loftedShape, 0.003);
       edgeGeometry.translate(-centerPos.x, -centerPos.y, -centerPos.z);
+      faceGeometry = await ocService.shapeToThreeGeometry(loftedShape, 0.003, 0.1);
+      faceGeometry.translate(-centerPos.x, -centerPos.y, -centerPos.z);
+      vertexPositions = await ocService.shapeToVertexPositions(loftedShape);
+      for (let i = 0; i < vertexPositions.length; i += 3) {
+        vertexPositions[i] -= centerPos.x;
+        vertexPositions[i + 1] -= centerPos.y;
+        vertexPositions[i + 2] -= centerPos.z;
+      }
     } catch {
       // Edge geometry is optional
     }
@@ -103,7 +115,7 @@ export async function loftBReps(
       // Serialization is best-effort
     }
 
-    return { brep: centeredBrep, position: centerPos, edgeGeometry, occBrep };
+    return { brep: centeredBrep, position: centerPos, edgeGeometry, vertexPositions, occBrep, faceGeometry };
   } catch (error) {
     console.error("[loftBReps] Loft operation failed:", error);
     return null;

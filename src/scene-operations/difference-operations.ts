@@ -83,16 +83,16 @@ export async function differenceSelectedElements(
     const ocService = OpenCascadeService.getInstance();
     const oc = await ocService.getOC();
 
-    let resultShape = await ocService.brepToOCShape(
-      baseBrepData.brep,
-      baseBrepData.position,
-    );
+    // Use lossless occBrep path when available
+    let resultShape = baseElement.occBrep
+      ? await ocService.occBrepToOCShape(baseElement.occBrep, baseElement.position)
+      : await ocService.brepToOCShape(baseBrepData.brep, baseBrepData.position);
 
-    for (let i = 0; i < toolBreps.length; i++) {
-      const toolShape = await ocService.brepToOCShape(
-        toolBreps[i].brep,
-        toolBreps[i].position,
-      );
+    for (let i = 0; i < toolElements.length; i++) {
+      const toolEl = toolElements[i];
+      const toolShape = toolEl.occBrep
+        ? await ocService.occBrepToOCShape(toolEl.occBrep, toolEl.position)
+        : await ocService.brepToOCShape(toolBreps[i].brep, toolBreps[i].position);
 
       const result = await ocService.booleanDifference(resultShape, toolShape);
       resultShape = result.shape;
@@ -157,11 +157,26 @@ export async function differenceSelectedElements(
     });
 
     // Build mesh directly from OCC shape for smooth tessellation (indexed geometry + true edges)
-    const resultGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.05, 0.3);
-    const resultEdgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.05);
+    const resultGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.003, 0.1);
+    const resultEdgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.003);
+    const resultVertexPositions = await ocService.shapeToVertexPositions(resultShape);
     // Center geometry to match BRep centering pattern
     resultGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
     resultEdgeGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
+    for (let i = 0; i < resultVertexPositions.length; i += 3) {
+      resultVertexPositions[i] -= worldCenter.x;
+      resultVertexPositions[i + 1] -= worldCenter.y;
+      resultVertexPositions[i + 2] -= worldCenter.z;
+    }
+
+    // Serialize for lossless round-tripping
+    let serializedOccBrep: string | undefined;
+    try {
+      const trsf = new oc.gp_Trsf_1();
+      trsf.SetTranslation_1(new oc.gp_Vec_4(-worldCenter.x, -worldCenter.y, -worldCenter.z));
+      const localShape = new oc.BRepBuilderAPI_Transform_2(resultShape, trsf, true).Shape();
+      serializedOccBrep = await ocService.serializeShape(localShape);
+    } catch { /* best-effort */ }
 
     const resultObj = createMeshFromGeometry(resultGeometry, resultEdgeGeometry);
     resultObj.position.set(0, 0, 0);
@@ -177,6 +192,9 @@ export async function differenceSelectedElements(
       nodeId,
       position: worldCenter,
       selected: false,
+      edgeGeometry: resultEdgeGeometry,
+      vertexPositions: resultVertexPositions,
+      occBrep: serializedOccBrep,
     };
 
     objectsMap.set(nodeId, resultGroup);

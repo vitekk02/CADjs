@@ -7,7 +7,9 @@ export interface RevolveResult {
   brep: Brep;
   positionOffset: { x: number; y: number; z: number };
   edgeGeometry?: THREE.BufferGeometry;
+  vertexPositions?: Float32Array;
   occBrep?: string;
+  faceGeometry?: THREE.BufferGeometry;
 }
 
 /**
@@ -114,11 +116,21 @@ export async function revolveBRep(
       z: localCenter.z - profilePosition.z,
     };
 
-    // Extract edge geometry, translated to centered local space
+    // Extract edge geometry, face geometry, and vertex positions, translated to centered local space
     let edgeGeometry: THREE.BufferGeometry | undefined;
+    let faceGeometry: THREE.BufferGeometry | undefined;
+    let vertexPositions: Float32Array | undefined;
     try {
-      edgeGeometry = await ocService.shapeToEdgeLineSegments(revolvedShape, 0.05);
+      edgeGeometry = await ocService.shapeToEdgeLineSegments(revolvedShape, 0.003);
       edgeGeometry.translate(-localCenter.x, -localCenter.y, -localCenter.z);
+      faceGeometry = await ocService.shapeToThreeGeometry(revolvedShape, 0.003, 0.1);
+      faceGeometry.translate(-localCenter.x, -localCenter.y, -localCenter.z);
+      vertexPositions = await ocService.shapeToVertexPositions(revolvedShape);
+      for (let i = 0; i < vertexPositions.length; i += 3) {
+        vertexPositions[i] -= localCenter.x;
+        vertexPositions[i + 1] -= localCenter.y;
+        vertexPositions[i + 2] -= localCenter.z;
+      }
     } catch {
       // Edge geometry is optional
     }
@@ -139,7 +151,7 @@ export async function revolveBRep(
       // Serialization is best-effort
     }
 
-    return { brep: centeredBrep, positionOffset, edgeGeometry, occBrep };
+    return { brep: centeredBrep, positionOffset, edgeGeometry, vertexPositions, occBrep, faceGeometry };
   } catch (error) {
     console.error("[revolveBRep] Revolve operation failed:", error);
     return { brep: profileBrep, positionOffset: { x: 0, y: 0, z: 0 } };

@@ -26,11 +26,13 @@ export function handleSetMode(
             mat.transparent = false;
             mat.needsUpdate = true;
           }
-          if (child instanceof THREE.LineSegments && child.userData.isEdgeOverlay) {
-            const mat = child.material as THREE.LineBasicMaterial;
-            mat.opacity = 1.0;
-            mat.transparent = false;
-            mat.needsUpdate = true;
+          if (child.userData.isEdgeOverlay) {
+            const mat = (child as any).material;
+            if (mat) {
+              mat.opacity = 1.0;
+              mat.transparent = false;
+              mat.needsUpdate = true;
+            }
           }
         });
       }

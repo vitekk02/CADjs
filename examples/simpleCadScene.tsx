@@ -1,5 +1,9 @@
 import React, { useRef, useEffect, useState, useMemo } from "react";
 import * as THREE from "three";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { useCadCore } from "../src/contexts/CoreContext";
 import { SceneMode } from "../src/scene-operations";
 import { ShapeType, useCadVisualizer } from "../src/contexts/VisualizerContext";
@@ -78,8 +82,6 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     pinnedMeasurements,
   } = useCadCore();
   const {
-    createEdgeHelpers,
-    createVertexHelpers,
     drawShape,
     forceSceneUpdate,
     getMouseIntersection,
@@ -141,6 +143,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     contextMenu: sketchContextMenu,
     closeContextMenu: closeSketchContextMenu,
     applyConstraintToContextMenuPrimitives,
+    deleteConstraint: deleteSketchConstraint,
     // Plane selection
     isSelectingPlane,
     hoveredPlane,
@@ -165,6 +168,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleKeyDown: handleExtrudeKeyDown,
     handleDimensionSubmit: handleExtrudeDimensionSubmit,
     handleDimensionCancel: handleExtrudeDimensionCancel,
+    handleDimensionChange: handleExtrudeDimensionChange,
     operationType: extrudeOpType,
     toggleOperationType: toggleExtrudeOpType,
     cleanup: cleanupExtrude,
@@ -224,6 +228,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handleMouseMove: handleRevolveMouseMove,
     handleKeyDown: handleRevolveKeyDown,
     performRevolve,
+    selectOriginAxis,
     cleanup: cleanupRevolve,
   } = useRevolveMode();
 
@@ -320,60 +325,157 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         const obj = getObject(element.nodeId);
         if (!obj) return;
 
-        if (obj.userData.hasHelpers) return;
+        // Key tracks which data source was used to build helpers
+        const currentKey = element.edgeGeometry
+          ? `occ-${element.edgeGeometry.uuid}`
+          : "fallback";
+
+        // Skip if helpers already match current data source
+        if (obj.userData.helperDataKey === currentKey) return;
+
+        // Remove stale helpers when data source changed
+        if (obj.userData.helperDataKey) {
+          const toRemove: THREE.Object3D[] = [];
+          obj.traverse((child) => {
+            if (child.userData.isHelper) toRemove.push(child);
+          });
+          toRemove.forEach((child) => {
+            child.parent?.remove(child);
+          });
+        }
 
         if (element.edgeGeometry) {
-          // Clean OCC-based edge helper
-          const edgeMaterial = new THREE.LineBasicMaterial({
+          // Clean OCC-based edge helper using LineSegments2 for fat lines
+          const lineGeo = new LineSegmentsGeometry();
+          lineGeo.setPositions(element.edgeGeometry.attributes.position.array as Float32Array);
+          const edgeMaterial = new LineMaterial({
             color: HELPERS.edgeColor,
-            linewidth: 2,
+            linewidth: HELPERS.edgeWidth,
             depthTest: false,
+            resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
           });
-          const edgeHelper = new THREE.LineSegments(element.edgeGeometry.clone(), edgeMaterial);
+          const edgeHelper = new LineSegments2(lineGeo, edgeMaterial);
           edgeHelper.renderOrder = 999;
           edgeHelper.userData.isHelper = true;
           edgeHelper.userData.helperType = "edge";
           edgeHelper.visible = false;
           obj.add(edgeHelper);
 
-          // Clean vertex helper from edge endpoints
+          // Vertex helper from precomputed topological corner positions
           const vertexGroup = new THREE.Group();
           vertexGroup.userData.isHelper = true;
           vertexGroup.userData.helperType = "vertex";
-          const posAttr = element.edgeGeometry.getAttribute("position");
-          const seen = new Set<string>();
           const sphereGeo = new THREE.SphereGeometry(0.05, 16, 16);
           const sphereMat = new THREE.MeshBasicMaterial({ color: HELPERS.vertexColor, depthTest: false });
-          for (let i = 0; i < posAttr.count; i++) {
-            const x = posAttr.getX(i), y = posAttr.getY(i), z = posAttr.getZ(i);
-            const key = `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
-            if (!seen.has(key)) {
-              seen.add(key);
+          if (element.vertexPositions !== undefined) {
+            for (let i = 0; i < element.vertexPositions.length; i += 3) {
               const sphere = new THREE.Mesh(sphereGeo, sphereMat);
-              sphere.position.set(x, y, z);
+              sphere.position.set(
+                element.vertexPositions[i],
+                element.vertexPositions[i + 1],
+                element.vertexPositions[i + 2],
+              );
               sphere.renderOrder = 1000;
               vertexGroup.add(sphere);
             }
+          } else {
+            // No vertexPositions — show no vertex spheres.
+            // All code paths that set edgeGeometry should also set vertexPositions.
           }
           vertexGroup.visible = false;
           obj.add(vertexGroup);
         } else {
-          // Fallback: tessellated BRep helpers (for elements without OCC geometry)
-          const edgeHelper = createEdgeHelpers(element);
-          const vertexHelper = createVertexHelpers(element);
+          // Find the mesh geometry to create clean helpers via EdgesGeometry
+          let meshGeometry: THREE.BufferGeometry | null = null;
+          obj.traverse((child) => {
+            if ((child as THREE.Mesh).isMesh && !child.userData.isEdgeOverlay && !child.userData.isHelper) {
+              meshGeometry = (child as THREE.Mesh).geometry;
+            }
+          });
 
-          if (edgeHelper) {
+          if (meshGeometry) {
+            // Create filtered edges (removes coplanar tessellation edges, keeps boundaries)
+            const edges = new THREE.EdgesGeometry(meshGeometry, 15);
+            const posArray = edges.attributes.position.array as Float32Array;
+
+            // Edge helper using LineSegments2 for fat lines
+            const lineGeo = new LineSegmentsGeometry();
+            lineGeo.setPositions(posArray);
+            const edgeMaterial = new LineMaterial({
+              color: HELPERS.edgeColor,
+              linewidth: HELPERS.edgeWidth,
+              depthTest: false,
+              resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
+            });
+            const edgeHelper = new LineSegments2(lineGeo, edgeMaterial);
+            edgeHelper.renderOrder = 999;
+            edgeHelper.userData.isHelper = true;
+            edgeHelper.userData.helperType = "edge";
             edgeHelper.visible = false;
             obj.add(edgeHelper);
-          }
+            edges.dispose();
 
-          if (vertexHelper) {
-            vertexHelper.visible = false;
-            obj.add(vertexHelper);
+            // Vertex helper: only at "corner" vertices where edge direction changes significantly
+            const CORNER_ANGLE_THRESHOLD = 25; // degrees
+            const cosThreshold = Math.cos((180 - CORNER_ANGLE_THRESHOLD) * Math.PI / 180);
+
+            // Collect edge segments as pairs of points
+            const segments: { ax: number; ay: number; az: number; bx: number; by: number; bz: number }[] = [];
+            for (let i = 0; i < posArray.length; i += 6) {
+              segments.push({
+                ax: posArray[i], ay: posArray[i + 1], az: posArray[i + 2],
+                bx: posArray[i + 3], by: posArray[i + 4], bz: posArray[i + 5],
+              });
+            }
+
+            // For each unique vertex, collect normalized directions of edges emanating from it
+            const vertexDirs = new Map<string, { x: number; y: number; z: number; dirs: { dx: number; dy: number; dz: number }[] }>();
+            const toKey = (x: number, y: number, z: number) => `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
+
+            for (const seg of segments) {
+              let dx = seg.bx - seg.ax, dy = seg.by - seg.ay, dz = seg.bz - seg.az;
+              const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+              if (len < 1e-10) continue;
+              dx /= len; dy /= len; dz /= len;
+
+              const keyA = toKey(seg.ax, seg.ay, seg.az);
+              if (!vertexDirs.has(keyA)) vertexDirs.set(keyA, { x: seg.ax, y: seg.ay, z: seg.az, dirs: [] });
+              vertexDirs.get(keyA)!.dirs.push({ dx, dy, dz });
+
+              const keyB = toKey(seg.bx, seg.by, seg.bz);
+              if (!vertexDirs.has(keyB)) vertexDirs.set(keyB, { x: seg.bx, y: seg.by, z: seg.bz, dirs: [] });
+              vertexDirs.get(keyB)!.dirs.push({ dx: -dx, dy: -dy, dz: -dz });
+            }
+
+            // A vertex is a "corner" if any pair of its edge directions has dot < cosThreshold
+            const vertexGroup = new THREE.Group();
+            vertexGroup.userData.isHelper = true;
+            vertexGroup.userData.helperType = "vertex";
+            const sphereGeo = new THREE.SphereGeometry(0.05, 16, 16);
+            const sphereMat = new THREE.MeshBasicMaterial({ color: HELPERS.vertexColor, depthTest: false });
+
+            for (const [, info] of vertexDirs) {
+              let isCorner = false;
+              const dirs = info.dirs;
+              for (let i = 0; i < dirs.length && !isCorner; i++) {
+                for (let j = i + 1; j < dirs.length && !isCorner; j++) {
+                  const dot = dirs[i].dx * dirs[j].dx + dirs[i].dy * dirs[j].dy + dirs[i].dz * dirs[j].dz;
+                  if (dot > cosThreshold) isCorner = true;
+                }
+              }
+              if (isCorner) {
+                const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+                sphere.position.set(info.x, info.y, info.z);
+                sphere.renderOrder = 1000;
+                vertexGroup.add(sphere);
+              }
+            }
+            vertexGroup.visible = false;
+            obj.add(vertexGroup);
           }
         }
 
-        obj.userData.hasHelpers = true;
+        obj.userData.helperDataKey = currentKey;
       });
     };
 
@@ -381,6 +483,22 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       setupElementVisualizations();
     }
   }, [elements, scene]);
+
+  // Keep LineMaterial resolution in sync with window size for all fat lines in the scene
+  useEffect(() => {
+    if (!scene) return;
+    const handleResize = () => {
+      const res = new THREE.Vector2(window.innerWidth, window.innerHeight);
+      scene.traverse((child) => {
+        if ((child instanceof LineSegments2 || child instanceof Line2) &&
+            (child.material as LineMaterial).resolution) {
+          (child.material as LineMaterial).resolution.copy(res);
+        }
+      });
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [scene]);
 
   useEffect(() => {
     if (!renderer) return;
@@ -591,7 +709,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
           break;
         case "5":
         case "Numpad5":
-          toggleProjection();
+          if (mode !== "sketch") {
+            toggleProjection();
+          }
           event.preventDefault();
           break;
         case "f":
@@ -1758,7 +1878,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                     {extrudeSelectedElement
                       ? isExtruding
                         ? `Depth: ${extrusionDepth.toFixed(2)}${extrudeDirection ? ` (${extrudeDirection})` : ""}`
-                        : extrudeOpType === "cut" ? "Drag arrow to cut" : "Drag arrow to extrude"
+                        : showExtrudeDimensionInput
+                          ? `Depth: ${extrusionDepth.toFixed(2)} — Enter depth, confirm to apply | Esc to cancel`
+                          : extrudeOpType === "cut" ? "Drag arrow to cut" : "Drag arrow to extrude"
                       : "Select a flat shape"}
                   </span>
                   <span className="text-xs text-gray-500">
@@ -1865,9 +1987,32 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                       : revolvePhase === "SELECT_PROFILE"
                         ? "Select a flat profile"
                         : revolvePhase === "SELECT_AXIS"
-                          ? "Click an edge to define the axis"
+                          ? "Click an edge, sketch line, or pick an axis"
                           : "Enter angle and confirm"}
                   </span>
+                  {revolvePhase === "SELECT_AXIS" && (
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs text-gray-500">Axis:</span>
+                      <button
+                        className="flex-none px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded"
+                        onClick={() => selectOriginAxis("X")}
+                      >
+                        X
+                      </button>
+                      <button
+                        className="flex-none px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded"
+                        onClick={() => selectOriginAxis("Y")}
+                      >
+                        Y
+                      </button>
+                      <button
+                        className="flex-none px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded"
+                        onClick={() => selectOriginAxis("Z")}
+                      >
+                        Z
+                      </button>
+                    </div>
+                  )}
                   {revolvePhase === "SET_ANGLE" && (
                     <>
                       <input
@@ -2046,13 +2191,18 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
           {/* Projection toggle */}
           <button
             onClick={toggleProjection}
-            title={`Switch to ${projectionType === "perspective" ? "Orthographic" : "Perspective"} (5)`}
+            disabled={mode === "sketch"}
+            title={mode === "sketch"
+              ? "Orthographic enforced in sketch mode"
+              : `Switch to ${projectionType === "perspective" ? "Orthographic" : "Perspective"} (5)`}
             className="absolute top-[140px] right-[16px] z-10 px-2 py-1 rounded text-xs font-medium transition-colors"
             style={{
               width: 120,
               backgroundColor: "rgba(90, 90, 90, 0.85)",
               color: "#e0e0e0",
               border: "1px solid #444",
+              opacity: mode === "sketch" ? 0.4 : 1,
+              cursor: mode === "sketch" ? "not-allowed" : "pointer",
             }}
           >
             {projectionType === "perspective" ? "Perspective" : "Orthographic"}
@@ -2088,8 +2238,11 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               position={extrudeDimensionPosition}
               label="Extrusion Depth"
               initialValue={extrusionDepth > 0 ? extrusionDepth : 1}
+              externalValue={isExtruding ? extrusionDepth : undefined}
               onSubmit={handleExtrudeDimensionSubmit}
               onCancel={handleExtrudeDimensionCancel}
+              onChange={handleExtrudeDimensionChange}
+              showConfirmButton
             />
           )}
 
@@ -2115,8 +2268,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               y={sketchContextMenu.y}
               primitiveIds={sketchContextMenu.primitiveIds}
               primitiveTypes={sketchContextMenu.primitiveTypes}
+              constraintId={sketchContextMenu.constraintId}
               onClose={closeSketchContextMenu}
               onApplyConstraint={applyConstraintToContextMenuPrimitives}
+              onDeleteConstraint={deleteSketchConstraint}
             />
           )}
 

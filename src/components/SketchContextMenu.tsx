@@ -32,8 +32,10 @@ interface SketchContextMenuProps {
   y: number;
   primitiveIds: string[];
   primitiveTypes: string[];
+  constraintId?: string | null;
   onClose: () => void;
   onApplyConstraint: (type: ConstraintType, value?: number) => void;
+  onDeleteConstraint?: (id: string) => void;
 }
 
 const SketchContextMenu: FC<SketchContextMenuProps> = ({
@@ -42,8 +44,10 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
   y,
   primitiveIds,
   primitiveTypes,
+  constraintId,
   onClose,
   onApplyConstraint,
+  onDeleteConstraint,
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const [valueInputVisible, setValueInputVisible] = React.useState(false);
@@ -165,7 +169,22 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
       style={menuStyle}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {valueInputVisible ? (
+      {constraintId && onDeleteConstraint ? (
+        <>
+          <div className="px-3 py-1 text-xs text-gray-400 border-b border-gray-700">
+            Constraint
+          </div>
+          <button
+            onClick={() => {
+              onDeleteConstraint(constraintId);
+              onClose();
+            }}
+            className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-gray-700 flex items-center gap-2"
+          >
+            <span>Delete Constraint</span>
+          </button>
+        </>
+      ) : valueInputVisible ? (
         <div className="px-3 py-2">
           <div className="text-xs text-gray-400 mb-2">
             Enter {pendingConstraintType === "distance" ? "value" : pendingConstraintType}:

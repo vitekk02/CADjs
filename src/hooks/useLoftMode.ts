@@ -204,7 +204,7 @@ export function useLoftMode() {
       const result = await loftBReps(profiles);
 
       if (result && result.brep.faces.length > 0) {
-        loftElements(state.selectedProfiles, result.brep, result.position, result.edgeGeometry, result.occBrep);
+        loftElements(state.selectedProfiles, result.brep, result.position, result.edgeGeometry, result.occBrep, result.vertexPositions, result.faceGeometry);
         forceSceneUpdate();
       } else {
         console.error("[useLoftMode] Loft produced empty result");

@@ -252,6 +252,7 @@ export interface SketchConversionResult {
     area: number;
     isOuter: boolean;
     center: { x: number; y: number; z: number };  // World position of the profile center
+    occBrep?: string;  // Serialized analytic OCC face in LOCAL space (centered)
   }>;
   success: boolean;
 }

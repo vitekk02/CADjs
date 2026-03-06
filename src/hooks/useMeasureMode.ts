@@ -10,7 +10,7 @@ import { isDescendantOf } from "../scene-operations/mesh-operations";
 import { isElement3D, SceneElement } from "../scene-operations/types";
 import { computePointDistance, computeAngleBetweenVectors, findNearestVertex, disposeMeasureOverlay } from "../scene-operations/measure-operations";
 import { MeasureSubMode, Measurement } from "../scene-operations/measure-types";
-import { MEASURE, BODY, SELECTION } from "../theme";
+import { MEASURE, BODY, SELECTION, FILLET } from "../theme";
 
 interface EdgeSegmentData {
   edgeIndex: number;
@@ -182,9 +182,9 @@ export function useMeasureMode() {
     if (scene && edgeOverlayGroupRef.current) {
       scene.remove(edgeOverlayGroupRef.current);
       edgeOverlayGroupRef.current.traverse((child) => {
-        if (child instanceof THREE.LineSegments) {
+        if (child instanceof Line2) {
           child.geometry.dispose();
-          (child.material as THREE.Material).dispose();
+          (child.material as LineMaterial).dispose();
         }
       });
       edgeOverlayGroupRef.current = null;
@@ -336,26 +336,33 @@ export function useMeasureMode() {
         group.userData.isMeasureEdgeOverlay = true;
 
         for (const edge of edgeData) {
-          const geometry = new THREE.BufferGeometry();
-          geometry.setAttribute(
-            "position",
-            new THREE.BufferAttribute(edge.segments, 3),
-          );
+          // Convert pair-format to continuous strip for LineGeometry
+          const pairs = edge.segments;
+          const strip: number[] = [];
+          for (let i = 0; i < pairs.length; i += 6) {
+            if (strip.length === 0) strip.push(pairs[i], pairs[i + 1], pairs[i + 2]);
+            strip.push(pairs[i + 3], pairs[i + 4], pairs[i + 5]);
+          }
 
-          const material = new THREE.LineBasicMaterial({
+          const geometry = new LineGeometry();
+          geometry.setPositions(strip);
+
+          const material = new LineMaterial({
             color: MEASURE.edgeHighlight,
-            linewidth: 2,
+            linewidth: FILLET.edgeWidth,
             transparent: true,
             opacity: 0,
             depthTest: false,
+            resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
           });
 
-          const lineSegments = new THREE.LineSegments(geometry, material);
-          lineSegments.userData.edgeIndex = edge.edgeIndex;
-          lineSegments.userData.isMeasureEdge = true;
-          lineSegments.renderOrder = 999;
+          const line = new Line2(geometry, material);
+          line.computeLineDistances();
+          line.userData.edgeIndex = edge.edgeIndex;
+          line.userData.isMeasureEdge = true;
+          line.renderOrder = 999;
 
-          group.add(lineSegments);
+          group.add(line);
         }
 
         scene.add(group);
@@ -599,7 +606,7 @@ export function useMeasureMode() {
         measureOverlayObjects.push(...m.overlayObjects);
       }
       if (measureOverlayObjects.length > 0) {
-        raycaster.params.Line = { threshold: 0.1 };
+        (raycaster.params as any).Line2 = { threshold: 6 };
         const measureHits = raycaster.intersectObjects(measureOverlayObjects, true);
         if (measureHits.length > 0) {
           const hitMeasureId = measureHits[0].object.userData.measurementId as string | undefined;
@@ -608,8 +615,6 @@ export function useMeasureMode() {
             return;
           }
         }
-        // Reset line threshold
-        raycaster.params.Line = { threshold: 1 };
       }
 
       // Deselect measurement if clicking on non-measurement area
@@ -685,12 +690,12 @@ export function useMeasureMode() {
 
         const edgeObjects: THREE.Object3D[] = [];
         edgeOverlayGroupRef.current.traverse((child) => {
-          if (child instanceof THREE.LineSegments) {
+          if (child instanceof Line2) {
             edgeObjects.push(child);
           }
         });
 
-        raycaster.params.Line = { threshold: 0.15 };
+        (raycaster.params as any).Line2 = { threshold: 8 };
         const edgeIntersects = raycaster.intersectObjects(edgeObjects);
         if (edgeIntersects.length === 0) return;
 
@@ -768,12 +773,12 @@ export function useMeasureMode() {
 
         const edgeObjects: THREE.Object3D[] = [];
         edgeOverlayGroupRef.current.traverse((child) => {
-          if (child instanceof THREE.LineSegments) {
+          if (child instanceof Line2) {
             edgeObjects.push(child);
           }
         });
 
-        raycaster.params.Line = { threshold: 0.15 };
+        (raycaster.params as any).Line2 = { threshold: 8 };
         const edgeIntersects = raycaster.intersectObjects(edgeObjects);
         if (edgeIntersects.length === 0) return;
 
@@ -785,8 +790,8 @@ export function useMeasureMode() {
           // First edge selection
           // Highlight the selected edge
           edgeOverlayGroupRef.current.children.forEach((child) => {
-            if (child instanceof THREE.LineSegments && child.userData.isMeasureEdge) {
-              const mat = child.material as THREE.LineBasicMaterial;
+            if (child instanceof Line2 && child.userData.isMeasureEdge) {
+              const mat = child.material as LineMaterial;
               if (child.userData.edgeIndex === edgeIndex) {
                 mat.color.set(MEASURE.edgeHighlight);
                 mat.opacity = 1.0;
@@ -932,8 +937,8 @@ export function useMeasureMode() {
 
             // Reset edge highlight
             edgeOverlayGroupRef.current?.children.forEach((child) => {
-              if (child instanceof THREE.LineSegments && child.userData.isMeasureEdge) {
-                (child.material as THREE.LineBasicMaterial).opacity = 0;
+              if (child instanceof Line2 && child.userData.isMeasureEdge) {
+                (child.material as LineMaterial).opacity = 0;
               }
             });
 
@@ -1059,7 +1064,7 @@ export function useMeasureMode() {
                 }
               });
 
-              raycaster.params.Line = { threshold: 0.15 };
+              (raycaster.params as any).Line2 = { threshold: 8 };
               const edgeIntersects = raycaster.intersectObjects(edgeObjects);
 
               let newHovered: number | null = null;
@@ -1070,9 +1075,9 @@ export function useMeasureMode() {
               if (newHovered !== state.hoveredEdgeIndex) {
                 // Update edge highlighting
                 edgeOverlayGroupRef.current.children.forEach((child) => {
-                  if (child instanceof THREE.LineSegments && child.userData.isMeasureEdge) {
+                  if (child instanceof Line2 && child.userData.isMeasureEdge) {
                     const idx = child.userData.edgeIndex;
-                    const mat = child.material as THREE.LineBasicMaterial;
+                    const mat = child.material as LineMaterial;
 
                     // Keep first edge highlighted in angle mode
                     if (state.subMode === "angle" && state.firstEdge && idx === state.firstEdge.edgeIndex) {
@@ -1114,8 +1119,8 @@ export function useMeasureMode() {
           // Nothing hovered — reset
           if (edgeOverlayGroupRef.current) {
             edgeOverlayGroupRef.current.children.forEach((child) => {
-              if (child instanceof THREE.LineSegments && child.userData.isMeasureEdge) {
-                const mat = child.material as THREE.LineBasicMaterial;
+              if (child instanceof Line2 && child.userData.isMeasureEdge) {
+                const mat = child.material as LineMaterial;
                 // Keep first edge highlighted in angle mode
                 if (state.subMode === "angle" && state.firstEdge &&
                   child.userData.edgeIndex === state.firstEdge.edgeIndex) {
@@ -1317,8 +1322,8 @@ export function useMeasureMode() {
             // Cancel angle first edge
             if (edgeOverlayGroupRef.current) {
               edgeOverlayGroupRef.current.children.forEach((child) => {
-                if (child instanceof THREE.LineSegments && child.userData.isMeasureEdge) {
-                  (child.material as THREE.LineBasicMaterial).opacity = 0;
+                if (child instanceof Line2 && child.userData.isMeasureEdge) {
+                  (child.material as LineMaterial).opacity = 0;
                 }
               });
             }

@@ -54,16 +54,17 @@ export async function intersectionSelectedElements(
     const ocService = OpenCascadeService.getInstance();
     const oc = await ocService.getOC();
 
-    let resultShape = await ocService.brepToOCShape(
-      brepsToIntersect[0].brep,
-      brepsToIntersect[0].position,
-    );
+    // Use lossless occBrep path when available
+    const el0 = selectedElementsData[0];
+    let resultShape = el0.occBrep
+      ? await ocService.occBrepToOCShape(el0.occBrep, el0.position)
+      : await ocService.brepToOCShape(brepsToIntersect[0].brep, brepsToIntersect[0].position);
 
-    for (let i = 1; i < brepsToIntersect.length; i++) {
-      const nextShape = await ocService.brepToOCShape(
-        brepsToIntersect[i].brep,
-        brepsToIntersect[i].position,
-      );
+    for (let i = 1; i < selectedElementsData.length; i++) {
+      const el = selectedElementsData[i];
+      const nextShape = el.occBrep
+        ? await ocService.occBrepToOCShape(el.occBrep, el.position)
+        : await ocService.brepToOCShape(brepsToIntersect[i].brep, brepsToIntersect[i].position);
 
       const result = await ocService.booleanIntersection(
         resultShape,
@@ -116,11 +117,26 @@ export async function intersectionSelectedElements(
     });
 
     // Build mesh directly from OCC shape for smooth tessellation (indexed geometry + true edges)
-    const resultGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.05, 0.3);
-    const resultEdgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.05);
+    const resultGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.003, 0.1);
+    const resultEdgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.003);
+    const resultVertexPositions = await ocService.shapeToVertexPositions(resultShape);
     // Center geometry to match BRep centering pattern
     resultGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
     resultEdgeGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
+    for (let i = 0; i < resultVertexPositions.length; i += 3) {
+      resultVertexPositions[i] -= worldCenter.x;
+      resultVertexPositions[i + 1] -= worldCenter.y;
+      resultVertexPositions[i + 2] -= worldCenter.z;
+    }
+
+    // Serialize for lossless round-tripping
+    let serializedOccBrep: string | undefined;
+    try {
+      const trsf = new oc.gp_Trsf_1();
+      trsf.SetTranslation_1(new oc.gp_Vec_4(-worldCenter.x, -worldCenter.y, -worldCenter.z));
+      const localShape = new oc.BRepBuilderAPI_Transform_2(resultShape, trsf, true).Shape();
+      serializedOccBrep = await ocService.serializeShape(localShape);
+    } catch { /* best-effort */ }
 
     const resultMesh = createMeshFromGeometry(resultGeometry, resultEdgeGeometry);
     resultMesh.position.set(0, 0, 0);
@@ -135,6 +151,9 @@ export async function intersectionSelectedElements(
       nodeId,
       position: worldCenter,
       selected: false,
+      edgeGeometry: resultEdgeGeometry,
+      vertexPositions: resultVertexPositions,
+      occBrep: serializedOccBrep,
     };
 
     objectsMap.set(nodeId, resultGroup);

@@ -291,7 +291,9 @@ export function useSweepMode() {
             newPosition,
             { type: "sweep", consumedElementId: state.selectedPath },
             result.edgeGeometry,
-            result.occBrep
+            result.occBrep,
+            result.faceGeometry,
+            result.vertexPositions,
           );
         }
 

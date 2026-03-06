@@ -126,9 +126,17 @@ async function postProcessResult(
   // updateElementBrep re-applies element.rotation to the mesh at render time.
   const centeredBrep = await ocService.ocShapeToBRep(localShape, true);
 
-  // Extract clean topological edges from local-space shape, centered to match centeredBrep
-  const edgeGeometry = await ocService.shapeToEdgeLineSegments(localShape, 0.05);
+  // Extract clean topological edges and face geometry from local-space shape, centered to match centeredBrep
+  const edgeGeometry = await ocService.shapeToEdgeLineSegments(localShape, 0.003);
   edgeGeometry.translate(-localBBoxCenter.x, -localBBoxCenter.y, -localBBoxCenter.z);
+  const faceGeometry = await ocService.shapeToThreeGeometry(localShape, 0.003, 0.1);
+  faceGeometry.translate(-localBBoxCenter.x, -localBBoxCenter.y, -localBBoxCenter.z);
+  const vertexPositions = await ocService.shapeToVertexPositions(localShape);
+  for (let i = 0; i < vertexPositions.length; i += 3) {
+    vertexPositions[i] -= localBBoxCenter.x;
+    vertexPositions[i + 1] -= localBBoxCenter.y;
+    vertexPositions[i + 2] -= localBBoxCenter.z;
+  }
 
   // Serialize local-space shape for lossless round-tripping
   const serializedOccBrep = await ocService.serializeShape(localShape);
@@ -150,14 +158,16 @@ async function postProcessResult(
     z: worldCenter.z + rotatedDelta.z - position.z,
   };
 
-  return { brep: centeredBrep, positionOffset, edgeGeometry, occBrep: serializedOccBrep };
+  return { brep: centeredBrep, positionOffset, edgeGeometry, vertexPositions, occBrep: serializedOccBrep, faceGeometry };
 }
 
 export interface FilletResult {
   brep: Brep;
   positionOffset: { x: number; y: number; z: number };
   edgeGeometry?: THREE.BufferGeometry;
+  vertexPositions?: Float32Array;
   occBrep?: string;
+  faceGeometry?: THREE.BufferGeometry;
 }
 
 /**

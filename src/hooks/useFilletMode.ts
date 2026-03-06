@@ -1,5 +1,8 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, useEffect } from "react";
 import * as THREE from "three";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
 import { useToast } from "../contexts/ToastContext";
@@ -61,9 +64,9 @@ export function useFilletMode() {
     if (scene && edgeOverlayGroupRef.current) {
       scene.remove(edgeOverlayGroupRef.current);
       edgeOverlayGroupRef.current.traverse((child) => {
-        if (child instanceof THREE.LineSegments) {
+        if (child instanceof Line2) {
           child.geometry.dispose();
-          (child.material as THREE.Material).dispose();
+          (child.material as LineMaterial).dispose();
         }
       });
       edgeOverlayGroupRef.current = null;
@@ -85,10 +88,6 @@ export function useFilletMode() {
           } else {
             child.material.dispose();
           }
-        }
-        if (child instanceof THREE.LineSegments) {
-          child.geometry.dispose();
-          (child.material as THREE.Material).dispose();
         }
       });
       previewMeshRef.current = null;
@@ -177,26 +176,33 @@ export function useFilletMode() {
         // Edge coordinates are in world space — no group transform needed
 
         for (const edge of edgeData) {
-          const geometry = new THREE.BufferGeometry();
-          geometry.setAttribute(
-            "position",
-            new THREE.BufferAttribute(edge.segments, 3),
-          );
+          // Convert pair-format [x1,y1,z1,x2,y2,z2,...] to continuous strip for LineGeometry
+          const pairs = edge.segments;
+          const strip: number[] = [];
+          for (let i = 0; i < pairs.length; i += 6) {
+            if (strip.length === 0) strip.push(pairs[i], pairs[i + 1], pairs[i + 2]);
+            strip.push(pairs[i + 3], pairs[i + 4], pairs[i + 5]);
+          }
 
-          const material = new THREE.LineBasicMaterial({
+          const geometry = new LineGeometry();
+          geometry.setPositions(strip);
+
+          const material = new LineMaterial({
             color: FILLET.edgeHover,
-            linewidth: 2,
+            linewidth: FILLET.edgeWidth,
             transparent: true,
             opacity: 0,
             depthTest: false,
+            resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
           });
 
-          const lineSegments = new THREE.LineSegments(geometry, material);
-          lineSegments.userData.edgeIndex = edge.edgeIndex;
-          lineSegments.userData.isFilletEdge = true;
-          lineSegments.renderOrder = 999;
+          const line = new Line2(geometry, material);
+          line.computeLineDistances();
+          line.userData.edgeIndex = edge.edgeIndex;
+          line.userData.isFilletEdge = true;
+          line.renderOrder = 999;
 
-          group.add(lineSegments);
+          group.add(line);
         }
 
         scene.add(group);
@@ -217,9 +223,9 @@ export function useFilletMode() {
       if (!edgeOverlayGroupRef.current) return;
 
       edgeOverlayGroupRef.current.children.forEach((child) => {
-        if (child instanceof THREE.LineSegments && child.userData.isFilletEdge) {
+        if (child instanceof Line2 && child.userData.isFilletEdge) {
           const idx = child.userData.edgeIndex;
-          const mat = child.material as THREE.LineBasicMaterial;
+          const mat = child.material as LineMaterial;
 
           if (selectedIndices.includes(idx)) {
             mat.color.set(FILLET.edgeHighlight);
@@ -300,7 +306,7 @@ export function useFilletMode() {
         if (updateElementBrep) {
           updateElementBrep(state.selectedElement, result.brep, newPosition, {
             type: state.operationType,
-          }, result.edgeGeometry, result.occBrep);
+          }, result.edgeGeometry, result.occBrep, result.faceGeometry, result.vertexPositions);
         }
 
         // Reset state after successful apply
@@ -358,12 +364,12 @@ export function useFilletMode() {
       if (state.selectedElement && edgeOverlayGroupRef.current) {
         const edgeObjects: THREE.Object3D[] = [];
         edgeOverlayGroupRef.current.traverse((child) => {
-          if (child instanceof THREE.LineSegments) {
+          if (child instanceof Line2) {
             edgeObjects.push(child);
           }
         });
 
-        raycaster.params.Line = { threshold: 0.15 };
+        (raycaster.params as any).Line2 = { threshold: 8 };
         const edgeIntersects = raycaster.intersectObjects(edgeObjects);
 
         if (edgeIntersects.length > 0) {
@@ -503,12 +509,12 @@ export function useFilletMode() {
       if (state.selectedElement && edgeOverlayGroupRef.current) {
         const edgeObjects: THREE.Object3D[] = [];
         edgeOverlayGroupRef.current.traverse((child) => {
-          if (child instanceof THREE.LineSegments) {
+          if (child instanceof Line2) {
             edgeObjects.push(child);
           }
         });
 
-        raycaster.params.Line = { threshold: 0.15 };
+        (raycaster.params as any).Line2 = { threshold: 8 };
         const edgeIntersects = raycaster.intersectObjects(edgeObjects);
 
         let newHovered: number | null = null;
@@ -701,6 +707,21 @@ export function useFilletMode() {
 
   // Ensure edge colors stay updated when selectedEdgeIndices changes
   // (handled inline in handleMouseDown — setState + updateEdgeColors in same flow)
+
+  // Keep LineMaterial resolution in sync with window size
+  useEffect(() => {
+    const handleResize = () => {
+      if (!edgeOverlayGroupRef.current) return;
+      const res = new THREE.Vector2(window.innerWidth, window.innerHeight);
+      edgeOverlayGroupRef.current.traverse((child) => {
+        if (child instanceof Line2) {
+          (child.material as LineMaterial).resolution.copy(res);
+        }
+      });
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   return {
     selectedElement: state.selectedElement,

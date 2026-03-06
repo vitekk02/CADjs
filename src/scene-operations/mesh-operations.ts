@@ -1,8 +1,18 @@
 // src/scene-operations/mesh-operations.ts
 import * as THREE from "three";
+import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { Brep, CompoundBrep, Face } from "../geometry";
 import { createGeometryFromBRep } from "../convertBRepToGeometry";
 import { BODY, SWEEP } from "../theme";
+
+/** Get current window resolution for LineMaterial, with fallback for non-browser environments */
+function getResolution(): THREE.Vector2 {
+  const w = typeof window !== "undefined" ? window.innerWidth : 1920;
+  const h = typeof window !== "undefined" ? window.innerHeight : 1080;
+  return new THREE.Vector2(w, h);
+}
 
 export function createMeshFromBrep(brep: Brep): THREE.Group {
   const group = new THREE.Group();
@@ -21,13 +31,17 @@ export function createMeshFromBrep(brep: Brep): THREE.Group {
 
     // Add visible edge lines (dark outlines like Fusion 360)
     const edges = new THREE.EdgesGeometry(geometry, 15);
-    const edgeMaterial = new THREE.LineBasicMaterial({
+    const lineGeo = new LineSegmentsGeometry();
+    lineGeo.setPositions(edges.attributes.position.array as Float32Array);
+    const edgeMaterial = new LineMaterial({
       color: BODY.edge,
-      linewidth: 1,
+      linewidth: BODY.edgeWidth,
+      resolution: getResolution(),
     });
-    const edgeLines = new THREE.LineSegments(edges, edgeMaterial);
+    const edgeLines = new LineSegments2(lineGeo, edgeMaterial);
     edgeLines.userData.isEdgeOverlay = true;
     group.add(edgeLines);
+    edges.dispose();
 
     return group;
   } else {
@@ -63,20 +77,26 @@ export function createMeshFromGeometry(
   const mesh = new THREE.Mesh(geometry, material);
   group.add(mesh);
 
-  const edgeMaterial = new THREE.LineBasicMaterial({
+  const edgeMat = new LineMaterial({
     color: BODY.edge,
-    linewidth: 1,
+    linewidth: BODY.edgeWidth,
+    resolution: getResolution(),
   });
 
   if (edgeGeometry) {
-    const edgeLines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+    const lineGeo = new LineSegmentsGeometry();
+    lineGeo.setPositions(edgeGeometry.attributes.position.array as Float32Array);
+    const edgeLines = new LineSegments2(lineGeo, edgeMat);
     edgeLines.userData.isEdgeOverlay = true;
     group.add(edgeLines);
   } else {
     const edges = new THREE.EdgesGeometry(geometry, 30);
-    const edgeLines = new THREE.LineSegments(edges, edgeMaterial);
+    const lineGeo = new LineSegmentsGeometry();
+    lineGeo.setPositions(edges.attributes.position.array as Float32Array);
+    const edgeLines = new LineSegments2(lineGeo, edgeMat);
     edgeLines.userData.isEdgeOverlay = true;
     group.add(edgeLines);
+    edges.dispose();
   }
 
   return group;
@@ -140,12 +160,13 @@ export function getAllFaces(brep: Brep): Face[] {
   return [];
 }
 
-/** Find the first child Mesh inside a Group returned by createMeshFromBrep */
+/** Find the first child Mesh inside a Group returned by createMeshFromBrep.
+ *  Skips LineSegments2 (edge overlays) which also extend THREE.Mesh. */
 export function findChildMesh(obj: THREE.Object3D): THREE.Mesh | null {
-  if (obj instanceof THREE.Mesh) return obj;
+  if (obj instanceof THREE.Mesh && !obj.userData.isEdgeOverlay) return obj;
   let found: THREE.Mesh | null = null;
   obj.traverse((child) => {
-    if (!found && child instanceof THREE.Mesh) {
+    if (!found && child instanceof THREE.Mesh && !child.userData.isEdgeOverlay) {
       found = child;
     }
   });

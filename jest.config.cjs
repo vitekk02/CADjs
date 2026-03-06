@@ -29,10 +29,12 @@ module.exports = {
     // Transform opencascade.js and planegcs from ESM to CommonJS
     "node_modules/opencascade\\.js/.+\\.(js|mjs)$": "babel-jest",
     "node_modules/@salusoft89/planegcs/.+\\.(js|mjs)$": "babel-jest",
+    // Transform three/examples ESM modules (Line2, LineMaterial, etc.)
+    "node_modules/three/examples/.+\\.js$": "babel-jest",
   },
   transformIgnorePatterns: [
-    // Transform opencascade.js and planegcs (don't ignore them)
-    "/node_modules/(?!(opencascade\\.js|@salusoft89/planegcs)/)",
+    // Transform opencascade.js, planegcs, and three/examples (don't ignore them)
+    "/node_modules/(?!(opencascade\\.js|@salusoft89/planegcs|three/examples)/)",
   ],
   moduleFileExtensions: ["ts", "tsx", "js", "jsx", "json", "node"],
   testTimeout: 60000,

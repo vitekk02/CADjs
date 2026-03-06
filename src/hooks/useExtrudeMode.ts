@@ -96,16 +96,18 @@ export function useExtrudeMode() {
           mat.color.set(BODY.dimmedColor);
           mat.needsUpdate = true;
         }
-        if (child instanceof THREE.LineSegments && child.userData.isEdgeOverlay) {
-          const mat = child.material as THREE.LineBasicMaterial;
-          dimmedMaterialsRef.current.set(child.uuid, {
-            color: mat.color.getHex(),
-            opacity: mat.opacity,
-            transparent: mat.transparent,
-          });
-          mat.transparent = true;
-          mat.opacity = BODY.dimmedOpacity;
-          mat.needsUpdate = true;
+        if (child.userData.isEdgeOverlay) {
+          const mat = (child as any).material;
+          if (mat) {
+            dimmedMaterialsRef.current.set(child.uuid, {
+              color: mat.color.getHex(),
+              opacity: mat.opacity ?? 1,
+              transparent: mat.transparent ?? false,
+            });
+            mat.transparent = true;
+            mat.opacity = BODY.dimmedOpacity;
+            mat.needsUpdate = true;
+          }
         }
       });
     });
@@ -125,12 +127,14 @@ export function useExtrudeMode() {
         mat.transparent = saved.transparent;
         mat.needsUpdate = true;
       }
-      if (child instanceof THREE.LineSegments) {
-        const mat = child.material as THREE.LineBasicMaterial;
-        mat.color.set(saved.color);
-        mat.opacity = saved.opacity;
-        mat.transparent = saved.transparent;
-        mat.needsUpdate = true;
+      if (child.userData.isEdgeOverlay) {
+        const mat = (child as any).material;
+        if (mat) {
+          mat.color.set(saved.color);
+          mat.opacity = saved.opacity;
+          mat.transparent = saved.transparent;
+          mat.needsUpdate = true;
+        }
       }
     });
     dimmedMaterialsRef.current.clear();
@@ -365,7 +369,15 @@ export function useExtrudeMode() {
     async (brep: Brep, element?: SceneElement): Promise<THREE.BufferGeometry | null> => {
       try {
         const ocService = OpenCascadeService.getInstance();
-        const cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
+        let cleanFace = null;
+        if (element?.occBrep) {
+          try {
+            cleanFace = await ocService.deserializeShape(element.occBrep);
+          } catch { /* fall through */ }
+        }
+        if (!cleanFace) {
+          cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
+        }
         if (!cleanFace) return null;
 
         // Extrude by unit depth=1 along the flat normal
@@ -374,7 +386,7 @@ export function useExtrudeMode() {
         const extrudedShape = await ocService.extrudeShape(cleanFace, 1, 1, normalVec);
 
         // Convert to Three.js geometry with coarse tessellation for speed
-        const geometry = await ocService.shapeToThreeGeometry(extrudedShape, 0.1, 0.5);
+        const geometry = await ocService.shapeToThreeGeometry(extrudedShape, 0.003, 0.1);
         return geometry;
       } catch (error) {
         console.warn("[useExtrudeMode] Failed to build OCC preview geometry:", error);
@@ -494,7 +506,8 @@ export function useExtrudeMode() {
           originalBrepRef.current,
           depth,
           ocDirection,
-          normalVec
+          normalVec,
+          element.occBrep,
         );
 
         // Calculate the new position:
@@ -508,7 +521,7 @@ export function useExtrudeMode() {
 
         // Update the element's BRep and position
         if (updateElementBrep) {
-          updateElementBrep(state.selectedElement, extrusionResult.brep, newPosition, { type: "extrude" }, extrusionResult.edgeGeometry, extrusionResult.occBrep);
+          updateElementBrep(state.selectedElement, extrusionResult.brep, newPosition, { type: "extrude" }, extrusionResult.edgeGeometry, extrusionResult.occBrep, extrusionResult.faceGeometry, extrusionResult.vertexPositions);
         }
 
         forceSceneUpdate();
@@ -658,10 +671,16 @@ export function useExtrudeMode() {
         );
 
         // 7. Extract edge geometry and face geometry for clean rendering (translated to local space)
-        const edgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape);
+        const edgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.003);
         edgeGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
+        const vertexPositions = await ocService.shapeToVertexPositions(resultShape);
+        for (let i = 0; i < vertexPositions.length; i += 3) {
+          vertexPositions[i] -= worldCenter.x;
+          vertexPositions[i + 1] -= worldCenter.y;
+          vertexPositions[i + 2] -= worldCenter.z;
+        }
 
-        const faceGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.05, 0.3);
+        const faceGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.003, 0.1);
         faceGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
 
         // 8. Serialize in local space for occBrep preservation
@@ -686,6 +705,7 @@ export function useExtrudeMode() {
           edgeGeometry,
           occBrep,
           faceGeometry,
+          vertexPositions,
         );
 
         forceSceneUpdate();
@@ -746,13 +766,6 @@ export function useExtrudeMode() {
           ? "symmetric"
           : direction;
 
-        setState((prev) => ({
-          ...prev,
-          isExtruding: true,
-          activeDirection: activeDir,
-          extrusionDepth: 0,
-        }));
-
         startPointRef.current = getMouseIntersection(event);
         startScreenRef.current = { x: event.clientX, y: event.clientY };
 
@@ -760,13 +773,37 @@ export function useExtrudeMode() {
         const element = elements.find(
           (el) => el.nodeId === state.selectedElement
         );
+
+        // Calculate screen position for dimension input immediately
+        let screenPos = { x: 0, y: 0 };
+        if (element && camera && renderer) {
+          const center = element.position.clone();
+          center.project(camera);
+          const rect = renderer.domElement.getBoundingClientRect();
+          screenPos = {
+            x: ((center.x + 1) / 2) * rect.width + rect.left,
+            y: ((-center.y + 1) / 2) * rect.height + rect.top - 50,
+          };
+        }
+
+        setState((prev) => ({
+          ...prev,
+          isExtruding: true,
+          activeDirection: activeDir,
+          extrusionDepth: 1.0,
+          showDimensionInput: true,
+          dimensionInputPosition: screenPos,
+        }));
+
         if (element) {
           originalBrepRef.current = element.brep;
 
-          // Start building the OCC preview geometry (async, will be ready for next mouse move)
+          // Build the OCC preview geometry and show default preview at depth 1.0
           cachedPreviewGeometryRef.current = null;
           buildCachedPreviewGeometry(element.brep, element).then((geometry) => {
             cachedPreviewGeometryRef.current = geometry;
+            // Show preview at default depth once geometry is ready
+            updatePreview(1.0, activeDir);
           });
         }
 
@@ -977,82 +1014,28 @@ export function useExtrudeMode() {
   );
 
   /**
-   * Handle mouse up - apply extrusion or show dimension input
+   * Handle mouse up - transition to confirm state (keep preview visible)
    */
-  const handleMouseUp = useCallback(async () => {
+  const handleMouseUp = useCallback(() => {
     if (!state.isExtruding || !state.selectedElement) {
       return;
     }
 
-    // If depth is very small, show dimension input for manual entry
-    if (state.extrusionDepth < 0.1) {
-      // Calculate position for dimension input
-      const obj = getObject(state.selectedElement);
-      if (obj && camera && renderer) {
-        const bbox = new THREE.Box3().setFromObject(obj);
-        const center = new THREE.Vector3();
-        bbox.getCenter(center);
-        center.project(camera);
-
-        const rect = renderer.domElement.getBoundingClientRect();
-        const screenX = ((center.x + 1) / 2) * rect.width + rect.left;
-        const screenY = ((-center.y + 1) / 2) * rect.height + rect.top;
-
-        setState((prev) => ({
-          ...prev,
-          isExtruding: false,
-          showDimensionInput: true,
-          dimensionInputPosition: { x: screenX, y: screenY - 50 },
-        }));
-
-        // Clean up preview but keep selection
-        cleanupPreview();
-        restoreOriginalMesh();
-      }
-      return;
-    }
-
-    // Apply the extrusion (join or cut)
-    if (state.operationType === "cut") {
-      await applyCutExtrusion(state.extrusionDepth, state.activeDirection!);
-    } else {
-      await applyExtrusion(state.extrusionDepth, state.activeDirection!);
-    }
-
-    // Reset state
+    // Stop dragging but keep dimension input and preview visible
     setState((prev) => ({
       ...prev,
       isExtruding: false,
-      activeDirection: null,
-      extrusionDepth: 0,
-      selectedElement: null,
     }));
 
     startPointRef.current = null;
     startScreenRef.current = null;
-    cleanupPreview();
-    restoreOriginalMesh();
-
-    // Clean up handles (shape is now 3D)
-    cleanupHandles();
   }, [
     state.isExtruding,
     state.selectedElement,
-    state.extrusionDepth,
-    state.activeDirection,
-    state.operationType,
-    getObject,
-    camera,
-    renderer,
-    applyExtrusion,
-    applyCutExtrusion,
-    cleanupPreview,
-    restoreOriginalMesh,
-    cleanupHandles,
   ]);
 
   /**
-   * Handle dimension input submission
+   * Handle dimension input submission — applies the extrusion
    */
   const handleDimensionSubmit = useCallback(
     async (value: number) => {
@@ -1066,6 +1049,11 @@ export function useExtrudeMode() {
             originalBrepRef.current = element.brep;
           }
         }
+
+        // Clean up preview before applying (apply creates new mesh)
+        cleanupPreview();
+        restoreOriginalMesh();
+
         if (state.operationType === "cut") {
           await applyCutExtrusion(value, state.activeDirection || "up");
         } else {
@@ -1077,6 +1065,7 @@ export function useExtrudeMode() {
         ...prev,
         showDimensionInput: false,
         activeDirection: null,
+        extrusionDepth: 0,
         selectedElement: null,
       }));
 
@@ -1090,13 +1079,30 @@ export function useExtrudeMode() {
       applyExtrusion,
       applyCutExtrusion,
       cleanupHandles,
+      cleanupPreview,
+      restoreOriginalMesh,
     ]
   );
 
   /**
-   * Handle dimension input cancel
+   * Handle live dimension value change — updates preview in real-time
+   */
+  const handleDimensionChange = useCallback(
+    (value: number) => {
+      if (!state.selectedElement || !state.activeDirection) return;
+      setState((prev) => ({ ...prev, extrusionDepth: value }));
+      updatePreview(value, state.activeDirection);
+    },
+    [state.selectedElement, state.activeDirection, updatePreview]
+  );
+
+  /**
+   * Handle dimension input cancel — restores original state
    */
   const handleDimensionCancel = useCallback(() => {
+    cleanupPreview();
+    restoreOriginalMesh();
+
     setState((prev) => ({
       ...prev,
       showDimensionInput: false,
@@ -1105,8 +1111,8 @@ export function useExtrudeMode() {
       extrusionDepth: 0,
     }));
 
-    cleanupPreview();
-    restoreOriginalMesh();
+    originalBrepRef.current = null;
+    cachedPreviewGeometryRef.current = null;
   }, [cleanupPreview, restoreOriginalMesh]);
 
   /**
@@ -1167,6 +1173,7 @@ export function useExtrudeMode() {
     handleKeyDown,
     handleDimensionSubmit,
     handleDimensionCancel,
+    handleDimensionChange,
     toggleOperationType,
     cleanup,
     dimSceneBodies,

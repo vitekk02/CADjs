@@ -28,6 +28,7 @@ export const BODY = {
   default: 0xa8a9ad,       // Steel satin gray
   edge: 0x333333,          // Dark gray edges (always visible)
   edgeOpacity: 1.0,
+  edgeWidth: 1.5,          // Screen-pixel width for body edge overlay (LineMaterial)
   selected: 0x2e75b6,      // Blue selection
   hover: 0x4a90d9,         // Blue pre-selection (lighter)
   dimmedOpacity: 0.25,     // Opacity when bodies are dimmed (sketch mode)
@@ -105,6 +106,7 @@ export const EXTRUDE = {
 export const FILLET = {
   edgeHighlight: 0xff8800,   // Orange — selected edges
   edgeHover: 0xffaa44,       // Lighter orange — hovered edge
+  edgeWidth: 2.5,            // Screen-pixel width for fillet edge picking overlay
   preview: 0xa8a9ad,         // Body default for preview mesh
   previewOpacity: 0.6,
 } as const;
@@ -133,6 +135,8 @@ export const REVOLVE = {
   profileHighlight: 0x87ceeb,  // Same as extrude
   preview: 0xa8a9ad,           // Body default for preview
   previewOpacity: 0.6,
+  sketchLineAxis: 0x44aaff,    // Blue tint for sketch line axes
+  bodyEdgeAxis: 0xaaff44,      // Green tint for other body edges
 } as const;
 
 // ── Measure Mode ──────────────────────────────────────────────────
@@ -179,5 +183,6 @@ export const VIEWCUBE = {
 // ── Helpers ────────────────────────────────────────────────────────
 export const HELPERS = {
   edgeColor: 0x555555,    // Subtle dark gray edges (was cyan)
+  edgeWidth: 1.5,         // Screen-pixel width for selection-mode edge helpers
   vertexColor: 0xff4444,  // Soft red vertices
 } as const;

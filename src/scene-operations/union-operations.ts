@@ -54,23 +54,31 @@ export async function unionSelectedElements(
     const ocService = OpenCascadeService.getInstance();
     const oc = await ocService.getOC();
 
-    let resultShape;
-
-    if (brepsToUnion.length >= 1) {
-      resultShape = await ocService.brepToOCShape(
-        brepsToUnion[0].brep,
-        brepsToUnion[0].position,
-      );
-
-      for (let i = 1; i < brepsToUnion.length; i++) {
-        const nextShape = await ocService.brepToOCShape(
-          brepsToUnion[i].brep,
-          brepsToUnion[i].position,
-        );
-        const result = await ocService.booleanUnion(resultShape, nextShape);
-
-        resultShape = result.shape;
+    // Convert each element to an OCC shape, preferring lossless occBrep path
+    const elementToShape = async (el: SceneElement) => {
+      if (el.occBrep) {
+        return ocService.occBrepToOCShape(el.occBrep, el.position);
       }
+      // Fallback: flatten CompoundBrep children or use brep directly
+      if ("children" in el.brep && Array.isArray((el.brep as any).children)) {
+        const compound = el.brep as CompoundBrep;
+        let shape = await ocService.brepToOCShape(compound.children[0], el.position);
+        for (let i = 1; i < compound.children.length; i++) {
+          const next = await ocService.brepToOCShape(compound.children[i], el.position);
+          const result = await ocService.booleanUnion(shape, next);
+          shape = result.shape;
+        }
+        return shape;
+      }
+      return ocService.brepToOCShape(el.brep, el.position);
+    };
+
+    let resultShape = await elementToShape(selectedElementsData[0]);
+
+    for (let i = 1; i < selectedElementsData.length; i++) {
+      const nextShape = await elementToShape(selectedElementsData[i]);
+      const result = await ocService.booleanUnion(resultShape, nextShape);
+      resultShape = result.shape;
     }
 
     if (!resultShape) {
@@ -118,11 +126,26 @@ export async function unionSelectedElements(
     });
 
     // Build mesh directly from OCC shape for smooth tessellation (indexed geometry + true edges)
-    const resultGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.05, 0.3);
-    const resultEdgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.05);
+    const resultGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.003, 0.1);
+    const resultEdgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.003);
+    const resultVertexPositions = await ocService.shapeToVertexPositions(resultShape);
     // Center geometry to match BRep centering pattern
     resultGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
     resultEdgeGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
+    for (let i = 0; i < resultVertexPositions.length; i += 3) {
+      resultVertexPositions[i] -= worldCenter.x;
+      resultVertexPositions[i + 1] -= worldCenter.y;
+      resultVertexPositions[i + 2] -= worldCenter.z;
+    }
+
+    // Serialize for lossless round-tripping
+    let serializedOccBrep: string | undefined;
+    try {
+      const trsf = new oc.gp_Trsf_1();
+      trsf.SetTranslation_1(new oc.gp_Vec_4(-worldCenter.x, -worldCenter.y, -worldCenter.z));
+      const localShape = new oc.BRepBuilderAPI_Transform_2(resultShape, trsf, true).Shape();
+      serializedOccBrep = await ocService.serializeShape(localShape);
+    } catch { /* best-effort */ }
 
     const unionMesh = createMeshFromGeometry(resultGeometry, resultEdgeGeometry);
     unionMesh.position.set(0, 0, 0);
@@ -132,11 +155,14 @@ export async function unionSelectedElements(
     unionGroup.add(unionMesh);
     unionGroup.position.copy(worldCenter);
 
-    const newElement = {
+    const newElement: SceneElement = {
       brep: compound,
       nodeId,
       position: worldCenter,
       selected: false,
+      edgeGeometry: resultEdgeGeometry,
+      vertexPositions: resultVertexPositions,
+      occBrep: serializedOccBrep,
     };
 
     objectsMap.set(nodeId, unionGroup);

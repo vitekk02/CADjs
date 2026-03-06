@@ -7,7 +7,9 @@ export interface SweepResult {
   brep: Brep;
   positionOffset: { x: number; y: number; z: number };
   edgeGeometry?: THREE.BufferGeometry;
+  vertexPositions?: Float32Array;
   occBrep?: string;
+  faceGeometry?: THREE.BufferGeometry;
 }
 
 /**
@@ -79,11 +81,21 @@ export async function sweepBRep(
     // the bounding box center IS the offset from profilePosition)
     const positionOffset = localCenter;
 
-    // Extract edge geometry, translated to centered local space
+    // Extract edge geometry, face geometry, and vertex positions, translated to centered local space
     let edgeGeometry: THREE.BufferGeometry | undefined;
+    let faceGeometry: THREE.BufferGeometry | undefined;
+    let vertexPositions: Float32Array | undefined;
     try {
-      edgeGeometry = await ocService.shapeToEdgeLineSegments(sweptShape, 0.05);
+      edgeGeometry = await ocService.shapeToEdgeLineSegments(sweptShape, 0.003);
       edgeGeometry.translate(-localCenter.x, -localCenter.y, -localCenter.z);
+      faceGeometry = await ocService.shapeToThreeGeometry(sweptShape, 0.003, 0.1);
+      faceGeometry.translate(-localCenter.x, -localCenter.y, -localCenter.z);
+      vertexPositions = await ocService.shapeToVertexPositions(sweptShape);
+      for (let i = 0; i < vertexPositions.length; i += 3) {
+        vertexPositions[i] -= localCenter.x;
+        vertexPositions[i + 1] -= localCenter.y;
+        vertexPositions[i + 2] -= localCenter.z;
+      }
     } catch {
       // Edge geometry is optional
     }
@@ -105,7 +117,7 @@ export async function sweepBRep(
       // Serialization is best-effort
     }
 
-    return { brep: centeredBrep, positionOffset, edgeGeometry, occBrep };
+    return { brep: centeredBrep, positionOffset, edgeGeometry, vertexPositions, occBrep, faceGeometry };
   } catch (error) {
     console.error("[sweepBRep] Sweep operation failed:", error);
     return { brep: profileBrep, positionOffset: { x: 0, y: 0, z: 0 } };

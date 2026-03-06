@@ -40,6 +40,7 @@ export function importElements(
       selected: false,
       occBrep: imp.occBrep,
       edgeGeometry: imp.edgeGeometry,
+      vertexPositions: imp.vertexPositions,
     });
   }
 

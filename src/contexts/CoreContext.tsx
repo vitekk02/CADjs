@@ -61,6 +61,7 @@ import {
 } from "../scene-operations/sketch-operations";
 import { SketchSolverService } from "../services/SketchSolverService";
 import { SketchToBrepService } from "../services/SketchToBrepService";
+import { OpenCascadeService } from "../services/OpenCascadeService";
 import {
   UndoableSnapshot,
   MAX_UNDO_STEPS,
@@ -94,8 +95,8 @@ export interface CadCoreContextType {
   getAllObjects: () => Map<string, THREE.Object3D>;
   createMeshFromBrep: (brep: Brep) => THREE.Object3D;
   ungroupSelectedElement: () => void;
-  updateElementBrep: (nodeId: string, brep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType; consumedElementId?: string }, edgeGeometry?: THREE.BufferGeometry, occBrep?: string, faceGeometry?: THREE.BufferGeometry) => void;
-  loftElements: (profileNodeIds: string[], resultBrep: Brep, resultPosition: THREE.Vector3, edgeGeometry?: THREE.BufferGeometry, occBrep?: string) => void;
+  updateElementBrep: (nodeId: string, brep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType; consumedElementId?: string }, edgeGeometry?: THREE.BufferGeometry, occBrep?: string, faceGeometry?: THREE.BufferGeometry, vertexPositions?: Float32Array) => void;
+  loftElements: (profileNodeIds: string[], resultBrep: Brep, resultPosition: THREE.Vector3, edgeGeometry?: THREE.BufferGeometry, occBrep?: string, vertexPositions?: Float32Array, faceGeometry?: THREE.BufferGeometry) => void;
   duplicateSelectedElements: () => void;
 
   // Sketch-related state and methods
@@ -674,7 +675,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   );
 
   const updateElementBrep = useCallback(
-    (nodeId: string, newBrep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType; consumedElementId?: string }, edgeGeometry?: THREE.BufferGeometry, occBrep?: string, faceGeometry?: THREE.BufferGeometry) => {
+    (nodeId: string, newBrep: Brep, newPosition?: THREE.Vector3, featureUpdate?: { type: OperationType; consumedElementId?: string }, edgeGeometry?: THREE.BufferGeometry, occBrep?: string, faceGeometry?: THREE.BufferGeometry, vertexPositions?: Float32Array) => {
       // Get the existing element to preserve position and rotation
       const existingElement = elements.find((el) => el.nodeId === nodeId);
       if (!existingElement) {
@@ -731,7 +732,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setElements((prevElements) =>
         prevElements.map((element) => {
           if (element.nodeId === nodeId) {
-            return { ...element, brep: newBrep, position, occBrep, edgeGeometry };
+            return { ...element, brep: newBrep, position, occBrep, edgeGeometry, vertexPositions };
           }
           return element;
         })
@@ -817,7 +818,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   }, [elements, selectedElements, idCounter, brepGraph, objectsMap, pushUndo]);
 
   const loftElementsImpl = useCallback(
-    (profileNodeIds: string[], resultBrep: Brep, resultPosition: THREE.Vector3, edgeGeometry?: THREE.BufferGeometry, occBrep?: string) => {
+    (profileNodeIds: string[], resultBrep: Brep, resultPosition: THREE.Vector3, edgeGeometry?: THREE.BufferGeometry, occBrep?: string, vertexPositions?: Float32Array, faceGeometry?: THREE.BufferGeometry) => {
       if (profileNodeIds.length < 2) return;
 
       pushUndo("Loft");
@@ -827,9 +828,14 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       // Create new mesh
       let mesh: THREE.Group;
       if (edgeGeometry) {
-        const faces = getAllFaces(resultBrep);
-        const faceGeometry = createGeometryFromBRep(faces);
-        mesh = createMeshFromGeometry(faceGeometry, edgeGeometry);
+        let geom: THREE.BufferGeometry;
+        if (faceGeometry) {
+          geom = faceGeometry;
+        } else {
+          const faces = getAllFaces(resultBrep);
+          geom = createGeometryFromBRep(faces);
+        }
+        mesh = createMeshFromGeometry(geom, edgeGeometry);
       } else {
         mesh = createMeshFromBrep(resultBrep);
       }
@@ -850,6 +856,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         selected: false,
         occBrep,
         edgeGeometry,
+        vertexPositions,
       };
       newElements.push(newElement);
 
@@ -895,6 +902,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       const newPosition = element.position.clone().add(new THREE.Vector3(1, 1, 0));
       const newRotation = element.rotation ? element.rotation.clone() : undefined;
       const newEdgeGeometry = element.edgeGeometry ? element.edgeGeometry.clone() : undefined;
+      const newVertexPositions = element.vertexPositions ? new Float32Array(element.vertexPositions) : undefined;
       const newPathData = element.pathData
         ? { points: element.pathData.points.map(p => ({ ...p })) }
         : undefined;
@@ -931,6 +939,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         pathData: newPathData,
         occBrep: element.occBrep,
         edgeGeometry: newEdgeGeometry,
+        vertexPositions: newVertexPositions,
         sketchPlane: element.sketchPlane,
       };
       newElements.push(newElement);
@@ -1301,73 +1310,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
       const sketchService = SketchToBrepService.getInstance();
 
-      // Check if sketch is open (path for sweep) vs closed (profiles)
-      if (!sketchService.isSketchClosed(finishedSketch)) {
-        console.log("[finishSketch] Open sketch detected — creating path element for sweep");
-        const wireResult = await sketchService.convertSketchToWire(finishedSketch);
-
-        if (wireResult && wireResult.points.length >= 2) {
-          // Create a minimal BRep (edges only, no faces) for the path element
-          const vertices = wireResult.points.map(p => new Vertex(p.x, p.y, p.z));
-          const edges: Edge[] = [];
-          for (let i = 0; i < vertices.length - 1; i++) {
-            edges.push(new Edge(vertices[i], vertices[i + 1]));
-          }
-          const pathBrep = new Brep(vertices, edges, []);
-
-          // Create element manually (same pattern as profiles)
-          const currentId = idCounter + 1;
-          const nodeId = `node_${currentId}`;
-          const position = new THREE.Vector3(0, 0, 0);
-
-          const mesh = createMeshFromPath(wireResult.points);
-          mesh.position.copy(position);
-          mesh.userData.nodeId = nodeId;
-          objectsMap.set(nodeId, mesh);
-
-          const pathElement: SceneElement = {
-            brep: pathBrep,
-            nodeId,
-            position: position.clone(),
-            selected: false,
-            elementType: "path",
-            pathData: { points: wireResult.points },
-          };
-
-          setElements((prev) => [...prev, pathElement]);
-          setIdCounter(currentId);
-
-          // Add to feature tree
-          const sketchNode: FeatureNode = {
-            id: finishedSketch.id,
-            type: "sketch",
-            name: `Sketch ${sketches.length + 1} (Path)`,
-            visible: true,
-            expanded: true,
-            children: [{
-              id: `${finishedSketch.id}_path`,
-              type: "body",
-              name: "Path",
-              visible: true,
-              sourceSketchId: finishedSketch.id,
-              elementId: nodeId,
-            }],
-            sourceSketchId: finishedSketch.id,
-          };
-          setFeatureTree((prev) => [...prev, sketchNode]);
-
-          console.log(`[finishSketch] Created path element: ${nodeId}, ${wireResult.points.length} points`);
-        } else {
-          console.warn("[finishSketch] Open sketch produced no valid wire");
-        }
-
-        setActiveSketch(null);
-        setMode(previousMode);
-        setOperationPending(false);
-        return true;
-      }
-
-      // Convert sketch to multiple profiles (Fusion 360-style)
+      // Try profile detection first (handles T-junctions from trimming)
       const conversionResult = await sketchService.convertSketchToProfiles(finishedSketch);
 
       if (conversionResult.success && conversionResult.profiles.length > 0) {
@@ -1405,8 +1348,47 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
               profile.center.z
             );
 
-            // Create mesh from brep
-            const mesh = createMeshFromBrep(profile.brep);
+            // Compute clean OCC-based edge/vertex data for highlighting
+            let edgeGeometry: THREE.BufferGeometry | undefined;
+            let vertexPositions: Float32Array | undefined;
+            let occBrep: string | undefined;
+            try {
+              const ocService = OpenCascadeService.getInstance();
+              let cleanFace = null;
+
+              // Prefer the analytic face from profile detection (preserves circles etc.)
+              if (profile.occBrep) {
+                try {
+                  cleanFace = await ocService.deserializeShape(profile.occBrep);
+                  occBrep = profile.occBrep;  // Already in local space
+                } catch { /* fall through to boundary extraction */ }
+              }
+
+              // Fallback: extract boundary from tessellated BRep
+              if (!cleanFace) {
+                cleanFace = await ocService.buildPlanarFaceFromBoundary(profile.brep);
+                if (cleanFace) {
+                  try { occBrep = await ocService.serializeShape(cleanFace); } catch { /* best-effort */ }
+                }
+              }
+
+              if (cleanFace) {
+                edgeGeometry = await ocService.shapeToEdgeLineSegments(cleanFace, 0.003);
+                vertexPositions = await ocService.shapeToVertexPositions(cleanFace);
+              }
+            } catch (e) {
+              console.warn("Failed to compute profile edge geometry:", e);
+            }
+
+            // Create mesh from brep — use OCC edge geometry when available
+            let mesh: THREE.Group;
+            if (edgeGeometry) {
+              const faces = getAllFaces(profile.brep);
+              const faceGeometry = createGeometryFromBRep(faces);
+              mesh = createMeshFromGeometry(faceGeometry, edgeGeometry);
+            } else {
+              mesh = createMeshFromBrep(profile.brep);
+            }
             mesh.position.copy(position);
             mesh.userData.nodeId = nodeId;
 
@@ -1420,6 +1402,9 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
               position: position.clone(),
               selected: false,
               sketchPlane: finishedSketch.plane,
+              edgeGeometry,
+              vertexPositions,
+              occBrep,
             };
             newElements.push(newElement);
 
@@ -1444,9 +1429,65 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
         // Update feature tree
         setFeatureTree((prev) => [...prev, sketchNode]);
+      } else if (!sketchService.isSketchClosed(finishedSketch)) {
+        // No profiles found AND sketch is open → try wire path for sweep
+        console.log("[finishSketch] Open sketch detected — creating path element for sweep");
+        const wireResult = await sketchService.convertSketchToWire(finishedSketch);
+
+        if (wireResult && wireResult.points.length >= 2) {
+          const vertices = wireResult.points.map(p => new Vertex(p.x, p.y, p.z));
+          const edges: Edge[] = [];
+          for (let i = 0; i < vertices.length - 1; i++) {
+            edges.push(new Edge(vertices[i], vertices[i + 1]));
+          }
+          const pathBrep = new Brep(vertices, edges, []);
+
+          const currentId = idCounter + 1;
+          const nodeId = `node_${currentId}`;
+          const position = new THREE.Vector3(0, 0, 0);
+
+          const mesh = createMeshFromPath(wireResult.points);
+          mesh.position.copy(position);
+          mesh.userData.nodeId = nodeId;
+          objectsMap.set(nodeId, mesh);
+
+          const pathElement: SceneElement = {
+            brep: pathBrep,
+            nodeId,
+            position: position.clone(),
+            selected: false,
+            elementType: "path",
+            pathData: { points: wireResult.points },
+          };
+
+          setElements((prev) => [...prev, pathElement]);
+          setIdCounter(currentId);
+
+          const sketchNode: FeatureNode = {
+            id: finishedSketch.id,
+            type: "sketch",
+            name: `Sketch ${sketches.length + 1} (Path)`,
+            visible: true,
+            expanded: true,
+            children: [{
+              id: `${finishedSketch.id}_path`,
+              type: "body",
+              name: "Path",
+              visible: true,
+              sourceSketchId: finishedSketch.id,
+              elementId: nodeId,
+            }],
+            sourceSketchId: finishedSketch.id,
+          };
+          setFeatureTree((prev) => [...prev, sketchNode]);
+
+          console.log(`[finishSketch] Created path element: ${nodeId}, ${wireResult.points.length} points`);
+        } else {
+          console.warn("[finishSketch] Open sketch produced no valid wire");
+        }
       } else {
-        // Fallback: use old conversion method that unions everything
-        console.log("Multi-profile conversion failed, using fallback union method");
+        // Closed sketch but no profiles detected — fallback
+        console.log("Closed sketch but no profiles — using fallback union method");
         const brep = await sketchService.convertSketchToBrep(finishedSketch);
 
         if (brep.vertices.length > 0 || brep.edges.length > 0 || brep.faces.length > 0) {
@@ -1454,7 +1495,6 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
           const nodeId = addElementInternal(brep, position);
           console.log("Added sketch as single BRep element, vertices:", brep.vertices.length, "faces:", brep.faces.length);
 
-          // Add to feature tree as single body
           const sketchNode: FeatureNode = {
             id: finishedSketch.id,
             type: "sketch",

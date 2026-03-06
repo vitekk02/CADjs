@@ -246,12 +246,30 @@ export class SketchToBrepService {
           continue;
         }
 
+        // Serialize the analytic face in local space (centered at origin)
+        let profileOccBrep: string | undefined;
+        try {
+          const oc = await ocService.getOC();
+          const trsf = new oc.gp_Trsf_1();
+          const vec = new oc.gp_Vec_4(-center.x, -center.y, -center.z);
+          trsf.SetTranslation_1(vec);
+          vec.delete();
+          const transformer = new oc.BRepBuilderAPI_Transform_2(face, trsf, true);
+          trsf.delete();
+          const centeredShape = transformer.Shape();
+          transformer.delete();
+          profileOccBrep = await ocService.serializeShape(centeredShape);
+        } catch (e) {
+          console.warn(`[SketchToBrepService] Failed to serialize face ${i}:`, e);
+        }
+
         profiles.push({
           id: `${sketchId}_profile_${i}`,
           brep,
           area: Math.abs(area),
           isOuter: area < 0,  // Negative area indicates counterclockwise (outer boundary)
-          center
+          center,
+          occBrep: profileOccBrep,
         });
 
         console.log(`[SketchToBrepService] Created profile ${i}: area=${area.toFixed(4)}, center=(${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
@@ -309,8 +327,8 @@ export class SketchToBrepService {
    * Normalize a point to a string key for graph operations.
    */
   private pointToKey(p: [number, number, number]): string {
-    // Round to avoid floating point issues
-    const precision = 1e-4;
+    // Round to avoid floating point issues (1e-3 tolerates trim intersection precision discrepancies)
+    const precision = 1e-3;
     const x = Math.round(p[0] / precision) * precision;
     const y = Math.round(p[1] / precision) * precision;
     const z = Math.round(p[2] / precision) * precision;
@@ -647,7 +665,7 @@ export class SketchToBrepService {
   private pointsEqual(
     p1: [number, number, number],
     p2: [number, number, number],
-    tolerance = 1e-4
+    tolerance = 1e-3
   ): boolean {
     return (
       Math.abs(p1[0] - p2[0]) < tolerance &&
@@ -989,10 +1007,10 @@ export class SketchToBrepService {
       addEdge(arc.endId);
     }
 
-    // In a closed loop, every vertex has exactly 2 edges (even degree).
-    // If any vertex has odd degree, the graph has open endpoints.
+    // A degree-1 vertex is a dangling endpoint → open path.
+    // Degree ≥ 2 (including odd like 3 at T-junctions) can still form closed loops.
     for (const [, count] of coordEdgeCount) {
-      if (count % 2 !== 0) return false;
+      if (count === 1) return false;
     }
 
     // All vertices have even degree → at least one closed loop exists

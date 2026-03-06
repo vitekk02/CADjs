@@ -675,6 +675,9 @@ export class OpenCascadeService {
   ): Promise<THREE.BufferGeometry> {
     const oc = await this.getOC();
 
+    // Clean existing mesh to ensure fresh tessellation at specified parameters
+    try { oc.BRepTools.Clean(shape, true); } catch { /* ignore */ }
+
     new oc.BRepMesh_IncrementalMesh_2(
       shape,
       linearDeflection,
@@ -759,15 +762,6 @@ export class OpenCascadeService {
   ): Promise<THREE.BufferGeometry> {
     const oc = await this.getOC();
 
-    // Ensure the shape is meshed (needed for polygon extraction on edges)
-    new oc.BRepMesh_IncrementalMesh_2(
-      shape,
-      linearDeflection,
-      false,
-      0.5,
-      false,
-    );
-
     // Build indexed edge map and filter to sharp edges only
     const edgeMap = new oc.TopTools_IndexedMapOfShape_1();
     oc.TopExp.MapShapes_1(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, edgeMap);
@@ -835,6 +829,58 @@ export class OpenCascadeService {
     geometry.computeBoundingSphere();
 
     return geometry;
+  }
+
+  /**
+   * Extract topological vertex positions at sharp edge junctions.
+   * Returns positions of vertices where 2+ distinct sharp edges meet (true corners).
+   * Filters seam edges and smooth/tangent transitions, so cylinders return no vertices.
+   */
+  async shapeToVertexPositions(shape: TopoDS_Shape): Promise<Float32Array> {
+    const oc = await this.getOC();
+
+    const { edgeMap, count } = await this.getEdgeMap(shape);
+    const sharpIndices = await this.getSharpEdgeIndices(shape, edgeMap, count);
+
+    // Track which distinct sharp edges share each vertex position
+    const vertexEdgeSet = new Map<string, { x: number; y: number; z: number; edges: Set<number> }>();
+    const toKey = (x: number, y: number, z: number) => `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
+
+    for (const i of sharpIndices) {
+      const edgeShape = edgeMap.FindKey(i);
+      const edge = oc.TopoDS.Edge_1(edgeShape);
+      const curve = new oc.BRepAdaptor_Curve_2(edge);
+      const first = curve.FirstParameter();
+      const last = curve.LastParameter();
+
+      const p1 = curve.Value(first);
+      const p2 = curve.Value(last);
+
+      const endpoints = [
+        { x: p1.X(), y: p1.Y(), z: p1.Z() },
+        { x: p2.X(), y: p2.Y(), z: p2.Z() },
+      ];
+
+      for (const pt of endpoints) {
+        const key = toKey(pt.x, pt.y, pt.z);
+        const existing = vertexEdgeSet.get(key);
+        if (existing) {
+          existing.edges.add(i);
+        } else {
+          vertexEdgeSet.set(key, { x: pt.x, y: pt.y, z: pt.z, edges: new Set([i]) });
+        }
+      }
+    }
+
+    // Only return vertices where 2+ distinct sharp edges meet
+    const positions: number[] = [];
+    for (const [, info] of vertexEdgeSet) {
+      if (info.edges.size >= 2) {
+        positions.push(info.x, info.y, info.z);
+      }
+    }
+
+    return new Float32Array(positions);
   }
 
   async booleanDifference(
@@ -1822,6 +1868,10 @@ export class OpenCascadeService {
 
       // Get the two adjacent faces
       const face1 = oc.TopoDS.Face_1(faceList.First_1());
+
+      // Skip seam edges (edge with two pcurves on same face, e.g. cylinder/cone seams)
+      if (oc.BRep_Tool.IsClosed_2(edge, face1)) continue;
+
       const face2 = oc.TopoDS.Face_1(faceList.Last_1());
 
       // Check continuity — smooth edges (G1/C1+) are fillet transitions

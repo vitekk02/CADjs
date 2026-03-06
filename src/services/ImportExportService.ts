@@ -9,6 +9,7 @@ export interface ImportResult {
   position: THREE.Vector3;
   occBrep?: string;
   edgeGeometry?: THREE.BufferGeometry;
+  vertexPositions?: Float32Array;
 }
 
 export class ImportExportService {
@@ -242,14 +243,21 @@ export class ImportExportService {
       // Serialization is best-effort
     }
 
+    let vertexPositions: Float32Array | undefined;
     try {
-      edgeGeometry = await this.occService.shapeToEdgeLineSegments(shape, 0.05);
+      edgeGeometry = await this.occService.shapeToEdgeLineSegments(shape, 0.003);
       edgeGeometry.translate(-position.x, -position.y, -position.z);
+      vertexPositions = await this.occService.shapeToVertexPositions(shape);
+      for (let i = 0; i < vertexPositions.length; i += 3) {
+        vertexPositions[i] -= position.x;
+        vertexPositions[i + 1] -= position.y;
+        vertexPositions[i + 2] -= position.z;
+      }
     } catch {
       // Edge geometry is optional
     }
 
-    return { brep, position, occBrep, edgeGeometry };
+    return { brep, position, occBrep, edgeGeometry, vertexPositions };
   }
 
   private computeBoundingBoxCenter(

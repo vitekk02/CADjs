@@ -28,7 +28,7 @@ function getFlatAxis(brep: Brep): "x" | "y" | "z" {
 }
 
 export function useResizeMode() {
-  const { elements, getObject, updateElementPosition, objectsMap } =
+  const { elements, getObject, updateElementPosition, updateElementBrep, objectsMap } =
     useCadCore();
   const { camera, renderer, scene, getMouseIntersection, forceSceneUpdate, navToolActiveRef } =
     useCadVisualizer();
@@ -435,6 +435,7 @@ export function useResizeMode() {
         // For X/Y resizing, use the current (preview-modified) position
         // For flat-axis extrusion, we'll calculate position separately using originalPosition + offset
         let currentPosition = obj.position.clone();
+        let brepUpdated = false;
 
         const flatAxis = getFlatAxis(originalBrepRef.current);
 
@@ -460,12 +461,10 @@ export function useResizeMode() {
             const extrusionResult = await extrudeBRep(
               originalBrepRef.current,
               actualExtrusionHeight,
-              direction
+              direction,
+              undefined,
+              element.occBrep,
             );
-
-            element.brep = extrusionResult.brep;
-            (element as any).userData = (element as any).userData || {};
-            (element as any).userData.brepExtruded = true;
 
             // Use ORIGINAL position + offset (not preview-modified position)
             const originalPosition = obj.userData.originalPosition?.clone() || obj.position.clone();
@@ -475,10 +474,25 @@ export function useResizeMode() {
               originalPosition.y + extrusionResult.positionOffset.y,
               originalPosition.z + extrusionResult.positionOffset.z
             );
+
+            // Use updateElementBrep to properly store edgeGeometry/vertexPositions/occBrep
+            updateElementBrep(
+              selectedElement,
+              extrusionResult.brep,
+              currentPosition,
+              undefined,
+              extrusionResult.edgeGeometry,
+              extrusionResult.occBrep,
+              undefined,
+              extrusionResult.vertexPositions,
+            );
+            brepUpdated = true;
           }
         }
 
-        updateElementPosition(selectedElement, currentPosition);
+        if (!brepUpdated) {
+          updateElementPosition(selectedElement, currentPosition);
+        }
 
         delete obj.userData.originalBoxMin;
         delete obj.userData.originalBoxMax;
@@ -511,6 +525,7 @@ export function useResizeMode() {
     elements,
     getObject,
     updateElementPosition,
+    updateElementBrep,
     createResizeHandles,
     forceSceneUpdate,
   ]);
