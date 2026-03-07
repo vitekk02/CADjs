@@ -80,7 +80,7 @@ export function useExtrudeMode() {
   const dimSceneBodies = useCallback(() => {
     dimmedMaterialsRef.current.clear();
     elements.forEach((el) => {
-      if (!isElement3D(el)) return; // Only dim 3D bodies, leave flat profiles visible
+      if (isFlatShape(el.brep)) return; // Only dim 3D bodies, leave flat profiles visible
       const obj = getObject(el.nodeId);
       if (!obj) return;
       obj.traverse((child) => {
@@ -94,6 +94,9 @@ export function useExtrudeMode() {
           mat.transparent = true;
           mat.opacity = BODY.dimmedOpacity;
           mat.color.set(BODY.dimmedColor);
+          mat.polygonOffset = true;
+          mat.polygonOffsetFactor = 1;
+          mat.polygonOffsetUnits = 1;
           mat.needsUpdate = true;
         }
         if (child.userData.isEdgeOverlay) {
@@ -106,6 +109,9 @@ export function useExtrudeMode() {
             });
             mat.transparent = true;
             mat.opacity = BODY.dimmedOpacity;
+            mat.polygonOffset = true;
+            mat.polygonOffsetFactor = 1;
+            mat.polygonOffsetUnits = 1;
             mat.needsUpdate = true;
           }
         }
@@ -125,6 +131,9 @@ export function useExtrudeMode() {
         mat.color.set(saved.color);
         mat.opacity = saved.opacity;
         mat.transparent = saved.transparent;
+        mat.polygonOffset = false;
+        mat.polygonOffsetFactor = 0;
+        mat.polygonOffsetUnits = 0;
         mat.needsUpdate = true;
       }
       if (child.userData.isEdgeOverlay) {
@@ -133,6 +142,9 @@ export function useExtrudeMode() {
           mat.color.set(saved.color);
           mat.opacity = saved.opacity;
           mat.transparent = saved.transparent;
+          mat.polygonOffset = false;
+          mat.polygonOffsetFactor = 0;
+          mat.polygonOffsetUnits = 0;
           mat.needsUpdate = true;
         }
       }
