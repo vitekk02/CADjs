@@ -66,6 +66,11 @@ interface CadVisualizerContextType {
 
   navToolActiveRef: React.MutableRefObject<boolean>;
   controlsRef: React.MutableRefObject<OrbitControls | null>;
+
+  gridSpacing: number;
+  setGridSpacing: (spacing: number) => void;
+  gridSnapEnabled: boolean;
+  setGridSnapEnabled: (enabled: boolean) => void;
 }
 
 export const CadVisualizerContext = createContext<
@@ -98,6 +103,9 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
   const [sceneReady, setSceneReady] = useState(false); // Track when scene is initialized
   const customPreviewRef = useRef<THREE.Mesh | THREE.Line | null>(null); // Track custom shape preview for disposal
   const drawingPlaneRef = useRef(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0));
+
+  const [gridSpacing, setGridSpacing] = useState(0.5);
+  const [gridSnapEnabled, setGridSnapEnabled] = useState(false);
 
   const toggleGroundPlane = useCallback(() => {
     setShowGroundPlane((prev) => !prev);
@@ -1123,6 +1131,10 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         toggleProjection,
         navToolActiveRef,
         controlsRef,
+        gridSpacing,
+        setGridSpacing,
+        gridSnapEnabled,
+        setGridSnapEnabled,
       }}
     >
       {children}

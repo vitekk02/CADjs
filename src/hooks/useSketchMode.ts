@@ -97,8 +97,12 @@ interface UseSketchModeResult {
   handlePlaneSelectionMouseMove: (event: MouseEvent) => void;
   handlePlaneSelectionClick: (event: MouseEvent) => void;
   setPlaneOffset: (v: number) => void;
+  // Fix/unfix points
+  toggleFixPoint: () => void;
   // Constraint feedback (redundant/conflicting rollback)
   constraintFeedback: { message: string; type: "redundant" | "conflicting" } | null;
+  // Editing constraint value (double-click)
+  editingConstraintId: string | null;
 }
 
 /**
@@ -268,6 +272,8 @@ export function useSketchMode(): UseSketchModeResult {
     setProjectionType,
     navToolActiveRef,
     controlsRef,
+    gridSpacing,
+    gridSnapEnabled,
   } = useCadVisualizer();
 
   const [sketchSubMode, setSketchSubMode] = useState<SketchSubMode>("line");
@@ -438,6 +444,10 @@ export function useSketchMode(): UseSketchModeResult {
   // Selected constraint glyph (for deletion)
   const [selectedConstraintId, setSelectedConstraintId] = useState<string | null>(null);
 
+  // Double-click editing of constraint values
+  const [editingConstraintId, setEditingConstraintId] = useState<string | null>(null);
+  const lastGlyphClickRef = useRef<{ constraintId: string; time: number } | null>(null);
+
   // Plane selection state (Fusion 360 style)
   const [isSelectingPlane, setIsSelectingPlane] = useState(false);
   const [hoveredPlane, setHoveredPlane] = useState<SketchPlaneType | null>(null);
@@ -513,14 +523,13 @@ export function useSketchMode(): UseSketchModeResult {
   // Snap to grid
   const snapToGrid = useCallback(
     (point: THREE.Vector3): THREE.Vector3 => {
-      if (showGroundPlane) {
-        const gridSize = 0.5;
-        point.x = Math.round(point.x / gridSize) * gridSize;
-        point.y = Math.round(point.y / gridSize) * gridSize;
+      if (gridSnapEnabled) {
+        point.x = Math.round(point.x / gridSpacing) * gridSpacing;
+        point.y = Math.round(point.y / gridSpacing) * gridSpacing;
       }
       return point;
     },
-    [showGroundPlane]
+    [gridSnapEnabled, gridSpacing]
   );
 
   // Convert a 3D world point to 2D sketch coordinates (inverse of sketchTo3D)
@@ -2873,11 +2882,12 @@ export function useSketchMode(): UseSketchModeResult {
       gridGroup.userData.isSketchGrid = true;
 
       const gridSize = gridSizeOverride ?? 20;
-      const gridDivisions = gridSize * 2;
-
-      // Create grid lines using plane vectors (two-tone: major every 1 unit, minor every 0.5 unit)
-      const step = gridSize / gridDivisions;
       const halfSize = gridSize / 2;
+
+      // Create grid lines using plane vectors with configurable spacing
+      const step = gridSpacing;
+      // Major lines every 5 grid steps (or every 1 unit, whichever is larger)
+      const majorStep = Math.max(step * 5, 1.0);
 
       const majorMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.gridMajor });
       const minorMaterial = new THREE.LineBasicMaterial({ color: PLANE_THEME.gridMinor });
@@ -2886,8 +2896,8 @@ export function useSketchMode(): UseSketchModeResult {
       const minorPoints: THREE.Vector3[] = [];
 
       for (let i = -halfSize; i <= halfSize; i += step) {
-        // Determine if this is a major (integer) or minor (half-unit) line
-        const isMajor = Math.abs(i - Math.round(i)) < 1e-6;
+        // Determine if this is a major line
+        const isMajor = Math.abs(i - Math.round(i / majorStep) * majorStep) < 1e-6;
         const pts = isMajor ? majorPoints : minorPoints;
 
         // Lines along yAxis direction
@@ -2929,8 +2939,15 @@ export function useSketchMode(): UseSketchModeResult {
       scene.add(gridGroup);
       sketchGridRef.current = gridGroup;
     },
-    [scene]
+    [scene, gridSpacing]
   );
+
+  // Rebuild grid when gridSpacing changes during active sketch
+  useEffect(() => {
+    if (activeSketch && sketchGridRef.current) {
+      createSketchGrid(activeSketch.plane);
+    }
+  }, [gridSpacing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cleanup sketch grid
   const cleanupSketchGrid = useCallback(() => {
@@ -3318,6 +3335,15 @@ export function useSketchMode(): UseSketchModeResult {
             solveSketch();
             setSelectedConstraintId(null);
             event.preventDefault();
+          } else if (selectedPrimitives.length > 0 && activeSketch) {
+            // Delete selected sketch primitives
+            pushSketchUndo();
+            for (const primId of selectedPrimitives) {
+              removePrimitive(primId);
+            }
+            setSelectedPrimitives([]);
+            solveSketch();
+            event.preventDefault();
           }
           break;
 
@@ -3335,7 +3361,7 @@ export function useSketchMode(): UseSketchModeResult {
           break;
       }
     },
-    [mode, isChaining, isSelectingPlane, cancelCurrentOperation, cancelPlaneSelection, setSketchSubMode, activeSketch, selectedPrimitives, updatePrimitive, selectedConstraintId, pushSketchUndo, removeConstraint, solveSketch]
+    [mode, isChaining, isSelectingPlane, cancelCurrentOperation, cancelPlaneSelection, setSketchSubMode, activeSketch, selectedPrimitives, updatePrimitive, selectedConstraintId, pushSketchUndo, removeConstraint, removePrimitive, solveSketch]
   );
 
   // Find all primitives connected to a given primitive (sharing points)
@@ -3648,6 +3674,19 @@ export function useSketchMode(): UseSketchModeResult {
     [pushSketchUndo, removeConstraint, solveSketch, closeContextMenu]
   );
 
+  // Toggle fix/unfix on selected points
+  const toggleFixPoint = useCallback(() => {
+    if (!activeSketch || selectedPrimitives.length === 0) return;
+    pushSketchUndo();
+    for (const primId of selectedPrimitives) {
+      const prim = activeSketch.primitives.find(p => p.id === primId);
+      if (prim && isSketchPoint(prim)) {
+        updatePrimitive(primId, { fixed: !prim.fixed });
+      }
+    }
+    solveSketch();
+  }, [activeSketch, selectedPrimitives, pushSketchUndo, updatePrimitive, solveSketch]);
+
   // Apply constraint to primitives from context menu
   const applyConstraintToContextMenuPrimitives = useCallback(
     async (type: ConstraintType, value?: number) => {
@@ -3878,9 +3917,21 @@ export function useSketchMode(): UseSketchModeResult {
                 constraintId,
               });
             } else {
-              // Left-click: select the constraint glyph
-              setSelectedConstraintId(constraintId);
-              setSelectedPrimitives([]);
+              // Left-click: check for double-click to edit dimension value
+              const now = Date.now();
+              const lastClick = lastGlyphClickRef.current;
+              if (lastClick && lastClick.constraintId === constraintId && (now - lastClick.time) < SKETCH_CONFIG.DOUBLE_CLICK_THRESHOLD) {
+                // Double-click on dimension glyph → edit value
+                const constraint = activeSketch?.constraints.find(c => c.id === constraintId);
+                if (constraint?.value !== undefined) {
+                  setEditingConstraintId(constraintId);
+                  lastGlyphClickRef.current = null;
+                }
+              } else {
+                lastGlyphClickRef.current = { constraintId, time: now };
+                setSelectedConstraintId(constraintId);
+                setSelectedPrimitives([]);
+              }
             }
             return;
           }
@@ -4208,7 +4259,7 @@ export function useSketchMode(): UseSketchModeResult {
         const isTrimMode = sketchSubMode === "trim";
         const size = isTrimMode ? 0.04 : (isSelected ? 0.1 : 0.07);
         const geometry = new THREE.CircleGeometry(size, 16);
-        const pointColor = isSelected ? COLORS.selectedPoint : COLORS.point;
+        const pointColor = isSelected ? COLORS.selectedPoint : (primitive.fixed ? SKETCH_THEME.fixed : COLORS.point);
         const material = new THREE.MeshBasicMaterial({
           color: pointColor,
           depthTest: false,
@@ -4729,7 +4780,11 @@ export function useSketchMode(): UseSketchModeResult {
     handlePlaneSelectionMouseMove,
     handlePlaneSelectionClick,
     setPlaneOffset,
+    // Fix/unfix points
+    toggleFixPoint,
     // Constraint feedback (redundant/conflicting rollback)
     constraintFeedback,
+    // Editing constraint value (double-click)
+    editingConstraintId,
   };
 }

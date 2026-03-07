@@ -29,9 +29,13 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     forceSceneUpdate,
     showGroundPlane,
     navToolActiveRef,
+    gridSpacing,
+    gridSnapEnabled,
   } = useCadVisualizer();
 
   const showGroundPlaneRef = useRef(showGroundPlane);
+  const gridSpacingRef = useRef(gridSpacing);
+  const gridSnapEnabledRef = useRef(gridSnapEnabled);
 
   const [selectedObject, setSelectedObject] = useState<string | null>(null);
   const selectedObjectRef = useRef<string | null>(null);
@@ -51,6 +55,11 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
   useEffect(() => {
     showGroundPlaneRef.current = showGroundPlane;
   }, [showGroundPlane]);
+
+  useEffect(() => {
+    gridSpacingRef.current = gridSpacing;
+    gridSnapEnabledRef.current = gridSnapEnabled;
+  }, [gridSpacing, gridSnapEnabled]);
 
   useEffect(() => {
     updateElementPositionRef.current = updateElementPosition;
@@ -95,12 +104,13 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
 
         if (
           showGroundPlaneRef.current &&
+          gridSnapEnabledRef.current &&
           transformControlsRef.current.mode === "translate" &&
           dragStartPositionRef.current
         ) {
           // Snap the movement delta to grid increments (not the absolute position).
           // This preserves relative alignment of objects at non-grid positions.
-          const gridSize = 0.5;
+          const gridSize = gridSpacingRef.current;
           const startPos = dragStartPositionRef.current;
           const delta = position.clone().sub(startPos);
           delta.x = Math.round(delta.x / gridSize) * gridSize;

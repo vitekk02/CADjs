@@ -42,6 +42,7 @@ const CONSTRAINT_RULES: ConstraintRule[] = [
   { type: "tangent", requiredCount: 2, validCombinations: ["line-circle"], requiresValue: false },
   { type: "equal", requiredCount: 2, validCombinations: ["line-line", "circle-circle"], requiresValue: false },
   { type: "concentric", requiredCount: 2, validCombinations: ["circle-circle"], requiresValue: false },
+  { type: "distance", requiredCount: 1, validCombinations: ["line"], requiresValue: true },
   { type: "distance", requiredCount: 2, validCombinations: ["point-point"], requiresValue: true },
   { type: "angle", requiredCount: 2, validCombinations: ["line-line"], requiresValue: true },
   { type: "pointOnLine", requiredCount: 2, validCombinations: ["point-line"], requiresValue: false },
@@ -228,6 +229,17 @@ export function getDefaultValue(
     }
 
     case "distance": {
+      // Single line: calculate its length from endpoints
+      if (selectedPrimitives.length === 1 && isSketchLine(selectedPrimitives[0])) {
+        const line = selectedPrimitives[0];
+        const p1 = primitives.find(p => p.id === line.p1Id);
+        const p2 = primitives.find(p => p.id === line.p2Id);
+        if (p1 && isSketchPoint(p1) && p2 && isSketchPoint(p2)) {
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          return Math.sqrt(dx * dx + dy * dy);
+        }
+      }
       // Calculate current distance between two points
       if (selectedPrimitives.length === 2) {
         const p1 = selectedPrimitives[0] as SketchPoint;

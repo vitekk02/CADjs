@@ -36,6 +36,7 @@ interface SketchContextMenuProps {
   onClose: () => void;
   onApplyConstraint: (type: ConstraintType, value?: number) => void;
   onDeleteConstraint?: (id: string) => void;
+  onToggleFixPoint?: () => void;
 }
 
 const SketchContextMenu: FC<SketchContextMenuProps> = ({
@@ -48,6 +49,7 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
   onClose,
   onApplyConstraint,
   onDeleteConstraint,
+  onToggleFixPoint,
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const [valueInputVisible, setValueInputVisible] = React.useState(false);
@@ -212,6 +214,17 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
           <div className="px-3 py-1 text-xs text-gray-400 border-b border-gray-700">
             Constraints ({primitiveIds.length} selected)
           </div>
+          {onToggleFixPoint && primitiveTypes.some(t => t === "point") && (
+            <button
+              onClick={() => {
+                onToggleFixPoint();
+                onClose();
+              }}
+              className="w-full px-3 py-2 text-left text-sm text-white hover:bg-gray-700 flex items-center gap-2 border-b border-gray-700"
+            >
+              <span>Fix/Unfix Point</span>
+            </button>
+          )}
           {applicableConstraints.length > 0 ? (
             applicableConstraints.map((option, index) => (
               <button

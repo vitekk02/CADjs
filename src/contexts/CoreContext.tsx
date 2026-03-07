@@ -1426,8 +1426,8 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
               }
 
               if (cleanFace) {
-                edgeGeometry = await ocService.shapeToEdgeLineSegments(cleanFace, 0.003);
-                vertexPositions = await ocService.shapeToVertexPositions(cleanFace);
+                edgeGeometry = await ocService.shapeToEdgeLineSegments(cleanFace, 0.003, true);
+                vertexPositions = await ocService.shapeToVertexPositions(cleanFace, true);
               }
             } catch (e) {
               console.warn("Failed to compute profile edge geometry:", e);

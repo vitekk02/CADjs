@@ -25,6 +25,8 @@ export function useDrawMode(): UseDrawModeResult {
     customShapePoints,
     createCustomShapePreview,
     showGroundPlane,
+    gridSpacing,
+    gridSnapEnabled,
   } = useCadVisualizer();
 
   const isDrawingRef = useRef(false);
@@ -35,14 +37,13 @@ export function useDrawMode(): UseDrawModeResult {
 
   const snapToGrid = useCallback(
     (point: THREE.Vector3): THREE.Vector3 => {
-      if (showGroundPlane) {
-        const gridSize = 0.5;
-        point.x = Math.round(point.x / gridSize) * gridSize;
-        point.y = Math.round(point.y / gridSize) * gridSize;
+      if (gridSnapEnabled) {
+        point.x = Math.round(point.x / gridSpacing) * gridSpacing;
+        point.y = Math.round(point.y / gridSpacing) * gridSpacing;
       }
       return point;
     },
-    [showGroundPlane]
+    [gridSnapEnabled, gridSpacing]
   );
 
   const { navToolActiveRef } = useCadVisualizer();
@@ -53,9 +54,7 @@ export function useDrawMode(): UseDrawModeResult {
     let point = getMouseIntersection(event);
     if (!point) return;
 
-    if (showGroundPlane) {
-      point = snapToGrid(point);
-    }
+    point = snapToGrid(point);
 
     if (event.type === "mousedown") {
       if (currentShape === "custom") {

@@ -5,6 +5,7 @@ import {
   ConstraintType,
   GeometricConstraintType,
   DimensionalConstraintType,
+  isSketchPoint,
 } from "../types/sketch-types";
 import {
   getAvailableConstraints,
@@ -26,6 +27,11 @@ interface SketchToolbarProps {
   onApplyConstraint: (type: ConstraintType, value?: number) => void;
   isChaining?: boolean;
   isOperationPending?: boolean;
+  onToggleFixPoint?: () => void;
+  gridSpacing?: number;
+  onGridSpacingChange?: (spacing: number) => void;
+  gridSnapEnabled?: boolean;
+  onGridSnapToggle?: () => void;
 }
 
 const GEOMETRIC_CONSTRAINTS: GeometricConstraintType[] = [
@@ -59,6 +65,11 @@ const SketchToolbar: FC<SketchToolbarProps> = ({
   onApplyConstraint,
   isChaining = false,
   isOperationPending = false,
+  onToggleFixPoint,
+  gridSpacing = 0.5,
+  onGridSpacingChange,
+  gridSnapEnabled = true,
+  onGridSnapToggle,
 }) => {
   const [pendingConstraint, setPendingConstraint] = useState<ConstraintType | null>(null);
   const [defaultValue, setDefaultValue] = useState<number | undefined>(undefined);
@@ -170,6 +181,60 @@ const SketchToolbar: FC<SketchToolbarProps> = ({
       >
         Constr
       </button>
+
+      {/* Fix/Unfix button */}
+      {onToggleFixPoint && (() => {
+        const hasPointSelected = selectedPrimitives.some(id => {
+          const prim = activeSketch.primitives.find(p => p.id === id);
+          return prim && isSketchPoint(prim);
+        });
+        return (
+          <button
+            className={`flex-none px-2 py-1 text-sm rounded ${
+              !hasPointSelected || isOperationPending
+                ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                : "bg-gray-700 hover:bg-green-600 text-gray-200"
+            }`}
+            disabled={!hasPointSelected || isOperationPending}
+            onClick={onToggleFixPoint}
+            title="Fix/Unfix Point"
+          >
+            Fix
+          </button>
+        );
+      })()}
+
+      {/* Separator */}
+      <div className="flex-none w-px h-5 bg-gray-600 mx-1" />
+
+      {/* Grid controls */}
+      {onGridSnapToggle && (
+        <button
+          className={`flex-none px-1.5 py-1 text-xs rounded font-mono ${
+            gridSnapEnabled
+              ? "bg-blue-600 text-white"
+              : "bg-gray-700 hover:bg-gray-600 text-gray-400"
+          }`}
+          onClick={onGridSnapToggle}
+          title={gridSnapEnabled ? "Disable Grid Snap" : "Enable Grid Snap"}
+        >
+          ⊞
+        </button>
+      )}
+      {onGridSpacingChange && (
+        <select
+          className="flex-none px-1 py-1 text-xs bg-gray-700 text-gray-200 rounded border border-gray-600"
+          value={gridSpacing}
+          onChange={(e) => onGridSpacingChange(parseFloat(e.target.value))}
+          title="Grid Spacing"
+        >
+          <option value={0.1}>0.1</option>
+          <option value={0.25}>0.25</option>
+          <option value={0.5}>0.5</option>
+          <option value={1.0}>1.0</option>
+          <option value={2.0}>2.0</option>
+        </select>
+      )}
 
       {/* Separator */}
       <div className="flex-none w-px h-5 bg-gray-600 mx-1" />

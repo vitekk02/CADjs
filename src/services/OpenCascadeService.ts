@@ -759,21 +759,25 @@ export class OpenCascadeService {
   async shapeToEdgeLineSegments(
     shape: TopoDS_Shape,
     linearDeflection: number = 0.003,
+    allEdges: boolean = false,
   ): Promise<THREE.BufferGeometry> {
     const oc = await this.getOC();
 
-    // Build indexed edge map and filter to sharp edges only
+    // Build indexed edge map and filter to sharp edges only (unless allEdges)
     const edgeMap = new oc.TopTools_IndexedMapOfShape_1();
     oc.TopExp.MapShapes_1(shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, edgeMap);
     const count = edgeMap.Size();
-    const sharpIndices = await this.getSharpEdgeIndices(shape, edgeMap, count);
+    const sharpIndices = allEdges ? null : await this.getSharpEdgeIndices(shape, edgeMap, count);
 
     const positions: number[] = [];
 
     for (let i = 1; i <= count; i++) {
-      if (!sharpIndices.has(i)) continue;
+      if (sharpIndices && !sharpIndices.has(i)) continue;
 
       const edge = oc.TopoDS.Edge_1(edgeMap.FindKey(i));
+
+      // Skip degenerate (zero-length) edges when showing all edges
+      if (!sharpIndices && oc.BRep_Tool.Degenerated(edge)) continue;
       const curve = new oc.BRepAdaptor_Curve_2(edge);
 
       const curveType = curve.GetType();
@@ -836,19 +840,26 @@ export class OpenCascadeService {
    * Returns positions of vertices where 2+ distinct sharp edges meet (true corners).
    * Filters seam edges and smooth/tangent transitions, so cylinders return no vertices.
    */
-  async shapeToVertexPositions(shape: TopoDS_Shape): Promise<Float32Array> {
+  async shapeToVertexPositions(shape: TopoDS_Shape, allEdges: boolean = false): Promise<Float32Array> {
     const oc = await this.getOC();
 
     const { edgeMap, count } = await this.getEdgeMap(shape);
-    const sharpIndices = await this.getSharpEdgeIndices(shape, edgeMap, count);
+    const sharpIndices = allEdges ? null : await this.getSharpEdgeIndices(shape, edgeMap, count);
 
-    // Track which distinct sharp edges share each vertex position
+    // Track which distinct edges share each vertex position
     const vertexEdgeSet = new Map<string, { x: number; y: number; z: number; edges: Set<number> }>();
     const toKey = (x: number, y: number, z: number) => `${x.toFixed(5)},${y.toFixed(5)},${z.toFixed(5)}`;
 
-    for (const i of sharpIndices) {
+    // Iterate over sharp indices (filtered) or all edge indices
+    const edgeIndices = sharpIndices ? sharpIndices : Array.from({ length: count }, (_, k) => k + 1);
+
+    for (const i of edgeIndices) {
       const edgeShape = edgeMap.FindKey(i);
       const edge = oc.TopoDS.Edge_1(edgeShape);
+
+      // Skip degenerate edges when showing all edges
+      if (!sharpIndices && oc.BRep_Tool.Degenerated(edge)) continue;
+
       const curve = new oc.BRepAdaptor_Curve_2(edge);
       const first = curve.FirstParameter();
       const last = curve.LastParameter();

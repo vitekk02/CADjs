@@ -77,6 +77,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     duplicateSelectedElements,
     updatePrimitivesAndSolve,
     pinnedMeasurements,
+    addConstraintAndSolve,
+    removeConstraint: removeSketchConstraint,
+    pushSketchUndo,
   } = useCadCore();
   const {
     drawShape,
@@ -99,6 +102,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     toggleProjection,
     navToolActiveRef,
     controlsRef,
+    gridSpacing,
+    setGridSpacing,
+    gridSnapEnabled,
+    setGridSnapEnabled,
   } = useCadVisualizer();
   const { showToast } = useToast();
 
@@ -151,7 +158,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     handlePlaneSelectionMouseMove,
     handlePlaneSelectionClick,
     setPlaneOffset: setSketchPlaneOffset,
+    toggleFixPoint,
     constraintFeedback,
+    editingConstraintId,
   } = useSketchMode();
 
   const {
@@ -283,7 +292,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   const [pendingDimensionPrimitiveId, setPendingDimensionPrimitiveId] =
     useState<string | null>(null);
   const [dimensionSource, setDimensionSource] = useState<
-    "lineCreation" | "dimensionMode" | null
+    "lineCreation" | "dimensionMode" | "constraintEdit" | null
   >(null);
 
   const selectedObjectRef = useRef<string | null>(null);
@@ -867,8 +876,92 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     setDimensionInputVisible(true);
   }, [pendingLineDimension, renderer, camera]);
 
+  // Show dimension input when double-clicking a constraint glyph
+  const editingConstraintRef = useRef<{ id: string; type: string; primitiveIds: string[] } | null>(null);
+  useEffect(() => {
+    if (!editingConstraintId || !activeSketch || !renderer || !camera) return;
+
+    const constraint = activeSketch.constraints.find(c => c.id === editingConstraintId);
+    if (!constraint || constraint.value === undefined) return;
+
+    // Store constraint info for submit handler
+    editingConstraintRef.current = {
+      id: constraint.id,
+      type: constraint.type,
+      primitiveIds: [...constraint.primitiveIds],
+    };
+
+    // Find position for the dimension input from the constraint's primitive positions
+    let worldPos = new THREE.Vector3();
+    const plane = activeSketch.plane;
+    const sketchTo3D = (x: number, y: number) =>
+      new THREE.Vector3().copy(plane.origin).addScaledVector(plane.xAxis, x).addScaledVector(plane.yAxis, y);
+
+    if (constraint.primitiveIds.length === 2) {
+      // Point-point distance: midpoint
+      const p1 = activeSketch.primitives.find(p => p.id === constraint.primitiveIds[0] && p.type === "point");
+      const p2 = activeSketch.primitives.find(p => p.id === constraint.primitiveIds[1] && p.type === "point");
+      if (p1 && p1.type === "point" && p2 && p2.type === "point") {
+        worldPos = sketchTo3D((p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
+      }
+    } else if (constraint.primitiveIds.length === 1) {
+      const prim = activeSketch.primitives.find(p => p.id === constraint.primitiveIds[0]);
+      if (prim?.type === "line") {
+        const p1 = activeSketch.primitives.find(p => p.id === prim.p1Id && p.type === "point");
+        const p2 = activeSketch.primitives.find(p => p.id === prim.p2Id && p.type === "point");
+        if (p1 && p1.type === "point" && p2 && p2.type === "point") {
+          worldPos = sketchTo3D((p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
+        }
+      } else if (prim?.type === "circle" || prim?.type === "arc") {
+        const center = activeSketch.primitives.find(p => p.id === prim.centerId && p.type === "point");
+        if (center && center.type === "point") {
+          worldPos = sketchTo3D(center.x + (prim.radius || 0) / 2, center.y);
+        }
+      }
+    }
+
+    // Convert to screen coords
+    worldPos.project(camera);
+    const rect = renderer.domElement.getBoundingClientRect();
+    const screenX = ((worldPos.x + 1) / 2) * rect.width + rect.left;
+    const screenY = ((-worldPos.y + 1) / 2) * rect.height + rect.top;
+
+    // Display value: convert angle from radians to degrees
+    const displayValue = constraint.type === "angle"
+      ? Math.round((constraint.value * 180) / Math.PI)
+      : constraint.value;
+
+    setDimensionInputPosition({ x: screenX, y: screenY });
+    setDimensionInputLabel(constraint.type.charAt(0).toUpperCase() + constraint.type.slice(1));
+    setDimensionInputValue(displayValue);
+    setPendingDimensionPrimitiveId(constraint.id);
+    setDimensionSource("constraintEdit");
+    setDimensionInputVisible(true);
+  }, [editingConstraintId, activeSketch, renderer, camera]);
+
   // Handle dimension input submission
   const handleDimensionSubmit = (value: number) => {
+    if (dimensionSource === "constraintEdit" && editingConstraintRef.current && activeSketch) {
+      const { id: oldId, type, primitiveIds } = editingConstraintRef.current;
+      // Convert angle from degrees to radians
+      const finalValue = type === "angle" ? (value * Math.PI) / 180 : value;
+      // Remove old constraint and add new one with updated value
+      pushSketchUndo();
+      removeSketchConstraint(oldId);
+      addConstraintAndSolve({
+        id: `const_${Date.now()}`,
+        type: type as any,
+        primitiveIds,
+        value: finalValue,
+        driving: true,
+      });
+      editingConstraintRef.current = null;
+      setDimensionInputVisible(false);
+      setPendingDimensionPrimitiveId(null);
+      setDimensionSource(null);
+      return;
+    }
+
     if (!pendingDimensionPrimitiveId) return;
 
     if (dimensionSource === "lineCreation") {
@@ -895,10 +988,21 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     if (dimensionSource === "lineCreation") {
       clearPendingLineDimension();
     }
+    editingConstraintRef.current = null;
     setDimensionInputVisible(false);
     setPendingDimensionPrimitiveId(null);
     setDimensionSource(null);
   };
+
+  // "Fully constrained" toast when DOF transitions to 0
+  const prevDofRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!activeSketch) { prevDofRef.current = null; return; }
+    if (prevDofRef.current !== null && prevDofRef.current > 0 && activeSketch.dof === 0) {
+      showToast("Sketch fully constrained", "success");
+    }
+    prevDofRef.current = activeSketch.dof;
+  }, [activeSketch?.dof, activeSketch, showToast]);
 
   // Close undo/redo dropdowns on click outside
   useEffect(() => {
@@ -1710,6 +1814,11 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                   onApplyConstraint={applyConstraint}
                   isChaining={isChaining}
                   isOperationPending={isOperationPending}
+                  onToggleFixPoint={toggleFixPoint}
+                  gridSpacing={gridSpacing}
+                  onGridSpacingChange={setGridSpacing}
+                  gridSnapEnabled={gridSnapEnabled}
+                  onGridSnapToggle={() => setGridSnapEnabled(!gridSnapEnabled)}
                 />
               )}
 
@@ -2319,6 +2428,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               onClose={closeSketchContextMenu}
               onApplyConstraint={applyConstraintToContextMenuPrimitives}
               onDeleteConstraint={deleteSketchConstraint}
+              onToggleFixPoint={toggleFixPoint}
             />
           )}
 

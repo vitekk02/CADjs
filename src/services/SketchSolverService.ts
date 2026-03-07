@@ -386,19 +386,32 @@ export class SketchSolverService {
       }
 
       case "distance": {
-        // Distance between two points
-        if (
-          constraint.primitiveIds.length === 2 &&
-          constraint.value !== undefined
-        ) {
-          return {
-            id: constraint.id,
-            type: "p2p_distance",
-            p1_id: constraint.primitiveIds[0],
-            p2_id: constraint.primitiveIds[1],
-            distance: constraint.value,
-            driving,
-          } as GcsSketchPrimitive;
+        if (constraint.value !== undefined) {
+          if (constraint.primitiveIds.length === 2) {
+            // Distance between two points
+            return {
+              id: constraint.id,
+              type: "p2p_distance",
+              p1_id: constraint.primitiveIds[0],
+              p2_id: constraint.primitiveIds[1],
+              distance: constraint.value,
+              driving,
+            } as GcsSketchPrimitive;
+          } else if (constraint.primitiveIds.length === 1) {
+            // Single line: distance between its endpoints
+            const lineId = constraint.primitiveIds[0];
+            const line = primitives.find(p => p.id === lineId && isSketchLine(p)) as SketchLine | undefined;
+            if (line) {
+              return {
+                id: constraint.id,
+                type: "p2p_distance",
+                p1_id: line.p1Id,
+                p2_id: line.p2Id,
+                distance: constraint.value,
+                driving,
+              } as GcsSketchPrimitive;
+            }
+          }
         }
         break;
       }

@@ -62,6 +62,7 @@ export const SKETCH = {
   constraintGlyphBg: 0x333333,    // Dark background circle
   trimHighlight: 0xff4444,        // Red for segment to be removed
   extendPreview: 0x44ff44,        // Green for extension preview line
+  fixed: 0x00cc44,                // Green for fixed/pinned points
 } as const;
 
 // ── Sketch Inference Glyphs ────────────────────────────────────────
