@@ -435,8 +435,10 @@ export function useExtrudeMode() {
             transparent: true,
             opacity: 0.6,
             side: THREE.DoubleSide,
+            depthTest: false,
           })
         );
+        previewMesh.renderOrder = 500;
 
         // The cached geometry is a unit extrusion (depth=1) along the flat normal
         // Scale the appropriate axis to match the desired depth
