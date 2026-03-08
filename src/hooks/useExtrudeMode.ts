@@ -598,7 +598,7 @@ export function useExtrudeMode() {
         const normal = getFlatNormal(originalBrepRef.current, profileElement);
         const normalVec = { x: normal.x, y: normal.y, z: normal.z };
 
-        const extrusionResult = await extrudeBRep(originalBrepRef.current, depth, ocDirection, normalVec);
+        const extrusionResult = await extrudeBRep(originalBrepRef.current, depth, ocDirection, normalVec, profileElement.occBrep);
 
         // 2. Calculate world position of the extruded tool
         const toolWorldPos = new THREE.Vector3(
@@ -608,7 +608,9 @@ export function useExtrudeMode() {
         );
 
         // Convert tool BRep to OCC shape at world position
-        const toolShape = await ocService.brepToOCShape(extrusionResult.brep, toolWorldPos);
+        const toolShape = extrusionResult.occBrep
+          ? await ocService.occBrepToOCShape(extrusionResult.occBrep, toolWorldPos)
+          : await ocService.brepToOCShape(extrusionResult.brep, toolWorldPos);
 
         // 3. Find an intersecting 3D body
         let targetElement: SceneElement | null = null;

@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import * as THREE from "three";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { useCadCore } from "../contexts/CoreContext";
@@ -15,6 +15,7 @@ interface MoveModeActions {
   handleMouseMove: (event: MouseEvent) => void;
   handleMouseUp: (event: MouseEvent) => void;
   clearSelection: () => void;
+  cleanup: () => void;
 }
 
 const useMoveMode = (): [MoveModeState, MoveModeActions] => {
@@ -373,6 +374,21 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
     setSelectedObject(null);
   };
 
+  // Cleanup for centralized mode-switch cleanup
+  const cleanup = useCallback(() => {
+    if (selectedObjectRef.current) {
+      resetObjectVisuals(selectedObjectRef.current);
+    }
+    if (transformControlsRef.current) {
+      transformControlsRef.current.detach();
+      try {
+        const gizmo = transformControlsRef.current.getHelper();
+        if (gizmo) gizmo.visible = false;
+      } catch (e) { /* ignore */ }
+    }
+    setSelectedObject(null);
+  }, [getObject]); // resetObjectVisuals uses getObject
+
   // Mouse down handler for selection
   const handleMouseDown = (event: MouseEvent) => {
     // Skip handling if this is a gizmo interaction
@@ -434,6 +450,7 @@ const useMoveMode = (): [MoveModeState, MoveModeActions] => {
       handleMouseMove,
       handleMouseUp,
       clearSelection,
+      cleanup,
     },
   ];
 };

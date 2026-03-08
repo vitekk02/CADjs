@@ -19,13 +19,13 @@ export interface UseCombineModeResult {
   keepTools: boolean;
   setKeepTools: (keep: boolean) => void;
   resetSelection: () => void;
+  cleanup: () => void;
 }
 
 export function useCombineMode(): UseCombineModeResult {
   const {
     elements,
     getObject,
-    mode,
     combineSelectedElements,
   } = useCadCore();
 
@@ -80,15 +80,7 @@ export function useCombineMode(): UseCombineModeResult {
     setToolBodies([]);
   }, [resetAllColors]);
 
-  // Reset when mode changes away from combine
-  useEffect(() => {
-    if (mode !== "combine") {
-      resetAllColors();
-      setTargetBody(null);
-      setToolBodies([]);
-      hoveredRef.current = null;
-    }
-  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cleanup = resetSelection;
 
   const findClickedElement = useCallback((event: MouseEvent): string | null => {
     if (!renderer || !camera) return null;
@@ -203,5 +195,6 @@ export function useCombineMode(): UseCombineModeResult {
     keepTools,
     setKeepTools,
     resetSelection,
+    cleanup,
   };
 }

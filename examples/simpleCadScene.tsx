@@ -117,7 +117,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
 
   const [
     { selectedObject },
-    { handleMouseDown, handleMouseMove, handleMouseUp, clearSelection },
+    { handleMouseDown, handleMouseMove, handleMouseUp, clearSelection, cleanup: cleanupMove },
   ] = useMoveMode();
   const {
     handleCombineMouseDown,
@@ -131,6 +131,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     keepTools: combineKeepTools,
     setKeepTools: setCombineKeepTools,
     resetSelection: resetCombineSelection,
+    cleanup: cleanupCombine,
   } = useCombineMode();
   const {
     sketchSubMode,
@@ -632,14 +633,29 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     };
   }, [mode, handleMeasureKeyDown, clearTemporaryMeasurements, pinMeasurement, deleteMeasurement]);
 
-  // Cleanup temporary measurements when leaving measure mode
+  // Centralized mode cleanup: when mode changes, clean up the previous mode
+  const modeCleanupMap = useMemo<Record<SceneMode, (() => void) | null>>(() => ({
+    move: cleanupMove,
+    extrude: cleanupExtrude,
+    fillet: cleanupFillet,
+    sweep: cleanupSweep,
+    loft: cleanupLoft,
+    revolve: cleanupRevolve,
+    combine: cleanupCombine,
+    measure: cleanupMeasure,
+    sketch: null, // managed by finishSketch/cancelSketch
+  }), [cleanupMove, cleanupExtrude, cleanupFillet, cleanupSweep,
+       cleanupLoft, cleanupRevolve, cleanupCombine, cleanupMeasure]);
+
   const prevModeRef = useRef(mode);
   useEffect(() => {
-    if (prevModeRef.current === "measure" && mode !== "measure") {
-      cleanupMeasure();
+    const prevMode = prevModeRef.current;
+    if (prevMode !== mode) {
+      const cleanupFn = modeCleanupMap[prevMode];
+      if (cleanupFn) cleanupFn();
     }
     prevModeRef.current = mode;
-  }, [mode, cleanupMeasure]);
+  }, [mode, modeCleanupMap]);
 
   // Global keyboard listener for undo/redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
   // In sketch mode with active sketch, routes to sketch undo/redo exclusively
@@ -1422,12 +1438,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                     : "bg-gray-700 hover:bg-gray-600 text-gray-200"
               }`}
               disabled={isLocked}
-              onClick={() => {
-                if (mode !== "extrude") {
-                  cleanupExtrude();
-                }
-                setMode("extrude");
-              }}
+              onClick={() => setMode("extrude")}
             >
               Extrude
             </button>
@@ -1473,12 +1484,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                     : "bg-gray-700 hover:bg-gray-600 text-gray-200"
               }`}
               disabled={isLocked}
-              onClick={() => {
-                if (mode !== "fillet") {
-                  cleanupFillet();
-                }
-                setMode("fillet");
-              }}
+              onClick={() => setMode("fillet")}
             >
               Fillet (Chamfer)
             </button>
@@ -1491,12 +1497,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                     : "bg-gray-700 hover:bg-gray-600 text-gray-200"
               }`}
               disabled={isLocked}
-              onClick={() => {
-                if (mode !== "sweep") {
-                  cleanupSweep();
-                }
-                setMode("sweep");
-              }}
+              onClick={() => setMode("sweep")}
             >
               Sweep
             </button>
@@ -1509,12 +1510,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                     : "bg-gray-700 hover:bg-gray-600 text-gray-200"
               }`}
               disabled={isLocked}
-              onClick={() => {
-                if (mode !== "loft") {
-                  cleanupLoft();
-                }
-                setMode("loft");
-              }}
+              onClick={() => setMode("loft")}
             >
               Loft
             </button>
@@ -1527,12 +1523,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                     : "bg-gray-700 hover:bg-gray-600 text-gray-200"
               }`}
               disabled={isLocked}
-              onClick={() => {
-                if (mode !== "revolve") {
-                  cleanupRevolve();
-                }
-                setMode("revolve");
-              }}
+              onClick={() => setMode("revolve")}
             >
               Revolve
             </button>
