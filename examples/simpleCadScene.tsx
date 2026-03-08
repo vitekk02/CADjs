@@ -115,6 +115,39 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   const undoDropdownRef = useRef<HTMLDivElement>(null);
   const redoDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Responsive state
+  const [browserOpen, setBrowserOpen] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(min-width: 1024px)").matches : true
+  );
+  const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
+  const [sketchPropertiesOpen, setSketchPropertiesOpen] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(min-width: 1024px)").matches : true
+  );
+  const overflowMenuRef = useRef<HTMLDivElement>(null);
+
+  // Auto-collapse panels on resize
+  useEffect(() => {
+    const lgQuery = window.matchMedia("(min-width: 1024px)");
+    const handler = (e: MediaQueryListEvent) => {
+      setBrowserOpen(e.matches);
+      setSketchPropertiesOpen(e.matches);
+    };
+    lgQuery.addEventListener("change", handler);
+    return () => lgQuery.removeEventListener("change", handler);
+  }, []);
+
+  // Close overflow menu on outside click
+  useEffect(() => {
+    if (!overflowMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (overflowMenuRef.current && !overflowMenuRef.current.contains(e.target as Node)) {
+        setOverflowMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [overflowMenuOpen]);
+
   const [
     { selectedObject },
     { handleMouseDown, handleMouseMove, handleMouseUp, clearSelection, cleanup: cleanupMove },
@@ -1383,19 +1416,45 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
 
   return (
     <div className="w-full h-screen flex overflow-hidden">
+      {/* Browser Panel toggle button - visible when panel is closed */}
+      {!browserOpen && (
+        <button
+          className="fixed top-14 left-2 z-40 p-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 shadow-lg"
+          onClick={() => setBrowserOpen(true)}
+          title="Show Browser"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+      )}
+
       {/* Browser Panel - left side */}
-      <div className="flex-none w-56 bg-gray-800 bg-opacity-90 border-r border-gray-700 overflow-hidden">
-        <BrowserPanel
-          sections={browserSections}
-          selectedElementId={selectedElementId}
-          onSelectNode={handleBrowserSelect}
-          onToggleVisibility={handleToggleVisibility}
-          onToggleSectionExpanded={toggleSectionExpanded}
-          onToggleItemExpanded={toggleNodeExpanded}
-          onRenameNode={renameNode}
-          onDeleteNode={deleteNode}
-        />
-      </div>
+      {/* On lg+: inline. On < lg: absolute overlay */}
+      {browserOpen && (
+        <div className="flex-none w-56 bg-gray-800 bg-opacity-90 border-r border-gray-700 overflow-hidden max-lg:absolute max-lg:z-30 max-lg:h-full max-lg:shadow-xl">
+          {/* Collapse button */}
+          <button
+            className="w-full flex items-center justify-end px-2 py-1 text-gray-400 hover:text-gray-200 hover:bg-gray-700 lg:border-b lg:border-gray-700"
+            onClick={() => setBrowserOpen(false)}
+            title="Collapse Browser"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <BrowserPanel
+            sections={browserSections}
+            selectedElementId={selectedElementId}
+            onSelectNode={handleBrowserSelect}
+            onToggleVisibility={handleToggleVisibility}
+            onToggleSectionExpanded={toggleSectionExpanded}
+            onToggleItemExpanded={toggleNodeExpanded}
+            onRenameNode={renameNode}
+            onDeleteNode={deleteNode}
+          />
+        </div>
+      )}
 
       {/* Center column: toolbars + canvas */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -1408,7 +1467,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             {/* Separator */}
             <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
 
-            {/* Primary mode buttons */}
+            {/* Core buttons — always visible */}
             <button
               className={`flex-none px-3 py-1.5 text-sm rounded ${
                 isOperationPending
@@ -1456,143 +1515,210 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               Move
             </button>
 
-            {/* Separator */}
-            <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
+            {/* Secondary buttons — desktop only inline */}
+            <div className="hidden lg:contents">
+              {/* Separator */}
+              <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
 
-            {/* Combine (Boolean) button */}
-            <button
-              className={`flex-none px-3 py-1.5 text-sm rounded ${
-                isLocked
-                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-                  : isBooleanMode
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
-              }`}
-              disabled={isLocked}
-              onClick={() => setMode("combine")}
-            >
-              Combine
-            </button>
-
-            {/* Fillet / Chamfer button */}
-            <button
-              className={`flex-none px-3 py-1.5 text-sm rounded ${
-                isLocked
-                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-                  : mode === "fillet"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
-              }`}
-              disabled={isLocked}
-              onClick={() => setMode("fillet")}
-            >
-              Fillet (Chamfer)
-            </button>
-            <button
-              className={`flex-none px-3 py-1.5 text-sm rounded ${
-                isLocked
-                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-                  : mode === "sweep"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
-              }`}
-              disabled={isLocked}
-              onClick={() => setMode("sweep")}
-            >
-              Sweep
-            </button>
-            <button
-              className={`flex-none px-3 py-1.5 text-sm rounded ${
-                isLocked
-                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-                  : mode === "loft"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
-              }`}
-              disabled={isLocked}
-              onClick={() => setMode("loft")}
-            >
-              Loft
-            </button>
-            <button
-              className={`flex-none px-3 py-1.5 text-sm rounded ${
-                isLocked
-                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-                  : mode === "revolve"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
-              }`}
-              disabled={isLocked}
-              onClick={() => setMode("revolve")}
-            >
-              Revolve
-            </button>
-
-            {/* Separator */}
-            <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
-
-            <button
-              className={`flex-none px-3 py-1.5 text-sm rounded ${
-                isLocked
-                  ? "bg-gray-800 text-gray-500 cursor-not-allowed"
-                  : mode === "measure"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
-              }`}
-              disabled={isLocked}
-              onClick={() => setMode("measure")}
-            >
-              Measure
-            </button>
-
-            {/* Separator */}
-            <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
-
-            {/* Grid toggle */}
-            <button
-              className={`flex-none px-2 py-1.5 text-sm rounded ${
-                showGroundPlane
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-700 hover:bg-gray-600 text-gray-200"
-              }`}
-              onClick={toggleGroundPlane}
-              title={showGroundPlane ? "Hide Grid" : "Show Grid"}
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+              {/* Combine (Boolean) button */}
+              <button
+                className={`flex-none px-3 py-1.5 text-sm rounded ${
+                  isLocked
+                    ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                    : isBooleanMode
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                }`}
+                disabled={isLocked}
+                onClick={() => setMode("combine")}
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={1.5}
-                  d="M3 3h18v18H3V3zM3 9h18M3 15h18M9 3v18M15 3v18"
-                />
-              </svg>
-            </button>
+                Combine
+              </button>
 
-            {/* Fit All */}
-            <button
-              className="flex-none px-2 py-1.5 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
-              onClick={handleFitAll}
-              title="Fit All (F)"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+              {/* Fillet / Chamfer button */}
+              <button
+                className={`flex-none px-3 py-1.5 text-sm rounded ${
+                  isLocked
+                    ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                    : mode === "fillet"
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                }`}
+                disabled={isLocked}
+                onClick={() => setMode("fillet")}
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={1.5}
-                  d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4M8 8h8v8H8z"
-                />
-              </svg>
-            </button>
+                Fillet
+              </button>
+              <button
+                className={`flex-none px-3 py-1.5 text-sm rounded ${
+                  isLocked
+                    ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                    : mode === "sweep"
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                }`}
+                disabled={isLocked}
+                onClick={() => setMode("sweep")}
+              >
+                Sweep
+              </button>
+              <button
+                className={`flex-none px-3 py-1.5 text-sm rounded ${
+                  isLocked
+                    ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                    : mode === "loft"
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                }`}
+                disabled={isLocked}
+                onClick={() => setMode("loft")}
+              >
+                Loft
+              </button>
+              <button
+                className={`flex-none px-3 py-1.5 text-sm rounded ${
+                  isLocked
+                    ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                    : mode === "revolve"
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                }`}
+                disabled={isLocked}
+                onClick={() => setMode("revolve")}
+              >
+                Revolve
+              </button>
+
+              {/* Separator */}
+              <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
+
+              <button
+                className={`flex-none px-3 py-1.5 text-sm rounded ${
+                  isLocked
+                    ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+                    : mode === "measure"
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                }`}
+                disabled={isLocked}
+                onClick={() => setMode("measure")}
+              >
+                Measure
+              </button>
+
+              {/* Separator */}
+              <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
+
+              {/* Grid toggle */}
+              <button
+                className={`flex-none px-2 py-1.5 text-sm rounded ${
+                  showGroundPlane
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+                }`}
+                onClick={toggleGroundPlane}
+                title={showGroundPlane ? "Hide Grid" : "Show Grid"}
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.5}
+                    d="M3 3h18v18H3V3zM3 9h18M3 15h18M9 3v18M15 3v18"
+                  />
+                </svg>
+              </button>
+
+              {/* Fit All */}
+              <button
+                className="flex-none px-2 py-1.5 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+                onClick={handleFitAll}
+                title="Fit All (F)"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.5}
+                    d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4M8 8h8v8H8z"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            {/* Overflow "More" dropdown — visible only on < lg */}
+            <div className="lg:hidden relative" ref={overflowMenuRef}>
+              <button
+                className="flex-none px-2 py-1.5 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+                onClick={() => setOverflowMenuOpen(!overflowMenuOpen)}
+                title="More tools"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01" />
+                </svg>
+              </button>
+              {overflowMenuOpen && (
+                <div className="absolute top-full left-0 mt-1 w-44 bg-gray-800 border border-gray-600 rounded-md shadow-lg z-50">
+                  {([
+                    { label: "Combine", mode: "combine" as SceneMode },
+                    { label: "Fillet", mode: "fillet" as SceneMode },
+                    { label: "Sweep", mode: "sweep" as SceneMode },
+                    { label: "Loft", mode: "loft" as SceneMode },
+                    { label: "Revolve", mode: "revolve" as SceneMode },
+                    { label: "Measure", mode: "measure" as SceneMode },
+                  ]).map((item) => (
+                    <button
+                      key={item.mode}
+                      className={`w-full px-3 py-2 text-sm text-left ${
+                        isLocked
+                          ? "text-gray-500 cursor-not-allowed"
+                          : mode === item.mode
+                            ? "bg-blue-600 text-white"
+                            : "text-gray-200 hover:bg-gray-700"
+                      }`}
+                      disabled={isLocked}
+                      onClick={() => {
+                        setMode(item.mode);
+                        setOverflowMenuOpen(false);
+                      }}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                  <div className="border-t border-gray-600 my-1" />
+                  <button
+                    className={`w-full px-3 py-2 text-sm text-left ${
+                      showGroundPlane ? "text-blue-400" : "text-gray-200"
+                    } hover:bg-gray-700`}
+                    onClick={() => {
+                      toggleGroundPlane();
+                      setOverflowMenuOpen(false);
+                    }}
+                  >
+                    {showGroundPlane ? "Hide Grid" : "Show Grid"}
+                  </button>
+                  <button
+                    className="w-full px-3 py-2 text-sm text-left text-gray-200 hover:bg-gray-700"
+                    onClick={() => {
+                      handleFitAll();
+                      setOverflowMenuOpen(false);
+                    }}
+                  >
+                    Fit All
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Separator */}
             <div className="flex-none w-px h-6 bg-gray-600 mx-1" />
@@ -2260,8 +2386,10 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         <div className="flex-1 relative min-h-0 overflow-hidden">
           <div ref={mountRef} className="absolute inset-0" />
 
-          {/* ViewCube */}
-          <ViewCube camera={camera} onViewChange={handleViewCubeClick} />
+          {/* ViewCube — responsive container */}
+          <div className="absolute top-2 right-2 md:top-4 md:right-4 w-20 h-20 md:w-[120px] md:h-[120px] z-10">
+            <ViewCube camera={camera} onViewChange={handleViewCubeClick} />
+          </div>
 
           {/* Measurement list panel */}
           {mode === "measure" && (temporaryMeasurements.length > 0 || pinnedMeasurements.length > 0) && (
@@ -2342,7 +2470,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             title={mode === "sketch"
               ? "Orthographic enforced in sketch mode"
               : `Switch to ${projectionType === "perspective" ? "Orthographic" : "Perspective"} (5)`}
-            className="absolute top-[140px] right-[16px] z-10 px-2 py-1 rounded text-xs font-medium transition-colors"
+            className="absolute top-[92px] md:top-[140px] right-[8px] md:right-[16px] z-10 px-2 py-1 rounded text-xs font-medium transition-colors"
             style={{
               width: 120,
               backgroundColor: "rgba(90, 90, 90, 0.85)",
@@ -2509,17 +2637,17 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             onFitAll={handleFitAll}
           />
 
-          {/* Bottom status bar */}
-          <div className="absolute bottom-0 left-0 right-0 h-8 bg-gray-900 bg-opacity-90 border-t border-gray-700 flex items-center px-3 text-xs text-gray-400 font-mono z-10 overflow-hidden whitespace-nowrap">
+          {/* Bottom status bar — hidden on very small screens, coordinates only on sm */}
+          <div className="hidden sm:flex absolute bottom-0 left-0 right-0 h-8 bg-gray-900 bg-opacity-90 border-t border-gray-700 items-center px-3 text-xs text-gray-400 font-mono z-10 overflow-hidden whitespace-nowrap">
             <span className="flex-none">
               X: {cursorPosition ? cursorPosition.x.toFixed(2) : "--"} Y:{" "}
               {cursorPosition ? cursorPosition.y.toFixed(2) : "--"} Z:{" "}
               {cursorPosition ? cursorPosition.z.toFixed(2) : "--"}
             </span>
 
-            {/* Sketch info in status bar */}
+            {/* Sketch info in status bar — hidden on sm, shown on md+ */}
             {mode === "sketch" && activeSketch && (
-              <>
+              <span className="hidden md:contents">
                 <div className="flex-none w-px h-4 bg-gray-600 mx-2" />
                 <span className="flex-none text-blue-400">
                   {activeSketch.plane.type}
@@ -2558,7 +2686,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                   {activeSketch.primitives.length}P{" "}
                   {activeSketch.constraints.length}C
                 </span>
-              </>
+              </span>
             )}
 
             {/* Element info on the right */}
@@ -2581,13 +2709,38 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
 
         {/* Sketch Properties Panel - right side, below toolbar */}
         {mode === "sketch" && activeSketch && (
-          <div className="flex-none w-60 bg-gray-800 bg-opacity-90 border-l border-gray-700 overflow-hidden">
-            <SketchPropertiesPanel
-              activeSketch={activeSketch}
-              selectedPrimitives={selectedPrimitives}
-              onUpdatePoint={updatePrimitivesAndSolve}
-            />
-          </div>
+          <>
+            {/* Toggle button for small screens */}
+            {!sketchPropertiesOpen && (
+              <button
+                className="lg:hidden fixed top-14 right-2 z-40 p-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 shadow-lg"
+                onClick={() => setSketchPropertiesOpen(true)}
+                title="Show Properties"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                </svg>
+              </button>
+            )}
+            {sketchPropertiesOpen && (
+              <div className="flex-none w-60 bg-gray-800 bg-opacity-90 border-l border-gray-700 overflow-hidden max-lg:absolute max-lg:right-0 max-lg:z-30 max-lg:h-full max-lg:shadow-xl">
+                <button
+                  className="lg:hidden w-full flex items-center justify-start px-2 py-1 text-gray-400 hover:text-gray-200 hover:bg-gray-700"
+                  onClick={() => setSketchPropertiesOpen(false)}
+                  title="Close Properties"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+                <SketchPropertiesPanel
+                  activeSketch={activeSketch}
+                  selectedPrimitives={selectedPrimitives}
+                  onUpdatePoint={updatePrimitivesAndSolve}
+                />
+              </div>
+            )}
+          </>
         )}
         </div>
         {/* end canvas + right panel row */}

@@ -94,12 +94,16 @@ const DimensionInput: FC<DimensionInputProps> = ({
 
   if (!visible) return null;
 
+  // Clamp position to viewport bounds
+  const clampedX = Math.max(80, Math.min(position.x, (typeof window !== "undefined" ? window.innerWidth : 1920) - 80));
+  const clampedY = Math.max(80, Math.min(position.y, (typeof window !== "undefined" ? window.innerHeight : 1080) - 20));
+
   return (
     <div
       className="absolute z-50 bg-gray-800 rounded shadow-lg p-2 border border-blue-500"
       style={{
-        left: `${position.x}px`,
-        top: `${position.y}px`,
+        left: `${clampedX}px`,
+        top: `${clampedY}px`,
         transform: "translate(-50%, -100%) translateY(-10px)",
       }}
     >

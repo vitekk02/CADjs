@@ -73,6 +73,8 @@ const SketchToolbar: FC<SketchToolbarProps> = ({
 }) => {
   const [pendingConstraint, setPendingConstraint] = useState<ConstraintType | null>(null);
   const [defaultValue, setDefaultValue] = useState<number | undefined>(undefined);
+  const [constraintDropdownOpen, setConstraintDropdownOpen] = useState(false);
+  const constraintDropdownRef = React.useRef<HTMLDivElement>(null);
 
   if (!activeSketch) return null;
 
@@ -239,14 +241,40 @@ const SketchToolbar: FC<SketchToolbarProps> = ({
       {/* Separator */}
       <div className="flex-none w-px h-5 bg-gray-600 mx-1" />
 
-      {/* Geometric constraints */}
-      {GEOMETRIC_CONSTRAINTS.map((type) => constraintBtn(type))}
+      {/* Constraints — inline on lg+, dropdown on < lg */}
+      <div className="hidden lg:contents">
+        {/* Geometric constraints */}
+        {GEOMETRIC_CONSTRAINTS.map((type) => constraintBtn(type))}
 
-      {/* Separator */}
-      <div className="flex-none w-px h-5 bg-gray-600 mx-1" />
+        {/* Separator */}
+        <div className="flex-none w-px h-5 bg-gray-600 mx-1" />
 
-      {/* Dimensional constraints */}
-      {DIMENSIONAL_CONSTRAINTS.map((type) => constraintBtn(type))}
+        {/* Dimensional constraints */}
+        {DIMENSIONAL_CONSTRAINTS.map((type) => constraintBtn(type))}
+      </div>
+
+      {/* Constraint dropdown for < lg */}
+      <div className="lg:hidden relative" ref={constraintDropdownRef}>
+        <button
+          className="flex-none px-2 py-1 text-sm rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+          onClick={() => setConstraintDropdownOpen(!constraintDropdownOpen)}
+          title="Constraints"
+        >
+          Constraints
+        </button>
+        {constraintDropdownOpen && (
+          <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-600 rounded-md shadow-lg z-50 p-2 min-w-[200px]">
+            <div className="text-xs text-gray-500 mb-1">Geometric</div>
+            <div className="flex flex-wrap gap-1 mb-2">
+              {GEOMETRIC_CONSTRAINTS.map((type) => constraintBtn(type))}
+            </div>
+            <div className="text-xs text-gray-500 mb-1">Dimensional</div>
+            <div className="flex flex-wrap gap-1">
+              {DIMENSIONAL_CONSTRAINTS.map((type) => constraintBtn(type))}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Chain indicator */}
       {isChaining && (

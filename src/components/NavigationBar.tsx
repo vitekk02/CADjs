@@ -92,42 +92,42 @@ const NavigationBar: React.FC<NavigationBarProps> = ({
   }, [navToolActiveRef]);
 
   const btnClass = (tool: NavTool) =>
-    `p-1.5 rounded transition-colors ${
+    `p-2 md:p-1.5 rounded transition-colors ${
       activeTool === tool
         ? "bg-blue-600 text-white"
         : "text-gray-300 hover:bg-gray-600 hover:text-white"
     }`;
 
   return (
-    <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-gray-800 bg-opacity-90 border border-gray-600 rounded-lg px-1.5 py-1">
+    <div className="absolute bottom-12 md:bottom-10 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 bg-gray-800 bg-opacity-90 border border-gray-600 rounded-lg px-1.5 py-1">
       <button
         className={btnClass("orbit")}
         onClick={() => handleToggle("orbit")}
         title="Orbit (Alt+Left-click)"
       >
-        <OrbitIcon className="w-4 h-4" />
+        <OrbitIcon className="w-5 h-5 md:w-4 md:h-4" />
       </button>
       <button
         className={btnClass("pan")}
         onClick={() => handleToggle("pan")}
         title="Pan"
       >
-        <PanIcon className="w-4 h-4" />
+        <PanIcon className="w-5 h-5 md:w-4 md:h-4" />
       </button>
       <button
         className={btnClass("zoom")}
         onClick={() => handleToggle("zoom")}
         title="Zoom"
       >
-        <ZoomIcon className="w-4 h-4" />
+        <ZoomIcon className="w-5 h-5 md:w-4 md:h-4" />
       </button>
       <div className="w-px h-5 bg-gray-600 mx-0.5" />
       <button
-        className="p-1.5 rounded text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+        className="p-2 md:p-1.5 rounded text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
         onClick={onFitAll}
         title="Fit All (F)"
       >
-        <FitAllIcon className="w-4 h-4" />
+        <FitAllIcon className="w-5 h-5 md:w-4 md:h-4" />
       </button>
     </div>
   );

@@ -69,7 +69,7 @@ const ViewCube: FC<ViewCubeProps> = ({ camera, onViewChange }) => {
     if (!containerRef.current) return;
 
     const container = containerRef.current;
-    const size = 120;
+    const size = container.clientWidth || 120;
 
     const cubeScene = new THREE.Scene();
     sceneRef.current = cubeScene;
@@ -270,13 +270,9 @@ const ViewCube: FC<ViewCubeProps> = ({ camera, onViewChange }) => {
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       style={{
-        position: "absolute",
-        top: 16,
-        right: 16,
-        width: 120,
-        height: 120,
+        width: "100%",
+        height: "100%",
         cursor: "pointer",
-        zIndex: 10,
         borderRadius: 8,
         overflow: "hidden",
       }}
