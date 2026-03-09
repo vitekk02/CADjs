@@ -7,6 +7,8 @@ import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
 import { useToast } from "../contexts/ToastContext";
 import { Brep } from "../geometry";
+import { OccWorkerClient } from "../services/OccWorkerClient";
+import type { WorkerEdgeAnalysisResult } from "../workers/occ-worker-types";
 import { revolveBRep, type RevolveDirection } from "../scene-operations/revolve-operations";
 import { collectPickableMeshes } from "../scene-operations/mesh-operations";
 import { REVOLVE, BODY, SELECTION, FILLET } from "../theme";
@@ -109,16 +111,21 @@ export function useRevolveMode() {
     const element = elements.find(el => el.nodeId === nodeId);
     if (!element) return;
 
-    const ocService = (await import("../services/OpenCascadeService")).OpenCascadeService.getInstance();
+    const client = OccWorkerClient.getInstance();
+    const result = await client.send<WorkerEdgeAnalysisResult>({
+      type: "edgeAnalysis",
+      payload: {
+        brepJson: element.brep.toJSON(),
+        position: { x: element.position.x, y: element.position.y, z: element.position.z },
+        occBrep: element.occBrep,
+        rotation: element.rotation
+          ? { x: element.rotation.x, y: element.rotation.y, z: element.rotation.z, order: element.rotation.order }
+          : undefined,
+        allEdges: true,
+      },
+    });
 
-    let edgeDataArr: Array<{ edgeIndex: number; segments: Float32Array; midpoint: { x: number; y: number; z: number } }> | null = null;
-
-    const hasOccBrep = !!element.occBrep;
-    const shape = hasOccBrep
-      ? await ocService.occBrepToOCShape(element.occBrep!, element.position)
-      : await ocService.brepToOCShape(element.brep, element.position);
-    edgeDataArr = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.003, hasOccBrep, true);
-
+    const edgeDataArr = result.edges;
     if (!edgeDataArr || edgeDataArr.length === 0) return;
 
     edgeSegmentsRef.current = edgeDataArr.map(e => ({
@@ -230,7 +237,7 @@ export function useRevolveMode() {
   const buildOtherBodyEdgeOverlays = useCallback(async (selectedNodeId: string) => {
     if (!scene) return;
 
-    const ocService = (await import("../services/OpenCascadeService")).OpenCascadeService.getInstance();
+    const client = OccWorkerClient.getInstance();
     const group = new THREE.Group();
     group.userData.isHelper = true;
 
@@ -240,22 +247,25 @@ export function useRevolveMode() {
     );
 
     for (const el of otherElements) {
-      const hasOccBrep = !!el.occBrep;
-      let shape;
+      let result: WorkerEdgeAnalysisResult;
       try {
-        shape = hasOccBrep
-          ? await ocService.occBrepToOCShape(el.occBrep!, el.position)
-          : await ocService.brepToOCShape(el.brep, el.position);
+        result = await client.send<WorkerEdgeAnalysisResult>({
+          type: "edgeAnalysis",
+          payload: {
+            brepJson: el.brep.toJSON(),
+            position: { x: el.position.x, y: el.position.y, z: el.position.z },
+            occBrep: el.occBrep,
+            rotation: el.rotation
+              ? { x: el.rotation.x, y: el.rotation.y, z: el.rotation.z, order: el.rotation.order }
+              : undefined,
+            allEdges: true,
+          },
+        });
       } catch {
         continue;
       }
 
-      let edgeDataArr;
-      try {
-        edgeDataArr = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.003, hasOccBrep, true);
-      } catch {
-        continue;
-      }
+      const edgeDataArr = result.edges;
       if (!edgeDataArr) continue;
 
       for (const edge of edgeDataArr) {
@@ -588,9 +598,9 @@ export function useRevolveMode() {
         }));
 
         // Build all overlays for axis selection
-        buildEdgeOverlay(nodeId);
+        void buildEdgeOverlay(nodeId);
         buildSketchLineOverlays();
-        buildOtherBodyEdgeOverlays(nodeId);
+        void buildOtherBodyEdgeOverlays(nodeId);
       }
     } else if (state.phase === "SELECT_AXIS") {
       const raycaster = new THREE.Raycaster();

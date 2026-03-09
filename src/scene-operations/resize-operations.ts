@@ -1,6 +1,8 @@
 import { Brep } from "../geometry";
 import * as THREE from "three";
-import { OpenCascadeService } from "../services/OpenCascadeService";
+import { OccWorkerClient } from "../services/OccWorkerClient";
+import type { WorkerGeometryResult } from "../workers/occ-worker-types";
+import { reconstructEdgeGeometry, reconstructFaceGeometry } from "../workers/geometry-reconstruction";
 
 export function extrudeThreeJsObject(
   originalObject: THREE.Mesh,
@@ -197,95 +199,32 @@ export async function extrudeBRep(
   }
 
   try {
-    const ocService = OpenCascadeService.getInstance();
+    const client = OccWorkerClient.getInstance();
+    const raw = await client.send<WorkerGeometryResult>({
+      type: "extrude",
+      payload: {
+        brepJson: brep.toJSON(),
+        depth: extrusionDepth,
+        direction,
+        normalVec: normal,
+        sourceOccBrep,
+      },
+    });
 
-    // Get a clean planar face for extrusion.
-    // Prefer deserializing sourceOccBrep (preserves analytic geometry like circles),
-    // fall back to extracting boundary from tessellated BRep.
-    let cleanFace;
-    if (sourceOccBrep) {
-      try {
-        cleanFace = await ocService.deserializeShape(sourceOccBrep);
-      } catch {
-        cleanFace = null;
-      }
-    }
-    if (!cleanFace) {
-      cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
-    }
+    const centeredBrep = Brep.fromJSON(raw.brepJson);
+    const edgeGeometry = raw.edgePositions ? reconstructEdgeGeometry(raw.edgePositions) : undefined;
+    const faceGeometry = raw.faceGeometry ? reconstructFaceGeometry(raw.faceGeometry) : undefined;
 
-    if (!cleanFace) {
-      console.error("Failed to build clean face from BRep boundary");
-      return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
-    }
-
-    // Extrude using OpenCascade's BRepPrimAPI_MakePrism along the flat normal
-    const extrudedShape = await ocService.extrudeShape(
-      cleanFace,
-      extrusionDepth,
-      direction,
-      normal
-    );
-
-    // Convert back to BRep WITH centering - architecture requires centered BReps
-    const centeredBrep = await ocService.ocShapeToBRep(extrudedShape, true);
-
-    // Extract clean topological edges, face geometry, and vertex positions from OCC shape
-    const edgeGeometry = await ocService.shapeToEdgeLineSegments(extrudedShape, 0.003);
-    const faceGeometry = await ocService.shapeToThreeGeometry(extrudedShape, 0.003, 0.1);
-    const vertexPositions = await ocService.shapeToVertexPositions(extrudedShape);
-
-    // Position offset along the extrusion normal
-    const halfOffset = (extrusionDepth / 2) * direction;
-    const positionOffset = {
-      x: normal.x * halfOffset,
-      y: normal.y * halfOffset,
-      z: normal.z * halfOffset,
+    return {
+      brep: centeredBrep,
+      positionOffset: raw.positionOffset,
+      edgeGeometry,
+      vertexPositions: raw.vertexPositions,
+      occBrep: raw.occBrep,
+      faceGeometry,
     };
-
-    // Translate edge geometry, face geometry, and vertex positions to local space (centered)
-    edgeGeometry.translate(
-      -normal.x * halfOffset,
-      -normal.y * halfOffset,
-      -normal.z * halfOffset,
-    );
-    faceGeometry.translate(
-      -normal.x * halfOffset,
-      -normal.y * halfOffset,
-      -normal.z * halfOffset,
-    );
-    for (let i = 0; i < vertexPositions.length; i += 3) {
-      vertexPositions[i] -= normal.x * halfOffset;
-      vertexPositions[i + 1] -= normal.y * halfOffset;
-      vertexPositions[i + 2] -= normal.z * halfOffset;
-    }
-
-    // Serialize the extruded shape in local space for lossless round-tripping
-    let occBrep: string | undefined;
-    try {
-      // extrudedShape is at origin (profile was at origin), translate to centered local space
-      const oc = await ocService.getOC();
-      const trsf = new oc.gp_Trsf_1();
-      const vec = new oc.gp_Vec_4(
-        -normal.x * halfOffset,
-        -normal.y * halfOffset,
-        -normal.z * halfOffset,
-      );
-      trsf.SetTranslation_1(vec);
-      vec.delete();
-      const transformer = new oc.BRepBuilderAPI_Transform_2(extrudedShape, trsf, true);
-      trsf.delete();
-      const localShape = transformer.Shape();
-      transformer.delete();
-      occBrep = await ocService.serializeShape(localShape);
-    } catch {
-      // Serialization is best-effort — fall back to tessellated BRep
-    }
-
-    return { brep: centeredBrep, positionOffset, edgeGeometry, vertexPositions, occBrep, faceGeometry };
   } catch (error) {
-    console.error("OpenCascade extrusion failed:", error);
-    // Return original BRep on failure
+    console.error("Worker extrusion failed:", error);
     return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
   }
 }

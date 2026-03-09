@@ -61,7 +61,9 @@ import {
 } from "../scene-operations/sketch-operations";
 import { SketchSolverService } from "../services/SketchSolverService";
 import { SketchToBrepService } from "../services/SketchToBrepService";
-import { OpenCascadeService } from "../services/OpenCascadeService";
+import { OccWorkerClient } from "../services/OccWorkerClient";
+import type { WorkerProcessProfileResult } from "../workers/occ-worker-types";
+import { reconstructEdgeGeometry } from "../workers/geometry-reconstruction";
 import {
   UndoableSnapshot,
   MAX_UNDO_STEPS,
@@ -1401,33 +1403,28 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
               profile.center.z
             );
 
-            // Compute clean OCC-based edge/vertex data for highlighting
+            // Compute clean OCC-based edge/vertex data for highlighting via worker
             let edgeGeometry: THREE.BufferGeometry | undefined;
             let vertexPositions: Float32Array | undefined;
             let occBrep: string | undefined;
             try {
-              const ocService = OpenCascadeService.getInstance();
-              let cleanFace = null;
+              const client = OccWorkerClient.getInstance();
+              const profileResult = await client.send<WorkerProcessProfileResult>({
+                type: "processProfile",
+                payload: {
+                  brepJson: profile.brep.toJSON(),
+                  occBrep: profile.occBrep,
+                },
+              });
 
-              // Prefer the analytic face from profile detection (preserves circles etc.)
-              if (profile.occBrep) {
-                try {
-                  cleanFace = await ocService.deserializeShape(profile.occBrep);
-                  occBrep = profile.occBrep;  // Already in local space
-                } catch { /* fall through to boundary extraction */ }
+              if (profileResult.edgePositions) {
+                edgeGeometry = reconstructEdgeGeometry(profileResult.edgePositions);
               }
-
-              // Fallback: extract boundary from tessellated BRep
-              if (!cleanFace) {
-                cleanFace = await ocService.buildPlanarFaceFromBoundary(profile.brep);
-                if (cleanFace) {
-                  try { occBrep = await ocService.serializeShape(cleanFace); } catch { /* best-effort */ }
-                }
+              if (profileResult.vertexPositions) {
+                vertexPositions = profileResult.vertexPositions;
               }
-
-              if (cleanFace) {
-                edgeGeometry = await ocService.shapeToEdgeLineSegments(cleanFace, 0.003, true);
-                vertexPositions = await ocService.shapeToVertexPositions(cleanFace, true);
+              if (profileResult.occBrep) {
+                occBrep = profileResult.occBrep;
               }
             } catch (e) {
               console.warn("Failed to compute profile edge geometry:", e);

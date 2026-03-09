@@ -5,7 +5,8 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
-import { OpenCascadeService } from "../services/OpenCascadeService";
+import { OccWorkerClient } from "../services/OccWorkerClient";
+import type { WorkerEdgeAnalysisResult, WorkerEdgeLengthResult, WorkerEdgeDirectionResult, EulerJSON } from "../workers/occ-worker-types";
 import { isDescendantOf } from "../scene-operations/mesh-operations";
 import { isElement3D, SceneElement } from "../scene-operations/types";
 import { computePointDistance, computeAngleBetweenVectors, findNearestVertex, disposeMeasureOverlay } from "../scene-operations/measure-operations";
@@ -298,37 +299,23 @@ export function useMeasureMode() {
       if (!element) return;
 
       try {
-        const ocService = OpenCascadeService.getInstance();
-        const hasOccBrep = !!element.occBrep;
-        const hasRotation = element.rotation &&
-          (element.rotation.x !== 0 || element.rotation.y !== 0 || element.rotation.z !== 0);
+        const client = OccWorkerClient.getInstance();
+        const rotation = (element.rotation && (element.rotation.x !== 0 || element.rotation.y !== 0 || element.rotation.z !== 0))
+          ? { x: element.rotation.x, y: element.rotation.y, z: element.rotation.z, order: element.rotation.order } as EulerJSON
+          : undefined;
 
-        let shape;
-        if (hasRotation) {
-          shape = hasOccBrep
-            ? await ocService.occBrepToOCShape(element.occBrep!)
-            : await ocService.brepToOCShape(element.brep);
-          const oc = await ocService.getOC();
-          const threeQuat = new THREE.Quaternion().setFromEuler(element.rotation!);
-          const ocQuat = new oc.gp_Quaternion_2(threeQuat.x, threeQuat.y, threeQuat.z, threeQuat.w);
-          const vec = new oc.gp_Vec_4(element.position.x, element.position.y, element.position.z);
-          const trsf = new oc.gp_Trsf_1();
-          trsf.SetRotation_2(ocQuat);
-          trsf.SetTranslationPart(vec);
-          ocQuat.delete();
-          vec.delete();
-          const transformer = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
-          trsf.delete();
-          shape = transformer.Shape();
-          transformer.delete();
-        } else {
-          shape = hasOccBrep
-            ? await ocService.occBrepToOCShape(element.occBrep!, element.position)
-            : await ocService.brepToOCShape(element.brep, element.position);
-        }
+        const analysisResult = await client.send<WorkerEdgeAnalysisResult>({
+          type: "edgeAnalysis",
+          payload: {
+            brepJson: element.brep.toJSON(),
+            position: { x: element.position.x, y: element.position.y, z: element.position.z },
+            occBrep: element.occBrep,
+            rotation,
+            allEdges: true,
+          },
+        });
 
-        // Get ALL edges (not just sharp ones) — measurement needs all edges
-        const edgeData = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.003, hasOccBrep, true);
+        const edgeData = analysisResult.edges;
         edgeSegmentsRef.current = edgeData;
         activeElementRef.current = nodeId;
 
@@ -707,36 +694,23 @@ export function useMeasureMode() {
         if (!element) return;
 
         try {
-          const ocService = OpenCascadeService.getInstance();
-          const hasOccBrep = !!element.occBrep;
-          const hasRotation = element.rotation &&
-            (element.rotation.x !== 0 || element.rotation.y !== 0 || element.rotation.z !== 0);
+          const client = OccWorkerClient.getInstance();
+          const rotation = (element.rotation && (element.rotation.x !== 0 || element.rotation.y !== 0 || element.rotation.z !== 0))
+            ? { x: element.rotation.x, y: element.rotation.y, z: element.rotation.z, order: element.rotation.order } as EulerJSON
+            : undefined;
 
-          let shape;
-          if (hasRotation) {
-            shape = hasOccBrep
-              ? await ocService.occBrepToOCShape(element.occBrep!)
-              : await ocService.brepToOCShape(element.brep);
-            const oc = await ocService.getOC();
-            const threeQuat = new THREE.Quaternion().setFromEuler(element.rotation!);
-            const ocQuat = new oc.gp_Quaternion_2(threeQuat.x, threeQuat.y, threeQuat.z, threeQuat.w);
-            const vec = new oc.gp_Vec_4(element.position.x, element.position.y, element.position.z);
-            const trsf = new oc.gp_Trsf_1();
-            trsf.SetRotation_2(ocQuat);
-            trsf.SetTranslationPart(vec);
-            ocQuat.delete();
-            vec.delete();
-            const transformer = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
-            trsf.delete();
-            shape = transformer.Shape();
-            transformer.delete();
-          } else {
-            shape = hasOccBrep
-              ? await ocService.occBrepToOCShape(element.occBrep!, element.position)
-              : await ocService.brepToOCShape(element.brep, element.position);
-          }
+          const lengthResult = await client.send<WorkerEdgeLengthResult>({
+            type: "edgeLength",
+            payload: {
+              brepJson: element.brep.toJSON(),
+              position: { x: element.position.x, y: element.position.y, z: element.position.z },
+              edgeIndex,
+              occBrep: element.occBrep,
+              rotation,
+            },
+          });
 
-          const length = await ocService.getEdgeLength(shape, edgeIndex, hasOccBrep);
+          const length = lengthResult.length;
 
           const edgeData = edgeSegmentsRef.current.find((e) => e.edgeIndex === edgeIndex);
           if (!edgeData) return;
@@ -808,39 +782,39 @@ export function useMeasureMode() {
         } else {
           // Second edge — compute angle
           try {
-            const ocService = OpenCascadeService.getInstance();
             const element = elements.find((el) => el.nodeId === state.firstEdge!.elementId);
             if (!element) return;
-            const hasOccBrep = !!element.occBrep;
-            const hasRotation = element.rotation &&
-              (element.rotation.x !== 0 || element.rotation.y !== 0 || element.rotation.z !== 0);
 
-            let shape;
-            if (hasRotation) {
-              shape = hasOccBrep
-                ? await ocService.occBrepToOCShape(element.occBrep!)
-                : await ocService.brepToOCShape(element.brep);
-              const oc = await ocService.getOC();
-              const threeQuat = new THREE.Quaternion().setFromEuler(element.rotation!);
-              const ocQuat = new oc.gp_Quaternion_2(threeQuat.x, threeQuat.y, threeQuat.z, threeQuat.w);
-              const vec = new oc.gp_Vec_4(element.position.x, element.position.y, element.position.z);
-              const trsf = new oc.gp_Trsf_1();
-              trsf.SetRotation_2(ocQuat);
-              trsf.SetTranslationPart(vec);
-              ocQuat.delete();
-              vec.delete();
-              const transformer = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
-              trsf.delete();
-              shape = transformer.Shape();
-              transformer.delete();
-            } else {
-              shape = hasOccBrep
-                ? await ocService.occBrepToOCShape(element.occBrep!, element.position)
-                : await ocService.brepToOCShape(element.brep, element.position);
-            }
+            const client = OccWorkerClient.getInstance();
+            const rotation = (element.rotation && (element.rotation.x !== 0 || element.rotation.y !== 0 || element.rotation.z !== 0))
+              ? { x: element.rotation.x, y: element.rotation.y, z: element.rotation.z, order: element.rotation.order } as EulerJSON
+              : undefined;
 
-            const dirA = await ocService.getEdgeDirectionAtMidpoint(shape, state.firstEdge.edgeIndex, hasOccBrep);
-            const dirB = await ocService.getEdgeDirectionAtMidpoint(shape, edgeIndex, hasOccBrep);
+            const [resultA, resultB] = await Promise.all([
+              client.send<WorkerEdgeDirectionResult>({
+                type: "edgeDirection",
+                payload: {
+                  brepJson: element.brep.toJSON(),
+                  position: { x: element.position.x, y: element.position.y, z: element.position.z },
+                  edgeIndex: state.firstEdge.edgeIndex,
+                  occBrep: element.occBrep,
+                  rotation,
+                },
+              }),
+              client.send<WorkerEdgeDirectionResult>({
+                type: "edgeDirection",
+                payload: {
+                  brepJson: element.brep.toJSON(),
+                  position: { x: element.position.x, y: element.position.y, z: element.position.z },
+                  edgeIndex: edgeIndex,
+                  occBrep: element.occBrep,
+                  rotation,
+                },
+              }),
+            ]);
+
+            const dirA = resultA.direction;
+            const dirB = resultB.direction;
 
             const vecA = new THREE.Vector3(dirA.x, dirA.y, dirA.z);
             const vecB = new THREE.Vector3(dirB.x, dirB.y, dirB.z);

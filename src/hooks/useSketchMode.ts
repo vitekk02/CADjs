@@ -185,14 +185,41 @@ function createConstraintGlyph(
   position: THREE.Vector3,
   selected: boolean = false,
 ): THREE.Sprite {
-  const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 64;
-  const ctx = canvas.getContext("2d")!;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const fontSize = 32;
+  const padding = 16;
 
-  // Dark circle background (blue when selected)
+  // Measure text width to size the canvas dynamically
+  const measureCanvas = document.createElement("canvas");
+  const measureCtx = measureCanvas.getContext("2d")!;
+  measureCtx.font = `bold ${fontSize}px sans-serif`;
+  const textWidth = measureCtx.measureText(text).width;
+
+  // Pill shape: width adapts to text, height stays fixed
+  const height = 64;
+  const width = Math.max(height, Math.ceil(textWidth + padding * 2));
+  const canvas = document.createElement("canvas");
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  const ctx = canvas.getContext("2d")!;
+  ctx.scale(dpr, dpr);
+
+  // Dark pill/circle background (blue when selected)
+  const radius = height / 2;
   ctx.beginPath();
-  ctx.arc(32, 32, 28, 0, Math.PI * 2);
+  if (width <= height) {
+    // Circle for short text
+    ctx.arc(width / 2, height / 2, radius - 4, 0, Math.PI * 2);
+  } else {
+    // Pill shape for longer text
+    const r = radius - 4;
+    ctx.moveTo(r + 4, 4);
+    ctx.lineTo(width - r - 4, 4);
+    ctx.arc(width - r - 4, height / 2, r, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(r + 4, height - 4);
+    ctx.arc(r + 4, height / 2, r, Math.PI / 2, -Math.PI / 2);
+    ctx.closePath();
+  }
   ctx.fillStyle = selected ? "#0066ff" : "#333333";
   ctx.fill();
   if (selected) {
@@ -203,12 +230,14 @@ function createConstraintGlyph(
 
   // Gold text (white when selected)
   ctx.fillStyle = selected ? "#ffffff" : "#ddaa00";
-  ctx.font = "bold 32px sans-serif";
+  ctx.font = `bold ${fontSize}px sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, 32, 33);
+  ctx.fillText(text, width / 2, height / 2 + 1);
 
   const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
   const material = new THREE.SpriteMaterial({
     map: texture,
     transparent: true,
@@ -216,7 +245,10 @@ function createConstraintGlyph(
   });
   const sprite = new THREE.Sprite(material);
   sprite.position.copy(position);
-  sprite.scale.set(0.3, 0.3, 0.3);
+  // Scale X proportionally so wider labels aren't squished
+  const baseScale = 0.35;
+  const aspect = width / height;
+  sprite.scale.set(baseScale * aspect, baseScale, baseScale);
   sprite.renderOrder = 1001;
   return sprite;
 }
@@ -2394,6 +2426,7 @@ export function useSketchMode(): UseSketchModeResult {
   // Cancel current drawing operation (Escape key)
   const cancelCurrentOperation = useCallback(() => {
     cleanupSketchPreview();
+    setPendingLineDimension(null);
 
     // Reset line chaining
     if (isChaining) {
@@ -4379,6 +4412,16 @@ export function useSketchMode(): UseSketchModeResult {
     const glyphCountPerPrimitive = new Map<string, number>();
 
     for (const constraint of activeSketch.constraints) {
+      // Skip glyph for constraints that already have a Tier 6A dimension display
+      if (constraint.value !== undefined) {
+        const firstPrim = constraint.primitiveIds[0] ? activeSketch.primitives.find(p => p.id === constraint.primitiveIds[0]) : null;
+        const hasDimensionDisplay =
+          (constraint.type === "distance" && firstPrim && isSketchLine(firstPrim)) ||
+          constraint.type === "radius" ||
+          constraint.type === "diameter";
+        if (hasDimensionDisplay) continue;
+      }
+
       const glyphText = constraintGlyphMap[constraint.type] || "?";
       const firstPrimId = constraint.primitiveIds[0];
       if (!firstPrimId) continue;

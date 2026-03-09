@@ -7,7 +7,8 @@ import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
 import { useToast } from "../contexts/ToastContext";
 import { Brep } from "../geometry";
-import { OpenCascadeService } from "../services/OpenCascadeService";
+import { OccWorkerClient } from "../services/OccWorkerClient";
+import type { WorkerEdgeAnalysisResult } from "../workers/occ-worker-types";
 import { filletBRep, chamferBRep } from "../scene-operations/fillet-operations";
 import { isDescendantOf } from "../scene-operations/mesh-operations";
 import { isElement3D } from "../scene-operations/types";
@@ -134,40 +135,21 @@ export function useFilletMode() {
       if (!element) return;
 
       try {
-        const ocService = OpenCascadeService.getInstance();
-        // Build OCC shape at world position+rotation — MUST match the operation path
-        // in fillet-operations.ts to guarantee identical edge index ordering
-        // (BRepBuilderAPI_Transform with copyGeom=true can reorder edges)
-        const hasOccBrep = !!element.occBrep;
-        const hasRotation = element.rotation &&
-          (element.rotation.x !== 0 || element.rotation.y !== 0 || element.rotation.z !== 0);
+        const client = OccWorkerClient.getInstance();
+        const result = await client.send<WorkerEdgeAnalysisResult>({
+          type: "edgeAnalysis",
+          payload: {
+            brepJson: element.brep.toJSON(),
+            position: { x: element.position.x, y: element.position.y, z: element.position.z },
+            occBrep: element.occBrep,
+            rotation: element.rotation
+              ? { x: element.rotation.x, y: element.rotation.y, z: element.rotation.z, order: element.rotation.order }
+              : undefined,
+            allEdges: false,
+          },
+        });
 
-        let shape;
-        if (hasRotation) {
-          // Build at origin, then apply rotation+translation (same as buildWorldShape)
-          shape = hasOccBrep
-            ? await ocService.occBrepToOCShape(element.occBrep!)
-            : await ocService.brepToOCShape(element.brep);
-          const oc = await ocService.getOC();
-          const threeQuat = new THREE.Quaternion().setFromEuler(element.rotation!);
-          const ocQuat = new oc.gp_Quaternion_2(threeQuat.x, threeQuat.y, threeQuat.z, threeQuat.w);
-          const vec = new oc.gp_Vec_4(element.position.x, element.position.y, element.position.z);
-          const trsf = new oc.gp_Trsf_1();
-          trsf.SetRotation_2(ocQuat);
-          trsf.SetTranslationPart(vec);
-          ocQuat.delete();
-          vec.delete();
-          const transformer = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
-          trsf.delete();
-          shape = transformer.Shape();
-          transformer.delete();
-        } else {
-          shape = hasOccBrep
-            ? await ocService.occBrepToOCShape(element.occBrep!, element.position)
-            : await ocService.brepToOCShape(element.brep, element.position);
-        }
-        // Skip redundant ShapeFix when shape comes from deserialized occBrep
-        const edgeData = await ocService.getEdgeLineSegmentsPerEdge(shape, 0.003, hasOccBrep);
+        const edgeData = result.edges;
 
         edgeSegmentsRef.current = edgeData;
 

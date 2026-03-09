@@ -23,7 +23,7 @@ module.exports = {
       },
       diagnostics: {
         // Ignore specific TypeScript errors
-        ignoreCodes: [2307, 2554, 2345, 2538, 18047, 2344],
+        ignoreCodes: [2307, 2554, 2345, 2538, 18047, 2344, 1343],
       },
     }],
     // Transform opencascade.js and planegcs from ESM to CommonJS

@@ -1,6 +1,8 @@
 import { Brep } from "../geometry";
 import * as THREE from "three";
-import { OpenCascadeService } from "../services/OpenCascadeService";
+import { OccWorkerClient } from "../services/OccWorkerClient";
+import type { WorkerGeometryResult } from "../workers/occ-worker-types";
+import { reconstructEdgeGeometry, reconstructFaceGeometry } from "../workers/geometry-reconstruction";
 
 export interface LoftResult {
   brep: Brep;
@@ -32,112 +34,31 @@ export async function loftBReps(
   }
 
   try {
-    const ocService = OpenCascadeService.getInstance();
-    const oc = await ocService.getOC();
+    const client = OccWorkerClient.getInstance();
+    const raw = await client.send<WorkerGeometryResult>({
+      type: "loft",
+      payload: {
+        profiles: profiles.map(p => ({
+          brepJson: p.brep.toJSON(),
+          position: { x: p.position.x, y: p.position.y, z: p.position.z },
+          occBrep: p.occBrep,
+        })),
+        isRuled,
+      },
+    });
 
-    // Build world-positioned faces for each profile
-    const worldFaces: any[] = [];
+    const centeredBrep = Brep.fromJSON(raw.brepJson);
+    const edgeGeometry = raw.edgePositions ? reconstructEdgeGeometry(raw.edgePositions) : undefined;
+    const faceGeometry = raw.faceGeometry ? reconstructFaceGeometry(raw.faceGeometry) : undefined;
 
-    for (let i = 0; i < profiles.length; i++) {
-      const { brep, position, occBrep } = profiles[i];
-
-      // Prefer deserializing occBrep (preserves analytic geometry like circles),
-      // fall back to extracting boundary from tessellated BRep.
-      let cleanFace;
-      if (occBrep) {
-        try {
-          cleanFace = await ocService.deserializeShape(occBrep);
-        } catch {
-          cleanFace = null;
-        }
-      }
-      if (!cleanFace) {
-        cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
-      }
-      if (!cleanFace) {
-        console.error(`[loftBReps] Failed to build clean face for profile ${i}`);
-        return null;
-      }
-
-      // Transform to world position
-      const trsf = new oc.gp_Trsf_1();
-      const vec = new oc.gp_Vec_4(position.x, position.y, position.z);
-      trsf.SetTranslation_1(vec);
-      vec.delete();
-
-      let transformer: any = null;
-      try {
-        transformer = new oc.BRepBuilderAPI_Transform_2(cleanFace, trsf, true);
-        worldFaces.push(transformer.Shape());
-      } finally {
-        trsf.delete();
-        transformer?.delete();
-      }
-    }
-
-    // Loft all faces
-    const loftedShape = await ocService.loftShapes(worldFaces, true, isRuled);
-
-    // Get uncentered BRep to compute bounding box center for position
-    const uncenteredBrep = await ocService.ocShapeToBRep(loftedShape, false);
-    const xs = uncenteredBrep.vertices.map(v => v.x);
-    const ys = uncenteredBrep.vertices.map(v => v.y);
-    const zs = uncenteredBrep.vertices.map(v => v.z);
-    const centerPos = new THREE.Vector3(
-      (Math.min(...xs) + Math.max(...xs)) / 2,
-      (Math.min(...ys) + Math.max(...ys)) / 2,
-      (Math.min(...zs) + Math.max(...zs)) / 2,
-    );
-
-    // Convert to centered BRep
-    const centeredBrep = await ocService.ocShapeToBRep(loftedShape, true);
-
-    // Extract edge geometry, face geometry, and vertex positions
-    let edgeGeometry: THREE.BufferGeometry | undefined;
-    let faceGeometry: THREE.BufferGeometry | undefined;
-    let vertexPositions: Float32Array | undefined;
-    try {
-      edgeGeometry = await ocService.shapeToEdgeLineSegments(loftedShape, 0.003);
-      edgeGeometry.translate(-centerPos.x, -centerPos.y, -centerPos.z);
-    } catch (e) {
-      console.warn("[loftBReps] Edge geometry extraction failed:", e);
-    }
-
-    try {
-      faceGeometry = await ocService.shapeToThreeGeometry(loftedShape, 0.003, 0.1);
-      faceGeometry.translate(-centerPos.x, -centerPos.y, -centerPos.z);
-    } catch (e) {
-      console.warn("[loftBReps] Face geometry extraction failed:", e);
-    }
-
-    try {
-      vertexPositions = await ocService.shapeToVertexPositions(loftedShape);
-      for (let i = 0; i < vertexPositions.length; i += 3) {
-        vertexPositions[i] -= centerPos.x;
-        vertexPositions[i + 1] -= centerPos.y;
-        vertexPositions[i + 2] -= centerPos.z;
-      }
-    } catch (e) {
-      console.warn("[loftBReps] Vertex positions extraction failed:", e);
-    }
-
-    // Serialize loft result in local space for lossless round-tripping
-    let occBrep: string | undefined;
-    try {
-      const trsf = new oc.gp_Trsf_1();
-      const vec = new oc.gp_Vec_4(-centerPos.x, -centerPos.y, -centerPos.z);
-      trsf.SetTranslation_1(vec);
-      vec.delete();
-      const transformer = new oc.BRepBuilderAPI_Transform_2(loftedShape, trsf, true);
-      trsf.delete();
-      const localShape = transformer.Shape();
-      transformer.delete();
-      occBrep = await ocService.serializeShape(localShape);
-    } catch {
-      // Serialization is best-effort
-    }
-
-    return { brep: centeredBrep, position: centerPos, edgeGeometry, vertexPositions, occBrep, faceGeometry };
+    return {
+      brep: centeredBrep,
+      position: new THREE.Vector3(raw.positionOffset.x, raw.positionOffset.y, raw.positionOffset.z),
+      edgeGeometry,
+      vertexPositions: raw.vertexPositions,
+      occBrep: raw.occBrep,
+      faceGeometry,
+    };
   } catch (error) {
     console.error("[loftBReps] Loft operation failed:", error);
     return null;

@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { CadCoreProvider } from "../src/contexts/CoreContext";
 import { CadVisualizerProvider } from "../src/contexts/VisualizerContext";
 import { ToastProvider } from "../src/contexts/ToastContext";
-import { OpenCascadeService } from "../src/services/OpenCascadeService";
+import { OccWorkerClient } from "../src/services/OccWorkerClient";
 import { SketchSolverService } from "../src/services/SketchSolverService";
 import LoadingScreen from "../src/components/LoadingScreen";
 import SimpleCadScene from "./simpleCadScene";
@@ -19,7 +19,7 @@ const AppLoader: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     setError(null);
     try {
       await Promise.all([
-        OpenCascadeService.getInstance().getOC(),
+        OccWorkerClient.getInstance().waitForReady(),
         SketchSolverService.getInstance().getGCS(),
       ]);
       setState("ready");
@@ -34,7 +34,7 @@ const AppLoader: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   }, [initialize]);
 
   const handleRetry = useCallback(() => {
-    OpenCascadeService.getInstance().resetInit();
+    OccWorkerClient.getInstance().dispose();
     SketchSolverService.getInstance().resetInit();
     initialize();
   }, [initialize]);

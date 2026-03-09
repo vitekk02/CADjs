@@ -1,4 +1,19 @@
-import { OpenCascadeService } from "./services/OpenCascadeService";
+// JSON serialization types for Web Worker communication
+export interface VertexJSON { x: number; y: number; z: number }
+export interface EdgeJSON { start: VertexJSON; end: VertexJSON }
+export interface FaceJSON { vertices: VertexJSON[] }
+export interface BrepJSON {
+  type?: "brep" | "compound";
+  vertices: VertexJSON[];
+  edges: EdgeJSON[];
+  faces: FaceJSON[];
+}
+export interface CompoundBrepJSON extends BrepJSON {
+  type: "compound";
+  children: BrepJSON[];
+  unifiedBRep?: BrepJSON;
+}
+
 export class Vertex {
   constructor(
     public x: number,
@@ -70,6 +85,32 @@ export class Brep {
     this.edges = edges;
     this.faces = faces;
   }
+
+  toJSON(): BrepJSON {
+    return {
+      type: "brep",
+      vertices: this.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })),
+      edges: this.edges.map(e => ({
+        start: { x: e.start.x, y: e.start.y, z: e.start.z },
+        end: { x: e.end.x, y: e.end.y, z: e.end.z },
+      })),
+      faces: this.faces.map(f => ({
+        vertices: f.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })),
+      })),
+    };
+  }
+
+  static fromJSON(json: BrepJSON): Brep {
+    const vertices = json.vertices.map(v => new Vertex(v.x, v.y, v.z));
+    const edges = json.edges.map(e => new Edge(
+      new Vertex(e.start.x, e.start.y, e.start.z),
+      new Vertex(e.end.x, e.end.y, e.end.z),
+    ));
+    const faces = json.faces.map(f => new Face(
+      f.vertices.map(v => new Vertex(v.x, v.y, v.z)),
+    ));
+    return new Brep(vertices, edges, faces);
+  }
 }
 
 export class CompoundBrep extends Brep {
@@ -100,32 +141,41 @@ export class CompoundBrep extends Brep {
     }
 
     try {
-      const ocService = OpenCascadeService.getInstance();
-      const oc = await ocService.getOC();
-
-      let resultShape = await ocService.brepToOCShape(this.children[0]);
-      const progressRange = new oc.Message_ProgressRange_1();
-
-      // fuse all children together
-      for (let i = 1; i < this.children.length; i++) {
-        const nextShape = await ocService.brepToOCShape(this.children[i]);
-        const fusionOp = new oc.BRepAlgoAPI_Fuse_3(resultShape, nextShape, progressRange);
-        await ocService.runOperation(fusionOp);
-
-        if (fusionOp.IsDone()) {
-          resultShape = fusionOp.Shape();
-        } else {
-          console.error("Boolean fusion operation failed");
-        }
-      }
-
-      this._unifiedBRep = await ocService.ocShapeToBRep(resultShape);
-
+      // Route through worker client (lazy import to avoid circular dependency)
+      const { OccWorkerClient } = await import("./services/OccWorkerClient");
+      const client = OccWorkerClient.getInstance();
+      const result = await client.send<{ brepJson: BrepJSON }>({
+        type: "unifyCompound",
+        payload: {
+          childrenBrepJson: this.children.map(c => c.toJSON()),
+        },
+      });
+      this._unifiedBRep = Brep.fromJSON(result.brepJson);
       return this._unifiedBRep;
     } catch (error) {
-      console.error("Error in OpenCascade union operation:", error);
-      return this.children[0];
+      console.error("Error in compound unification:", error);
+      throw new Error(`Compound unification failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  toJSON(): CompoundBrepJSON {
+    return {
+      type: "compound",
+      vertices: [],
+      edges: [],
+      faces: [],
+      children: this.children.map(c => c.toJSON() as BrepJSON),
+      unifiedBRep: this._unifiedBRep?.toJSON() as BrepJSON | undefined,
+    };
+  }
+
+  static fromJSON(json: CompoundBrepJSON): CompoundBrep {
+    const children = json.children.map(c => Brep.fromJSON(c));
+    const compound = new CompoundBrep(children);
+    if (json.unifiedBRep) {
+      compound.setUnifiedBrep(Brep.fromJSON(json.unifiedBRep));
+    }
+    return compound;
   }
 }
 export interface BrepConnection {

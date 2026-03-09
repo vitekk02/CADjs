@@ -1,8 +1,9 @@
-import type { OpenCascadeInstance, TopoDS_Shape } from "opencascade.js";
 import { Brep } from "../geometry";
 import * as THREE from "three";
-import { OpenCascadeService } from "./OpenCascadeService";
 import { SceneElement } from "../scene-operations/types";
+import { OccWorkerClient } from "./OccWorkerClient";
+import type { WorkerImportResult, WorkerExportResult } from "../workers/occ-worker-types";
+import { reconstructEdgeGeometry } from "../workers/geometry-reconstruction";
 
 export interface ImportResult {
   brep: Brep;
@@ -14,11 +15,8 @@ export interface ImportResult {
 
 export class ImportExportService {
   private static instance: ImportExportService;
-  private occService: OpenCascadeService;
 
-  private constructor() {
-    this.occService = OpenCascadeService.getInstance();
-  }
+  private constructor() {}
 
   static getInstance(): ImportExportService {
     if (!ImportExportService.instance) {
@@ -27,280 +25,91 @@ export class ImportExportService {
     return ImportExportService.instance;
   }
 
-  private async buildCompoundFromElements(
-    elements: SceneElement[],
-  ): Promise<TopoDS_Shape> {
-    const oc = await this.occService.getOC();
-    const builder = new oc.BRep_Builder();
-    const compound = new oc.TopoDS_Compound();
-    builder.MakeCompound(compound);
-
-    for (const el of elements) {
-      // Use serialized OCC shape if available (preserves analytic geometry)
-      const shape = el.occBrep
-        ? await this.occService.occBrepToOCShape(el.occBrep, el.position)
-        : await this.occService.brepToOCShape(el.brep, el.position);
-      builder.Add(compound, shape);
-    }
-
-    return compound;
-  }
-
   // ── Export methods ──────────────────────────────────────────────────
 
   async exportSTEP(elements: SceneElement[]): Promise<Blob> {
-    const oc = await this.occService.getOC();
-    const compound = await this.buildCompoundFromElements(elements);
-    const filePath = "/tmp/export.step";
-
-    const writer = new oc.STEPControl_Writer_1();
-    const progress = new oc.Message_ProgressRange_1();
-
-    const transferStatus = writer.Transfer(
-      compound,
-      oc.STEPControl_StepModelType.STEPControl_AsIs as any,
-      true,
-      progress,
-    );
-
-    if (transferStatus !== oc.IFSelect_ReturnStatus.IFSelect_RetDone) {
-      writer.delete();
-      progress.delete();
-      throw new Error("STEP export: Transfer failed");
-    }
-
-    const writeStatus = writer.Write(filePath);
-    if (writeStatus !== oc.IFSelect_ReturnStatus.IFSelect_RetDone) {
-      writer.delete();
-      progress.delete();
-      throw new Error("STEP export: Write failed");
-    }
-
-    const fileData = oc.FS.readFile(filePath);
-    oc.FS.unlink(filePath);
-    writer.delete();
-    progress.delete();
-
-    return new Blob([fileData], { type: "application/step" });
+    const client = OccWorkerClient.getInstance();
+    const raw = await client.send<WorkerExportResult>({
+      type: "exportFile",
+      payload: {
+        elements: elements.map(el => ({
+          brepJson: el.brep.toJSON(),
+          position: { x: el.position.x, y: el.position.y, z: el.position.z },
+          occBrep: el.occBrep,
+        })),
+        format: "step",
+      },
+    });
+    return new Blob([raw.fileBytes], { type: "application/step" });
   }
 
   async exportSTL(elements: SceneElement[]): Promise<Blob> {
-    const oc = await this.occService.getOC();
-    const compound = await this.buildCompoundFromElements(elements);
-    const filePath = "/tmp/export.stl";
-
-    // Tessellate before STL export
-    new oc.BRepMesh_IncrementalMesh_2(compound, 0.01, false, 0.1, false);
-
-    const writer = new oc.StlAPI_Writer();
-    const progress = new oc.Message_ProgressRange_1();
-    const success = writer.Write(compound, filePath, progress);
-
-    if (!success) {
-      writer.delete();
-      progress.delete();
-      throw new Error("STL export: Write failed");
-    }
-
-    const fileData = oc.FS.readFile(filePath);
-    oc.FS.unlink(filePath);
-    writer.delete();
-    progress.delete();
-
-    return new Blob([fileData], { type: "model/stl" });
+    const client = OccWorkerClient.getInstance();
+    const raw = await client.send<WorkerExportResult>({
+      type: "exportFile",
+      payload: {
+        elements: elements.map(el => ({
+          brepJson: el.brep.toJSON(),
+          position: { x: el.position.x, y: el.position.y, z: el.position.z },
+          occBrep: el.occBrep,
+        })),
+        format: "stl",
+      },
+    });
+    return new Blob([raw.fileBytes], { type: "model/stl" });
   }
 
   async exportIGES(elements: SceneElement[]): Promise<Blob> {
-    const oc = await this.occService.getOC();
-    const compound = await this.buildCompoundFromElements(elements);
-    const filePath = "/tmp/export.iges";
-
-    const writer = new oc.IGESControl_Writer_1();
-    const progress = new oc.Message_ProgressRange_1();
-    writer.AddShape(compound, progress);
-    writer.ComputeModel();
-    writer.Write_2(filePath, false);
-
-    const fileData = oc.FS.readFile(filePath);
-    oc.FS.unlink(filePath);
-    writer.delete();
-    progress.delete();
-
-    return new Blob([fileData], { type: "application/iges" });
+    const client = OccWorkerClient.getInstance();
+    const raw = await client.send<WorkerExportResult>({
+      type: "exportFile",
+      payload: {
+        elements: elements.map(el => ({
+          brepJson: el.brep.toJSON(),
+          position: { x: el.position.x, y: el.position.y, z: el.position.z },
+          occBrep: el.occBrep,
+        })),
+        format: "iges",
+      },
+    });
+    return new Blob([raw.fileBytes], { type: "application/iges" });
   }
 
   // ── Import methods ──────────────────────────────────────────────────
 
   async importSTEP(arrayBuffer: ArrayBuffer): Promise<ImportResult[]> {
-    const oc = await this.occService.getOC();
-    const filePath = "/tmp/import.step";
-
-    oc.FS.writeFile(filePath, new Uint8Array(arrayBuffer));
-
-    const reader = new oc.STEPControl_Reader_1();
-    const readStatus = reader.ReadFile(filePath);
-
-    if (readStatus !== oc.IFSelect_ReturnStatus.IFSelect_RetDone) {
-      reader.delete();
-      oc.FS.unlink(filePath);
-      throw new Error("STEP import: ReadFile failed");
-    }
-
-    const progress = new oc.Message_ProgressRange_1();
-    reader.TransferRoots(progress);
-
-    const results = await this.extractShapes(oc, reader);
-
-    reader.delete();
-    progress.delete();
-    oc.FS.unlink(filePath);
-
-    return results;
+    const client = OccWorkerClient.getInstance();
+    const raw = await client.send<WorkerImportResult>({
+      type: "importFile",
+      payload: {
+        fileBytes: new Uint8Array(arrayBuffer),
+        format: "step",
+      },
+    });
+    return raw.elements.map(el => ({
+      brep: Brep.fromJSON(el.brepJson),
+      position: new THREE.Vector3(el.position.x, el.position.y, el.position.z),
+      occBrep: el.occBrep,
+      edgeGeometry: el.edgePositions ? reconstructEdgeGeometry(el.edgePositions) : undefined,
+      vertexPositions: el.vertexPositions,
+    }));
   }
 
   async importSTL(arrayBuffer: ArrayBuffer): Promise<ImportResult[]> {
-    const oc = await this.occService.getOC();
-    const filePath = "/tmp/import.stl";
-
-    oc.FS.writeFile(filePath, new Uint8Array(arrayBuffer));
-
-    const reader = new oc.StlAPI_Reader();
-    const shape = new oc.TopoDS_Shape();
-    const success = reader.Read(shape, filePath);
-
-    if (!success) {
-      reader.delete();
-      shape.delete();
-      oc.FS.unlink(filePath);
-      throw new Error("STL import: Read failed");
-    }
-
-    // STL is a mesh format — no analytic data to preserve
-    const position = this.computeBoundingBoxCenter(oc, shape);
-    const brep = await this.occService.ocShapeToBRep(shape, true);
-
-    reader.delete();
-    oc.FS.unlink(filePath);
-
-    return [{ brep, position }];
-  }
-
-  private async decomposeShape(
-    oc: OpenCascadeInstance,
-    shape: TopoDS_Shape,
-  ): Promise<ImportResult[]> {
-    const results: ImportResult[] = [];
-
-    if (shape.ShapeType() === oc.TopAbs_ShapeEnum.TopAbs_COMPOUND) {
-      // Only decompose the top-level compound — each direct child is one element.
-      // Do NOT recurse: children may themselves be compounds (e.g. tessellated
-      // shapes are compounds of face triangles) and should stay as single elements.
-      const iterator = new oc.TopoDS_Iterator_2(shape, true, true);
-      while (iterator.More()) {
-        const child = iterator.Value();
-        const result = await this.decomposeChild(oc, child);
-        results.push(result);
-        iterator.Next();
-      }
-      iterator.delete();
-
-      if (results.length === 0) {
-        const result = await this.decomposeChild(oc, shape);
-        results.push(result);
-      }
-    } else {
-      const result = await this.decomposeChild(oc, shape);
-      results.push(result);
-    }
-
-    return results;
-  }
-
-  /**
-   * Convert a single OCC shape to ImportResult with occBrep and edgeGeometry.
-   */
-  private async decomposeChild(
-    oc: OpenCascadeInstance,
-    shape: TopoDS_Shape,
-  ): Promise<ImportResult> {
-    const position = this.computeBoundingBoxCenter(oc, shape);
-    const brep = await this.occService.ocShapeToBRep(shape, true);
-
-    // Serialize OCC shape in local space (centered at origin)
-    let occBrep: string | undefined;
-    let edgeGeometry: THREE.BufferGeometry | undefined;
-    try {
-      const trsf = new oc.gp_Trsf_1();
-      const vec = new oc.gp_Vec_4(-position.x, -position.y, -position.z);
-      trsf.SetTranslation_1(vec);
-      vec.delete();
-      const transformer = new oc.BRepBuilderAPI_Transform_2(shape, trsf, true);
-      trsf.delete();
-      const localShape = transformer.Shape();
-      transformer.delete();
-      occBrep = await this.occService.serializeShape(localShape);
-    } catch {
-      // Serialization is best-effort
-    }
-
-    let vertexPositions: Float32Array | undefined;
-    try {
-      edgeGeometry = await this.occService.shapeToEdgeLineSegments(shape, 0.003);
-      edgeGeometry.translate(-position.x, -position.y, -position.z);
-      vertexPositions = await this.occService.shapeToVertexPositions(shape);
-      for (let i = 0; i < vertexPositions.length; i += 3) {
-        vertexPositions[i] -= position.x;
-        vertexPositions[i + 1] -= position.y;
-        vertexPositions[i + 2] -= position.z;
-      }
-    } catch {
-      // Edge geometry is optional
-    }
-
-    return { brep, position, occBrep, edgeGeometry, vertexPositions };
-  }
-
-  private computeBoundingBoxCenter(
-    oc: OpenCascadeInstance,
-    shape: TopoDS_Shape,
-  ): THREE.Vector3 {
-    const bBox = new oc.Bnd_Box_1();
-    oc.BRepBndLib.Add(shape, bBox, false);
-
-    const position = new THREE.Vector3(
-      (bBox.CornerMin().X() + bBox.CornerMax().X()) / 2,
-      (bBox.CornerMin().Y() + bBox.CornerMax().Y()) / 2,
-      (bBox.CornerMin().Z() + bBox.CornerMax().Z()) / 2,
-    );
-
-    bBox.delete();
-    return position;
-  }
-
-  private async extractShapes(
-    oc: OpenCascadeInstance,
-    reader: { NbShapes: () => number; Shape: (num: number) => TopoDS_Shape; OneShape: () => TopoDS_Shape },
-  ): Promise<ImportResult[]> {
-    const nbShapes = reader.NbShapes();
-
-    if (nbShapes === 0) {
-      throw new Error("Import: No shapes found in file");
-    }
-
-    const results: ImportResult[] = [];
-
-    if (nbShapes === 1) {
-      const shape = reader.OneShape();
-      const shapeResults = await this.decomposeShape(oc, shape);
-      results.push(...shapeResults);
-    } else {
-      for (let i = 1; i <= nbShapes; i++) {
-        const shape = reader.Shape(i);
-        const shapeResults = await this.decomposeShape(oc, shape);
-        results.push(...shapeResults);
-      }
-    }
-
-    return results;
+    const client = OccWorkerClient.getInstance();
+    const raw = await client.send<WorkerImportResult>({
+      type: "importFile",
+      payload: {
+        fileBytes: new Uint8Array(arrayBuffer),
+        format: "stl",
+      },
+    });
+    return raw.elements.map(el => ({
+      brep: Brep.fromJSON(el.brepJson),
+      position: new THREE.Vector3(el.position.x, el.position.y, el.position.z),
+      occBrep: el.occBrep,
+      edgeGeometry: el.edgePositions ? reconstructEdgeGeometry(el.edgePositions) : undefined,
+      vertexPositions: el.vertexPositions,
+    }));
   }
 }

@@ -6,6 +6,10 @@ import topLevelAwait from "vite-plugin-top-level-await";
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), wasm(), topLevelAwait()],
+  worker: {
+    format: "es",
+    plugins: () => [wasm(), topLevelAwait()],
+  },
   root: "examples",
   server: {
     port: 3000,

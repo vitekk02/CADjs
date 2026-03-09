@@ -4,7 +4,9 @@ import { useCadCore } from "../contexts/CoreContext";
 import { useCadVisualizer } from "../contexts/VisualizerContext";
 import { useToast } from "../contexts/ToastContext";
 import { Brep } from "../geometry";
-import { OpenCascadeService } from "../services/OpenCascadeService";
+import { OccWorkerClient } from "../services/OccWorkerClient";
+import type { WorkerPreviewResult, WorkerBooleanResult } from "../workers/occ-worker-types";
+import { reconstructFaceGeometry, reconstructEdgeGeometry } from "../workers/geometry-reconstruction";
 import {
   extrudeBRep,
 } from "../scene-operations/resize-operations";
@@ -380,26 +382,20 @@ export function useExtrudeMode() {
   const buildCachedPreviewGeometry = useCallback(
     async (brep: Brep, element?: SceneElement): Promise<THREE.BufferGeometry | null> => {
       try {
-        const ocService = OpenCascadeService.getInstance();
-        let cleanFace = null;
-        if (element?.occBrep) {
-          try {
-            cleanFace = await ocService.deserializeShape(element.occBrep);
-          } catch { /* fall through */ }
-        }
-        if (!cleanFace) {
-          cleanFace = await ocService.buildPlanarFaceFromBoundary(brep);
-        }
-        if (!cleanFace) return null;
-
-        // Extrude by unit depth=1 along the flat normal
+        const client = OccWorkerClient.getInstance();
         const normal = getFlatNormal(brep, element);
-        const normalVec = { x: normal.x, y: normal.y, z: normal.z };
-        const extrudedShape = await ocService.extrudeShape(cleanFace, 1, 1, normalVec);
 
-        // Convert to Three.js geometry with coarse tessellation for speed
-        const geometry = await ocService.shapeToThreeGeometry(extrudedShape, 0.003, 0.1);
-        return geometry;
+        const result = await client.send<WorkerPreviewResult>({
+          type: "previewGeometry",
+          payload: {
+            brepJson: brep.toJSON(),
+            sourceOccBrep: element?.occBrep,
+            normalVec: { x: normal.x, y: normal.y, z: normal.z },
+          },
+        });
+
+        // Reconstruct Three.js geometry from raw typed arrays
+        return reconstructFaceGeometry(result.faceGeometry);
       } catch (error) {
         console.warn("[useExtrudeMode] Failed to build OCC preview geometry:", error);
         return null;
@@ -585,7 +581,7 @@ export function useExtrudeMode() {
       if (!profileElement) return;
 
       try {
-        const ocService = OpenCascadeService.getInstance();
+        const client = OccWorkerClient.getInstance();
 
         // 1. Extrude the profile to create the tool solid
         let ocDirection: number;
@@ -607,14 +603,8 @@ export function useExtrudeMode() {
           profileElement.position.z + extrusionResult.positionOffset.z
         );
 
-        // Convert tool BRep to OCC shape at world position
-        const toolShape = extrusionResult.occBrep
-          ? await ocService.occBrepToOCShape(extrusionResult.occBrep, toolWorldPos)
-          : await ocService.brepToOCShape(extrusionResult.brep, toolWorldPos);
-
         // 3. Find an intersecting 3D body
         let targetElement: SceneElement | null = null;
-        let targetShape = null;
 
         // 3a: Prefer sourceElementId from sketch plane (sketch was created on this body)
         const sourceId = profileElement.sketchPlane?.sourceElementId;
@@ -622,9 +612,6 @@ export function useExtrudeMode() {
           const sourceEl = elements.find((el) => el.nodeId === sourceId);
           if (sourceEl && isElement3D(sourceEl)) {
             targetElement = sourceEl;
-            targetShape = sourceEl.occBrep
-              ? await ocService.occBrepToOCShape(sourceEl.occBrep, sourceEl.position)
-              : await ocService.brepToOCShape(sourceEl.brep, sourceEl.position);
           }
         }
 
@@ -652,66 +639,54 @@ export function useExtrudeMode() {
               const targetBox = new THREE.Box3().setFromObject(targetObj);
               if (toolBox.intersectsBox(targetBox)) {
                 targetElement = el;
-                targetShape = el.occBrep
-                  ? await ocService.occBrepToOCShape(el.occBrep, el.position)
-                  : await ocService.brepToOCShape(el.brep, el.position);
                 break;
               }
             }
           }
         }
 
-        if (!targetElement || !targetShape) {
+        if (!targetElement) {
           showToast("No intersecting body found for cut", "error");
           restoreOriginalMesh();
           return;
         }
 
-        // 4. Boolean difference: target - tool
-        const diffResult = await ocService.booleanDifference(targetShape, toolShape);
-        const resultShape = diffResult.shape;
+        // 4. Boolean difference via worker: target - tool
+        const booleanResult = await client.send<WorkerBooleanResult>({
+          type: "boolean",
+          payload: {
+            operation: "difference",
+            operands: [
+              {
+                brepJson: targetElement.brep.toJSON(),
+                position: { x: targetElement.position.x, y: targetElement.position.y, z: targetElement.position.z },
+                occBrep: targetElement.occBrep,
+              },
+              {
+                brepJson: extrusionResult.brep.toJSON(),
+                position: { x: toolWorldPos.x, y: toolWorldPos.y, z: toolWorldPos.z },
+                occBrep: extrusionResult.occBrep,
+              },
+            ],
+          },
+        });
 
-        // 5. Convert result
-        const resultBrep = await ocService.ocShapeToBRep(resultShape, true);
-
-        // 6. Calculate world center from uncentered result (result shape is in world space)
-        const uncenteredBrep = await ocService.ocShapeToBRep(resultShape, false);
-        const uverts = uncenteredBrep.vertices;
-        const uxs = uverts.map(v => v.x);
-        const uys = uverts.map(v => v.y);
-        const uzs = uverts.map(v => v.z);
+        // 5. Reconstruct result from worker response
+        const resultBrep = Brep.fromJSON(booleanResult.brepJson);
         const worldCenter = new THREE.Vector3(
-          (Math.min(...uxs) + Math.max(...uxs)) / 2,
-          (Math.min(...uys) + Math.max(...uys)) / 2,
-          (Math.min(...uzs) + Math.max(...uzs)) / 2,
+          booleanResult.position.x,
+          booleanResult.position.y,
+          booleanResult.position.z,
         );
 
-        // 7. Extract edge geometry and face geometry for clean rendering (translated to local space)
-        const edgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.003);
-        edgeGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
-        const vertexPositions = await ocService.shapeToVertexPositions(resultShape);
-        for (let i = 0; i < vertexPositions.length; i += 3) {
-          vertexPositions[i] -= worldCenter.x;
-          vertexPositions[i + 1] -= worldCenter.y;
-          vertexPositions[i + 2] -= worldCenter.z;
-        }
+        const edgeGeometry = booleanResult.edgePositions
+          ? reconstructEdgeGeometry(booleanResult.edgePositions)
+          : undefined;
+        const faceGeometry = booleanResult.faceGeometry
+          ? reconstructFaceGeometry(booleanResult.faceGeometry)
+          : undefined;
 
-        const faceGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.003, 0.1);
-        faceGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
-
-        // 8. Serialize in local space for occBrep preservation
-        const oc = await ocService.getOC();
-        const trsf = new oc.gp_Trsf_1();
-        const vec = new oc.gp_Vec_4(-worldCenter.x, -worldCenter.y, -worldCenter.z);
-        trsf.SetTranslation_1(vec);
-        vec.delete();
-        const transformer = new oc.BRepBuilderAPI_Transform_2(resultShape, trsf, true);
-        trsf.delete();
-        const localShape = transformer.Shape();
-        transformer.delete();
-        const occBrep = await ocService.serializeShape(localShape);
-
-        // 9. Update the target element with the cut result
+        // 6. Update the target element with the cut result
         // The consumedElementId tells CoreContext to also remove the profile element
         updateElementBrep(
           targetElement.nodeId,
@@ -719,9 +694,9 @@ export function useExtrudeMode() {
           worldCenter,
           { type: "difference", consumedElementId: state.selectedElement },
           edgeGeometry,
-          occBrep,
+          booleanResult.occBrep,
           faceGeometry,
-          vertexPositions,
+          booleanResult.vertexPositions,
         );
 
         forceSceneUpdate();

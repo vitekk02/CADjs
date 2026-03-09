@@ -2,7 +2,9 @@ import * as THREE from "three";
 import { Brep, BrepGraph, CompoundBrep } from "../geometry";
 import { SceneElement, BooleanOperationOptions } from "./types";
 import { createMeshFromGeometry } from "./mesh-operations";
-import { OpenCascadeService } from "../services/OpenCascadeService";
+import { OccWorkerClient } from "../services/OccWorkerClient";
+import type { WorkerBooleanResult } from "../workers/occ-worker-types";
+import { reconstructEdgeGeometry, reconstructFaceGeometry } from "../workers/geometry-reconstruction";
 
 // boolean intersection - returns common volume of all shapes
 export async function intersectionSelectedElements(
@@ -57,49 +59,43 @@ export async function intersectionSelectedElements(
   }
 
   try {
-    const ocService = OpenCascadeService.getInstance();
-    const oc = await ocService.getOC();
+    // Build operands for the worker
+    const operands = selectedElementsData.map((el) => {
+      const isCompound = "children" in el.brep && Array.isArray((el.brep as any).children);
+      return {
+        brepJson: el.brep.toJSON(),
+        position: { x: el.position.x, y: el.position.y, z: el.position.z },
+        occBrep: el.occBrep,
+        isCompound,
+        compoundBrepJson: isCompound ? (el.brep as CompoundBrep).toJSON() : undefined,
+      };
+    });
 
-    // Use lossless occBrep path when available
-    const el0 = selectedElementsData[0];
-    let resultShape = el0.occBrep
-      ? await ocService.occBrepToOCShape(el0.occBrep, el0.position)
-      : await ocService.brepToOCShape(brepsToIntersect[0].brep, brepsToIntersect[0].position);
+    const client = OccWorkerClient.getInstance();
+    const raw = await client.send<WorkerBooleanResult>({
+      type: "boolean",
+      payload: {
+        operation: "intersection",
+        operands,
+        options: options ? {
+          targetId: options.targetId,
+          toolIds: options.toolIds,
+          keepTools: options.keepTools,
+        } : undefined,
+      },
+    });
 
-    for (let i = 1; i < selectedElementsData.length; i++) {
-      const el = selectedElementsData[i];
-      const nextShape = el.occBrep
-        ? await ocService.occBrepToOCShape(el.occBrep, el.position)
-        : await ocService.brepToOCShape(brepsToIntersect[i].brep, brepsToIntersect[i].position);
+    // Reconstruct result from worker
+    const resultBrep = Brep.fromJSON(raw.brepJson);
+    const worldCenter = new THREE.Vector3(raw.position.x, raw.position.y, raw.position.z);
+    const resultEdgeGeometry = raw.edgePositions ? reconstructEdgeGeometry(raw.edgePositions) : undefined;
+    const resultVertexPositions = raw.vertexPositions ?? undefined;
+    const resultGeometry = raw.faceGeometry ? reconstructFaceGeometry(raw.faceGeometry) : undefined;
+    const serializedOccBrep = raw.occBrep;
 
-      const result = await ocService.booleanIntersection(
-        resultShape,
-        nextShape,
-      );
-      resultShape = result.shape;
+    if (!resultGeometry) {
+      throw new Error("Intersection operation failed - no face geometry in result");
     }
-
-    if (!resultShape) {
-      throw new Error("Intersection operation failed - no result shape");
-    }
-
-    const bBox = new oc.Bnd_Box_1();
-    oc.BRepBndLib.Add(resultShape, bBox, false);
-
-    const xMin = bBox.CornerMin().X();
-    const yMin = bBox.CornerMin().Y();
-    const zMin = bBox.CornerMin().Z();
-    const xMax = bBox.CornerMax().X();
-    const yMax = bBox.CornerMax().Y();
-    const zMax = bBox.CornerMax().Z();
-
-    const worldCenter = new THREE.Vector3(
-      (xMin + xMax) / 2,
-      (yMin + yMax) / 2,
-      (zMin + zMax) / 2,
-    );
-
-    const resultBrep = await ocService.ocShapeToBRep(resultShape);
 
     const originalBreps = brepsToIntersect.map((item) => item.brep);
     const compound = new CompoundBrep(originalBreps);
@@ -121,28 +117,6 @@ export async function intersectionSelectedElements(
         connectionType: "intersection",
       });
     });
-
-    // Build mesh directly from OCC shape for smooth tessellation (indexed geometry + true edges)
-    const resultGeometry = await ocService.shapeToThreeGeometry(resultShape, 0.003, 0.1);
-    const resultEdgeGeometry = await ocService.shapeToEdgeLineSegments(resultShape, 0.003);
-    const resultVertexPositions = await ocService.shapeToVertexPositions(resultShape);
-    // Center geometry to match BRep centering pattern
-    resultGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
-    resultEdgeGeometry.translate(-worldCenter.x, -worldCenter.y, -worldCenter.z);
-    for (let i = 0; i < resultVertexPositions.length; i += 3) {
-      resultVertexPositions[i] -= worldCenter.x;
-      resultVertexPositions[i + 1] -= worldCenter.y;
-      resultVertexPositions[i + 2] -= worldCenter.z;
-    }
-
-    // Serialize for lossless round-tripping
-    let serializedOccBrep: string | undefined;
-    try {
-      const trsf = new oc.gp_Trsf_1();
-      trsf.SetTranslation_1(new oc.gp_Vec_4(-worldCenter.x, -worldCenter.y, -worldCenter.z));
-      const localShape = new oc.BRepBuilderAPI_Transform_2(resultShape, trsf, true).Shape();
-      serializedOccBrep = await ocService.serializeShape(localShape);
-    } catch { /* best-effort */ }
 
     const resultMesh = createMeshFromGeometry(resultGeometry, resultEdgeGeometry);
     resultMesh.position.set(0, 0, 0);

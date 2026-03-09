@@ -907,7 +907,15 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
 
   // Show dimension input immediately after line creation
   useEffect(() => {
-    if (!pendingLineDimension || !renderer || !camera) {
+    if (!pendingLineDimension) {
+      // Hide overlay when pending dimension is cleared (e.g. ESC during chaining)
+      if (dimensionSource === "lineCreation") {
+        setDimensionInputVisible(false);
+        setDimensionSource(null);
+      }
+      return;
+    }
+    if (!renderer || !camera) {
       return;
     }
 
@@ -923,7 +931,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     setPendingDimensionPrimitiveId(pendingLineDimension.lineId);
     setDimensionSource("lineCreation");
     setDimensionInputVisible(true);
-  }, [pendingLineDimension, renderer, camera]);
+  }, [pendingLineDimension, renderer, camera, dimensionSource]);
 
   // Show dimension input when double-clicking a constraint glyph
   const editingConstraintRef = useRef<{ id: string; type: string; primitiveIds: string[] } | null>(null);
@@ -989,7 +997,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   }, [editingConstraintId, activeSketch, renderer, camera]);
 
   // Handle dimension input submission
-  const handleDimensionSubmit = (value: number) => {
+  const handleDimensionSubmit = async (value: number) => {
     if (dimensionSource === "constraintEdit" && editingConstraintRef.current && activeSketch) {
       const { id: oldId, type, primitiveIds } = editingConstraintRef.current;
       // Convert angle from degrees to radians
@@ -997,7 +1005,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       // Remove old constraint and add new one with updated value
       pushSketchUndo();
       removeSketchConstraint(oldId);
-      addConstraintAndSolve({
+      await addConstraintAndSolve({
         id: `const_${Date.now()}`,
         type: type as any,
         primitiveIds,
@@ -1022,9 +1030,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       if (!primitive) return;
 
       if (primitive.type === "line") {
-        applyConstraint("distance", value);
+        await applyConstraint("distance", value);
       } else if (primitive.type === "circle" || primitive.type === "arc") {
-        applyConstraint("radius", value);
+        await applyConstraint("radius", value);
       }
     }
 
@@ -1532,7 +1540,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
                 disabled={isLocked}
                 onClick={() => setMode("combine")}
               >
-                Combine
+                Boolean
               </button>
 
               {/* Fillet / Chamfer button */}
