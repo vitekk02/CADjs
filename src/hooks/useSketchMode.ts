@@ -87,6 +87,11 @@ interface UseSketchModeResult {
   closeContextMenu: () => void;
   applyConstraintToContextMenuPrimitives: (type: ConstraintType, value?: number) => Promise<void>;
   deleteConstraint: (constraintId: string) => void;
+  deleteSelectedPrimitives: () => void;
+  // Pre-fill & live preview for constraint value input
+  getCurrentValueForConstraint: (type: ConstraintType) => number | undefined;
+  handleConstraintPreviewChange: (type: ConstraintType, value: number, overridePrimitiveIds?: string[]) => void;
+  handleConstraintPreviewCancel: () => void;
   // Plane selection (Fusion 360 style)
   isSelectingPlane: boolean;
   hoveredPlane: SketchPlaneType | null;
@@ -281,6 +286,9 @@ export function useSketchMode(): UseSketchModeResult {
     removePrimitive,
     updatePrimitivesAndSolve,
     addConstraintAndSolve,
+    previewConstraint,
+    cancelConstraintPreview,
+    commitConstraintPreview,
     removeConstraint,
     startSketch,
     solveSketch,
@@ -479,6 +487,11 @@ export function useSketchMode(): UseSketchModeResult {
   // Double-click editing of constraint values
   const [editingConstraintId, setEditingConstraintId] = useState<string | null>(null);
   const lastGlyphClickRef = useRef<{ constraintId: string; time: number } | null>(null);
+
+  // Constraint preview state (for live preview while typing in context menu)
+  const isPreviewingRef = useRef(false);
+  const previewDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewConstraintIdRef = useRef<string | null>(null);
 
   // Plane selection state (Fusion 360 style)
   const [isSelectingPlane, setIsSelectingPlane] = useState(false);
@@ -2794,6 +2807,17 @@ export function useSketchMode(): UseSketchModeResult {
       }
     });
     offsetPreviewRef.current = null;
+
+    // Restore original planes to full opacity
+    if (selectionPlanesRef.current) {
+      selectionPlanesRef.current.children.forEach((child) => {
+        if (child instanceof THREE.Mesh && child.userData.planeType) {
+          const mat = child.material as THREE.MeshBasicMaterial;
+          mat.opacity = 0.5;
+          child.userData.baseOpacity = 0.5;
+        }
+      });
+    }
   }, [scene]);
 
   // Show translucent offset preview planes during plane selection
@@ -2803,20 +2827,32 @@ export function useSketchMode(): UseSketchModeResult {
     // Remove existing preview
     removeOffsetPreview();
 
-    if (offset === 0) return;
+    if (offset === 0) {
+      // Restore original planes to full opacity
+      if (selectionPlanesRef.current) {
+        selectionPlanesRef.current.children.forEach((child) => {
+          if (child instanceof THREE.Mesh && child.userData.planeType) {
+            const mat = child.material as THREE.MeshBasicMaterial;
+            mat.opacity = 0.5;
+            child.userData.baseOpacity = 0.5;
+          }
+        });
+      }
+      return;
+    }
 
     const planeSize = 4;
     const halfSize = planeSize / 2;
     const previewGroup = new THREE.Group();
     previewGroup.userData.isOffsetPreview = true;
 
-    const planeConfigs: { color: number; position: THREE.Vector3; rotation?: THREE.Euler }[] = [
+    const planeConfigs: { color: number; position: THREE.Vector3; rotation?: THREE.Euler; planeType: string }[] = [
       // XY offset plane — shifted along Z
-      { color: PLANE_THEME.xy, position: new THREE.Vector3(halfSize, halfSize, offset) },
+      { color: PLANE_THEME.xy, position: new THREE.Vector3(halfSize, halfSize, offset), planeType: "XY" },
       // XZ offset plane — shifted along Y
-      { color: PLANE_THEME.xz, position: new THREE.Vector3(halfSize, offset, halfSize), rotation: new THREE.Euler(-Math.PI / 2, 0, 0) },
+      { color: PLANE_THEME.xz, position: new THREE.Vector3(halfSize, offset, halfSize), rotation: new THREE.Euler(-Math.PI / 2, 0, 0), planeType: "XZ" },
       // YZ offset plane — shifted along X
-      { color: PLANE_THEME.yz, position: new THREE.Vector3(offset, halfSize, halfSize), rotation: new THREE.Euler(0, Math.PI / 2, 0) },
+      { color: PLANE_THEME.yz, position: new THREE.Vector3(offset, halfSize, halfSize), rotation: new THREE.Euler(0, Math.PI / 2, 0), planeType: "YZ" },
     ];
 
     for (const cfg of planeConfigs) {
@@ -2824,14 +2860,28 @@ export function useSketchMode(): UseSketchModeResult {
       const mat = new THREE.MeshBasicMaterial({
         color: cfg.color,
         transparent: true,
-        opacity: 0.25,
+        opacity: 0.5,
         side: THREE.DoubleSide,
         depthWrite: false,
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.copy(cfg.position);
       if (cfg.rotation) mesh.rotation.copy(cfg.rotation);
+      mesh.userData.planeType = cfg.planeType;
+      mesh.userData.baseColor = cfg.color;
+      mesh.userData.baseOpacity = 0.5;
       previewGroup.add(mesh);
+    }
+
+    // Dim original planes when offset planes are visible
+    if (selectionPlanesRef.current) {
+      selectionPlanesRef.current.children.forEach((child) => {
+        if (child instanceof THREE.Mesh && child.userData.planeType) {
+          const mat = child.material as THREE.MeshBasicMaterial;
+          mat.opacity = 0.15;
+          child.userData.baseOpacity = 0.15;
+        }
+      });
     }
 
     // Dashed lines connecting base plane corners to offset plane corners
@@ -3043,9 +3093,11 @@ export function useSketchMode(): UseSketchModeResult {
       // Clean up previous face highlight
       cleanupFaceHighlight();
 
-      if (selectionPlanesRef.current) {
+      // Raycast against offset planes if present, otherwise original planes
+      const targetGroup = offsetPreviewRef.current || selectionPlanesRef.current;
+      if (targetGroup) {
         // Get plane meshes
-        const planes = selectionPlanesRef.current.children.filter(
+        const planes = targetGroup.children.filter(
           (child) => child instanceof THREE.Mesh && child.userData.planeType
         ) as THREE.Mesh[];
 
@@ -3112,9 +3164,11 @@ export function useSketchMode(): UseSketchModeResult {
       // Clean up face highlight
       cleanupFaceHighlight();
 
-      if (selectionPlanesRef.current) {
+      // Raycast against offset planes if present, otherwise original planes
+      const targetGroup = offsetPreviewRef.current || selectionPlanesRef.current;
+      if (targetGroup) {
         // Get plane meshes
-        const planes = selectionPlanesRef.current.children.filter(
+        const planes = targetGroup.children.filter(
           (child) => child instanceof THREE.Mesh && child.userData.planeType
         ) as THREE.Mesh[];
 
@@ -3684,8 +3738,88 @@ export function useSketchMode(): UseSketchModeResult {
     [generateId, addConstraintAndSolve, clearPendingLineDimension, pushSketchUndo, showConstraintFeedback]
   );
 
+  // Get current value for a constraint type (pre-fill input)
+  const getCurrentValueForConstraint = useCallback((type: ConstraintType): number | undefined => {
+    const sketch = activeSketchRef.current;
+    if (!sketch) return undefined;
+    const ids = contextMenu.primitiveIds;
+    if (ids.length === 0) return undefined;
+
+    if (type === "distance") {
+      if (ids.length === 1) {
+        // Single line: compute its current length
+        const line = sketch.primitives.find(p => p.id === ids[0] && isSketchLine(p)) as SketchLine | undefined;
+        if (line) {
+          const p1 = sketch.primitives.find(p => p.id === line.p1Id && isSketchPoint(p)) as SketchPoint | undefined;
+          const p2 = sketch.primitives.find(p => p.id === line.p2Id && isSketchPoint(p)) as SketchPoint | undefined;
+          if (p1 && p2) {
+            return Math.hypot(p2.x - p1.x, p2.y - p1.y);
+          }
+        }
+      } else if (ids.length === 2) {
+        // Two points: compute distance between them
+        const pt1 = sketch.primitives.find(p => p.id === ids[0] && isSketchPoint(p)) as SketchPoint | undefined;
+        const pt2 = sketch.primitives.find(p => p.id === ids[1] && isSketchPoint(p)) as SketchPoint | undefined;
+        if (pt1 && pt2) {
+          return Math.hypot(pt2.x - pt1.x, pt2.y - pt1.y);
+        }
+      }
+    } else if (type === "radius") {
+      if (ids.length === 1) {
+        const circle = sketch.primitives.find(p => p.id === ids[0] && (isSketchCircle(p) || isSketchArc(p))) as (SketchCircle | SketchArc) | undefined;
+        if (circle) return circle.radius;
+      }
+    }
+    return undefined;
+  }, [contextMenu.primitiveIds]);
+
+  // Handle live preview value changes (debounced)
+  const handleConstraintPreviewChange = useCallback((type: ConstraintType, value: number, overridePrimitiveIds?: string[]) => {
+    if (previewDebounceRef.current) {
+      clearTimeout(previewDebounceRef.current);
+    }
+    previewDebounceRef.current = setTimeout(() => {
+      // Generate a stable constraint ID for all preview iterations
+      if (!previewConstraintIdRef.current) {
+        previewConstraintIdRef.current = generateId("const");
+      }
+      isPreviewingRef.current = true;
+      const constraint: SketchConstraint = {
+        id: previewConstraintIdRef.current,
+        type,
+        primitiveIds: overridePrimitiveIds ?? [...contextMenu.primitiveIds],
+        value,
+        driving: true,
+      };
+      previewConstraint(constraint);
+    }, 150);
+  }, [contextMenu.primitiveIds, generateId, previewConstraint]);
+
+  // Cancel preview (e.g. on Escape or click outside)
+  const handleConstraintPreviewCancel = useCallback(() => {
+    if (previewDebounceRef.current) {
+      clearTimeout(previewDebounceRef.current);
+      previewDebounceRef.current = null;
+    }
+    if (isPreviewingRef.current) {
+      cancelConstraintPreview();
+      isPreviewingRef.current = false;
+      previewConstraintIdRef.current = null;
+    }
+  }, [cancelConstraintPreview]);
+
   // Close context menu
   const closeContextMenu = useCallback(() => {
+    // Cancel any in-progress preview before closing
+    if (previewDebounceRef.current) {
+      clearTimeout(previewDebounceRef.current);
+      previewDebounceRef.current = null;
+    }
+    if (isPreviewingRef.current) {
+      cancelConstraintPreview();
+      isPreviewingRef.current = false;
+      previewConstraintIdRef.current = null;
+    }
     setContextMenu({
       visible: false,
       x: 0,
@@ -3693,7 +3827,7 @@ export function useSketchMode(): UseSketchModeResult {
       primitiveIds: [],
       primitiveTypes: [],
     });
-  }, []);
+  }, [cancelConstraintPreview]);
 
   // Delete a constraint by ID (used by context menu)
   const deleteConstraint = useCallback(
@@ -3720,12 +3854,38 @@ export function useSketchMode(): UseSketchModeResult {
     solveSketch();
   }, [activeSketch, selectedPrimitives, pushSketchUndo, updatePrimitive, solveSketch]);
 
+  // Delete selected primitives (used by context menu and keyboard shortcut)
+  const deleteSelectedPrimitives = useCallback(() => {
+    if (!activeSketch || selectedPrimitives.length === 0) return;
+    pushSketchUndo();
+    for (const primId of selectedPrimitives) {
+      removePrimitive(primId);
+    }
+    setSelectedPrimitives([]);
+    solveSketch();
+  }, [activeSketch, selectedPrimitives, pushSketchUndo, removePrimitive, solveSketch]);
+
   // Apply constraint to primitives from context menu
   const applyConstraintToContextMenuPrimitives = useCallback(
     async (type: ConstraintType, value?: number) => {
       if (contextMenu.primitiveIds.length === 0) {
         console.warn("No primitives in context menu for constraint");
         closeContextMenu();
+        return;
+      }
+
+      // If we were previewing, commit the preview (undo is handled by commitConstraintPreview)
+      if (isPreviewingRef.current) {
+        if (previewDebounceRef.current) {
+          clearTimeout(previewDebounceRef.current);
+          previewDebounceRef.current = null;
+        }
+        commitConstraintPreview();
+        isPreviewingRef.current = false;
+        previewConstraintIdRef.current = null;
+        showConstraintFeedback("applied");
+        // Close menu without cancelling preview (already committed)
+        setContextMenu({ visible: false, x: 0, y: 0, primitiveIds: [], primitiveTypes: [] });
         return;
       }
 
@@ -3771,7 +3931,7 @@ export function useSketchMode(): UseSketchModeResult {
 
       closeContextMenu();
     },
-    [contextMenu.primitiveIds, generateId, addConstraintAndSolve, closeContextMenu, pushSketchUndo, showConstraintFeedback]
+    [contextMenu.primitiveIds, generateId, addConstraintAndSolve, closeContextMenu, pushSketchUndo, showConstraintFeedback, commitConstraintPreview]
   );
 
   // Handle dragging primitives in select mode
@@ -4813,6 +4973,11 @@ export function useSketchMode(): UseSketchModeResult {
     closeContextMenu,
     applyConstraintToContextMenuPrimitives,
     deleteConstraint,
+    deleteSelectedPrimitives,
+    // Pre-fill & live preview for constraint value input
+    getCurrentValueForConstraint,
+    handleConstraintPreviewChange,
+    handleConstraintPreviewCancel,
     // Plane selection (Fusion 360 style)
     isSelectingPlane,
     hoveredPlane,

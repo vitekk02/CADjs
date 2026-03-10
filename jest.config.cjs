@@ -9,6 +9,9 @@ module.exports = {
     // Map planegcs - required because planegcs WASM initialization uses import.meta.url
     // which babel-plugin-transform-import-meta cannot fully transform due to internal _require setup
     "^@salusoft89/planegcs$": "<rootDir>/tests/__mocks__/@salusoft89/planegcs.js",
+    // Map OccWorkerClient - uses import.meta.url for Worker which Jest can't parse in CommonJS mode
+    // Pattern matches both "../services/OccWorkerClient" and "./OccWorkerClient" imports
+    "(.*/|\\./)?OccWorkerClient$": "<rootDir>/tests/__mocks__/OccWorkerClient.js",
   },
   transform: {
     // TypeScript files

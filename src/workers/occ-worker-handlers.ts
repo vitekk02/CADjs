@@ -318,7 +318,13 @@ export function handleBoolean(oc: OpenCascadeInstance, payload: BooleanRequest["
   // Convert all operands to world-space OCC shapes
   const shapes = payload.operands.map(op => {
     if (op.occBrep) return occBrepToOCShapeHelper(oc, op.occBrep, op.position);
-    return brepToOCShapeHelper(oc, op.brepJson, op.position);
+    // Handle compound BRep JSON — use unifiedBRep or first child if available
+    let brepJson = op.brepJson;
+    if ((brepJson as any)?.type === "compound") {
+      const compoundJson = brepJson as any;
+      brepJson = compoundJson.unifiedBRep || compoundJson.children?.[0] || brepJson;
+    }
+    return brepToOCShapeHelper(oc, brepJson, op.position);
   });
 
   if (shapes.length < 2) throw new Error("Need at least 2 operands for boolean");

@@ -111,6 +111,9 @@ export interface CadCoreContextType {
   updatePrimitivesAndSolve: (updates: Map<string, { x: number; y: number }>) => Promise<void>;
   addConstraint: (constraint: SketchConstraint) => void;
   addConstraintAndSolve: (constraint: SketchConstraint) => Promise<ConstraintResult>;
+  previewConstraint: (constraint: SketchConstraint) => Promise<ConstraintResult>;
+  cancelConstraintPreview: () => void;
+  commitConstraintPreview: () => void;
   removePrimitive: (primitiveId: string) => void;
   removeConstraint: (constraintId: string) => void;
   finishSketch: () => Promise<boolean>;
@@ -201,6 +204,10 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
 
   // Ref to track solve operation version to prevent race conditions
   const solveVersionRef = useRef(0);
+
+  // Constraint preview state (snapshot-based preview with debounced solve)
+  const previewConstraintSnapshotRef = useRef<Sketch | null>(null);
+  const previewVersionRef = useRef(0);
 
   // Keep a ref to activeSketch for undo/redo (avoids stale closure issues)
   const activeSketchRef = useRef<Sketch | null>(activeSketch);
@@ -1281,6 +1288,82 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
     [idCounter]
   );
 
+  // Preview a constraint without committing (snapshot-based, supports debounced iteration)
+  const previewConstraint = useCallback(
+    async (constraint: SketchConstraint): Promise<ConstraintResult> => {
+      // On first call, save the current sketch as snapshot
+      if (previewConstraintSnapshotRef.current === null) {
+        const current = activeSketchRef.current;
+        if (!current) return { sketch: null, status: "failed" };
+        previewConstraintSnapshotRef.current = current;
+      }
+
+      const version = ++previewVersionRef.current;
+      const snapshot = previewConstraintSnapshotRef.current;
+
+      // Always start from the snapshot, add the new constraint
+      const addResult = addConstraintToSketch(snapshot, constraint, idCounter);
+
+      try {
+        const solver = SketchSolverService.getInstance();
+        const solveResult = await solver.solve(addResult.sketch);
+
+        // Check for staleness after async solve
+        if (previewVersionRef.current !== version) {
+          return { sketch: null, status: "failed" };
+        }
+
+        if (solveResult.success) {
+          if (solveResult.status === "overconstrained") {
+            // Restore snapshot on overconstrained
+            setActiveSketch(snapshot);
+            const isConflicting = (solveResult.conflictingConstraintIds?.length ?? 0) > 0;
+            return { sketch: null, status: isConflicting ? "conflicting" : "redundant" };
+          }
+          setActiveSketch(solveResult.sketch);
+          return { sketch: solveResult.sketch, status: "applied" };
+        } else {
+          setActiveSketch(snapshot);
+          return { sketch: null, status: "failed" };
+        }
+      } catch {
+        if (previewVersionRef.current === version) {
+          setActiveSketch(snapshot);
+        }
+        return { sketch: null, status: "failed" };
+      }
+    },
+    [idCounter]
+  );
+
+  // Cancel an in-progress constraint preview, restoring the snapshot
+  const cancelConstraintPreview = useCallback(() => {
+    const snapshot = previewConstraintSnapshotRef.current;
+    if (snapshot) {
+      setActiveSketch(snapshot);
+    }
+    previewConstraintSnapshotRef.current = null;
+    previewVersionRef.current++;
+  }, []);
+
+  // Commit the current preview state (push undo, clear snapshot)
+  const commitConstraintPreview = useCallback(() => {
+    const snapshot = previewConstraintSnapshotRef.current;
+    if (snapshot) {
+      // Push the pre-preview state as undo entry
+      sketchUndoStackRef.current = [...sketchUndoStackRef.current, snapshot];
+      if (sketchUndoStackRef.current.length > MAX_SKETCH_UNDO_STEPS) {
+        sketchUndoStackRef.current = sketchUndoStackRef.current.slice(
+          sketchUndoStackRef.current.length - MAX_SKETCH_UNDO_STEPS
+        );
+      }
+      sketchRedoStackRef.current = [];
+      setUndoRedoVersion((v) => v + 1);
+    }
+    previewConstraintSnapshotRef.current = null;
+    previewVersionRef.current++;
+  }, []);
+
   const removePrimitive = useCallback(
     (primitiveId: string) => {
       setActiveSketch((currentSketch) => {
@@ -1804,6 +1887,9 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         updatePrimitivesAndSolve,
         addConstraint,
         addConstraintAndSolve,
+        previewConstraint,
+        cancelConstraintPreview,
+        commitConstraintPreview,
         removePrimitive,
         removeConstraint,
         finishSketch,

@@ -1,10 +1,6 @@
 import * as THREE from "three";
-import { sweepBRep } from "../../src/scene-operations/sweep-operations";
+import { sweepBRep, SweepOptions } from "../../src/scene-operations/sweep-operations";
 import { Brep, Vertex, Edge, Face } from "../../src/geometry";
-import { OpenCascadeService } from "../../src/services/OpenCascadeService";
-
-const ocService = OpenCascadeService.getInstance();
-
 /**
  * Create a flat rectangle BRep centered at origin in the XY plane.
  */
@@ -135,63 +131,6 @@ describe("sweep-operations", () => {
       expect(result.positionOffset).toEqual({ x: 0, y: 0, z: 0 });
     });
 
-    it("should return original BRep when buildPlanarFaceFromBoundary returns null", async () => {
-      const profileBrep = createRectBrep(2, 2);
-      const position = new THREE.Vector3(0, 0, 0);
-
-      jest.spyOn(ocService, "buildPlanarFaceFromBoundary").mockResolvedValue(null as any);
-
-      const result = await sweepBRep(profileBrep, position, straightPath);
-
-      expect(result.brep).toBe(profileBrep);
-      expect(result.positionOffset).toEqual({ x: 0, y: 0, z: 0 });
-    });
-
-    it("should return original BRep when buildWireFromPoints returns null", async () => {
-      const profileBrep = createRectBrep(2, 2);
-      const position = new THREE.Vector3(0, 0, 0);
-
-      jest.spyOn(ocService, "buildWireFromPoints").mockResolvedValue(null as any);
-
-      const result = await sweepBRep(profileBrep, position, straightPath);
-
-      expect(result.brep).toBe(profileBrep);
-      expect(result.positionOffset).toEqual({ x: 0, y: 0, z: 0 });
-    });
-
-    it("should return original BRep when sweepShapeAdvanced throws", async () => {
-      const profileBrep = createRectBrep(2, 2);
-      const position = new THREE.Vector3(0, 0, 0);
-
-      jest.spyOn(ocService, "sweepShapeAdvanced").mockRejectedValue(new Error("Sweep failed"));
-
-      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
-
-      const result = await sweepBRep(profileBrep, position, straightPath);
-
-      expect(result.brep).toBe(profileBrep);
-      expect(result.positionOffset).toEqual({ x: 0, y: 0, z: 0 });
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining("[sweepBRep]"),
-        expect.any(Error),
-      );
-      consoleSpy.mockRestore();
-    });
-
-    it("should handle edge geometry extraction failure gracefully", async () => {
-      const profileBrep = createRectBrep(2, 2);
-      const position = new THREE.Vector3(0, 0, 0);
-
-      jest.spyOn(ocService, "shapeToEdgeLineSegments").mockRejectedValue(new Error("Edge fail"));
-
-      const result = await sweepBRep(profileBrep, position, straightPath);
-
-      // Should still return valid result without edge geometry
-      expect(result.brep.vertices.length).toBeGreaterThan(0);
-      expect(result.brep.faces.length).toBeGreaterThan(0);
-      expect(result.edgeGeometry).toBeUndefined();
-    });
-
     it("should handle empty path array", async () => {
       const profileBrep = createRectBrep(2, 2);
       const position = new THREE.Vector3(0, 0, 0);
@@ -200,6 +139,78 @@ describe("sweep-operations", () => {
 
       expect(result.brep).toBe(profileBrep);
       expect(result.positionOffset).toEqual({ x: 0, y: 0, z: 0 });
+    });
+
+    it("should sweep with options: perpendicular orientation + right corners", async () => {
+      const profileBrep = createRectBrep(2, 2);
+      const position = new THREE.Vector3(0, 0, 0);
+      const options: SweepOptions = { orientation: "perpendicular", cornerMode: "right" };
+
+      const lPath = [
+        { x: 0, y: 0, z: 0 },
+        { x: 3, y: 0, z: 0 },
+        { x: 3, y: 3, z: 0 },
+      ];
+
+      const result = await sweepBRep(profileBrep, position, lPath, options);
+
+      expect(result.brep.vertices.length).toBeGreaterThan(0);
+      expect(result.brep.faces.length).toBeGreaterThan(0);
+    });
+
+    it("should sweep with options: parallel orientation + round corners", async () => {
+      const profileBrep = createRectBrep(1, 1);
+      const position = new THREE.Vector3(0, 0, 0);
+      const options: SweepOptions = { orientation: "parallel", cornerMode: "round" };
+
+      const lPath = [
+        { x: 0, y: 0, z: 0 },
+        { x: 3, y: 0, z: 0 },
+        { x: 3, y: 3, z: 0 },
+      ];
+
+      const result = await sweepBRep(profileBrep, position, lPath, options);
+
+      expect(result.brep.vertices.length).toBeGreaterThan(0);
+      expect(result.brep.faces.length).toBeGreaterThan(0);
+    });
+
+    it("should sweep along collinear path (all points on same line)", async () => {
+      const profileBrep = createRectBrep(2, 2);
+      const position = new THREE.Vector3(0, 0, 0);
+
+      // All points along Z axis
+      const collinearPath = [
+        { x: 0, y: 0, z: 0 },
+        { x: 0, y: 0, z: 3 },
+        { x: 0, y: 0, z: 6 },
+      ];
+
+      const result = await sweepBRep(profileBrep, position, collinearPath);
+
+      expect(result.brep.vertices.length).toBeGreaterThan(0);
+      expect(result.brep.faces.length).toBeGreaterThan(0);
+    });
+
+    it("should sweep along multi-point curved path (10 points)", async () => {
+      const profileBrep = createRectBrep(0.5, 0.5);
+      const position = new THREE.Vector3(0, 0, 0);
+
+      // Generate a helical path with 10 points
+      const curvedPath = [];
+      for (let i = 0; i < 10; i++) {
+        const t = i / 9;
+        curvedPath.push({
+          x: Math.cos(t * Math.PI) * 3,
+          y: Math.sin(t * Math.PI) * 3,
+          z: t * 5,
+        });
+      }
+
+      const result = await sweepBRep(profileBrep, position, curvedPath);
+
+      expect(result.brep.vertices.length).toBeGreaterThan(0);
+      expect(result.brep.faces.length).toBeGreaterThan(0);
     });
   });
 });

@@ -27,6 +27,7 @@ import { buildBrowserSections } from "../src/scene-operations/browser-sections";
 import { SKETCH_PLANE, HELPERS } from "../src/theme";
 import FileMenu from "../src/components/FileMenu";
 import NavigationBar from "../src/components/NavigationBar";
+import ModeInfoCard from "../src/components/ModeInfoCard";
 import { useToast } from "../src/contexts/ToastContext";
 
 interface SimpleCadSceneProps {
@@ -184,6 +185,11 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     closeContextMenu: closeSketchContextMenu,
     applyConstraintToContextMenuPrimitives,
     deleteConstraint: deleteSketchConstraint,
+    deleteSelectedPrimitives,
+    // Pre-fill & live preview for constraint value input
+    getCurrentValueForConstraint,
+    handleConstraintPreviewChange,
+    handleConstraintPreviewCancel,
     // Plane selection
     isSelectingPlane,
     hoveredPlane,
@@ -842,6 +848,9 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     let label = "";
     let value: number | undefined;
     let worldPos = new THREE.Vector3();
+    const plane = activeSketch.plane;
+    const sketchTo3D = (x: number, y: number) =>
+      new THREE.Vector3().copy(plane.origin).addScaledVector(plane.xAxis, x).addScaledVector(plane.yAxis, y);
 
     if (primitive.type === "line") {
       label = "Length";
@@ -856,7 +865,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
           Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2),
         );
         value = length;
-        worldPos.set((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, 0);
+        worldPos = sketchTo3D((p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
       }
     } else if (primitive.type === "circle") {
       label = "Radius";
@@ -865,7 +874,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         (p) => p.id === primitive.centerId && p.type === "point",
       );
       if (center && center.type === "point") {
-        worldPos.set(center.x + primitive.radius / 2, center.y, 0);
+        worldPos = sketchTo3D(center.x + primitive.radius / 2, center.y);
       }
     } else if (primitive.type === "arc") {
       label = "Radius";
@@ -874,7 +883,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
         (p) => p.id === primitive.centerId && p.type === "point",
       );
       if (center && center.type === "point") {
-        worldPos.set(center.x, center.y, 0);
+        worldPos = sketchTo3D(center.x, center.y);
       }
     } else {
       setDimensionInputVisible(false);
@@ -998,6 +1007,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
 
   // Handle dimension input submission
   const handleDimensionSubmit = async (value: number) => {
+    handleConstraintPreviewCancel();
     if (dimensionSource === "constraintEdit" && editingConstraintRef.current && activeSketch) {
       const { id: oldId, type, primitiveIds } = editingConstraintRef.current;
       // Convert angle from degrees to radians
@@ -1042,6 +1052,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
   };
 
   const handleDimensionCancel = () => {
+    handleConstraintPreviewCancel();
     if (dimensionSource === "lineCreation") {
       clearPendingLineDimension();
     }
@@ -1049,6 +1060,20 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
     setDimensionInputVisible(false);
     setPendingDimensionPrimitiveId(null);
     setDimensionSource(null);
+  };
+
+  const handleDimensionChange = (value: number) => {
+    if (!pendingDimensionPrimitiveId || !activeSketch) return;
+    const primitive = activeSketch.primitives.find(
+      (p) => p.id === pendingDimensionPrimitiveId,
+    );
+    if (!primitive) return;
+
+    handleConstraintPreviewChange(
+      primitive.type === "line" ? "distance" : "radius",
+      value,
+      [pendingDimensionPrimitiveId],
+    );
   };
 
   // "Fully constrained" toast when DOF transitions to 0
@@ -1427,7 +1452,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       {/* Browser Panel toggle button - visible when panel is closed */}
       {!browserOpen && (
         <button
-          className="fixed top-14 left-2 z-40 p-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 shadow-lg"
+          className="fixed top-28 left-2 z-40 p-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 shadow-lg"
           onClick={() => setBrowserOpen(true)}
           title="Show Browser"
         >
@@ -1467,7 +1492,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
       {/* Center column: toolbars + canvas */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Primary Toolbar */}
-        <div className="flex-none h-12 bg-gray-900 border-b border-gray-700 flex items-center z-20">
+        <div className="flex-none h-12 bg-gray-900 border-b border-gray-700 flex items-center z-30">
           <div className="flex items-center px-3 gap-1 min-w-0 flex-1">
             {/* File menu */}
             <FileMenu />
@@ -2512,6 +2537,7 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             initialValue={dimensionInputValue}
             onSubmit={handleDimensionSubmit}
             onCancel={handleDimensionCancel}
+            onChange={handleDimensionChange}
           />
 
           {/* Extrude dimension input */}
@@ -2556,12 +2582,16 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
               onApplyConstraint={applyConstraintToContextMenuPrimitives}
               onDeleteConstraint={deleteSketchConstraint}
               onToggleFixPoint={toggleFixPoint}
+              onDeletePrimitive={deleteSelectedPrimitives}
+              onGetCurrentValue={getCurrentValueForConstraint}
+              onValueChange={handleConstraintPreviewChange}
+              onValueCancel={handleConstraintPreviewCancel}
             />
           )}
 
           {/* Plane selection hint overlay */}
           {mode === "sketch" && isSelectingPlane && (
-            <div className="absolute bottom-12 left-1/2 transform -translate-x-1/2 z-20 pointer-events-none">
+            <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-20 pointer-events-none">
               <div className="bg-gray-800 bg-opacity-90 rounded-lg px-6 py-3 text-white shadow-lg">
                 <div className="text-center">
                   <p className="text-sm font-medium mb-2">
@@ -2643,6 +2673,13 @@ const SimpleCadScene: React.FC<SimpleCadSceneProps> = ({
             controlsRef={controlsRef}
             navToolActiveRef={navToolActiveRef}
             onFitAll={handleFitAll}
+          />
+
+          {/* Mode info card - bottom right */}
+          <ModeInfoCard
+            mode={mode}
+            isSelectingPlane={isSelectingPlane}
+            activeSketch={!!activeSketch}
           />
 
           {/* Bottom status bar — hidden on very small screens, coordinates only on sm */}

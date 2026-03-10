@@ -384,6 +384,118 @@ describe("SketchSolverService", () => {
         expect(distance).toBeCloseTo(5, 5);
       });
     });
+
+    describe("tangent constraint", () => {
+      it("should make line tangent to circle", async () => {
+        const sketch = createEmptySketch();
+        const p1 = createPoint("p1", -5, 0, true);
+        const p2 = createPoint("p2", 5, 0, true);
+        const center = createPoint("center", 0, 3, true);
+        const circle = createCircle("circle1", "center", 2);
+        const line = createLine("line1", "p1", "p2");
+        const constraint = createConstraint("c1", "tangent", ["line1", "circle1"]);
+
+        sketch.primitives = [p1, p2, center, circle, line];
+        sketch.constraints = [constraint];
+
+        const result = await solver.solve(sketch);
+
+        expect(result.success).toBe(true);
+      });
+    });
+
+    describe("distanceX constraint", () => {
+      it("should enforce horizontal distance between two points", async () => {
+        const sketch = createEmptySketch();
+        const p1 = createPoint("p1", 0, 0, true);
+        const p2 = createPoint("p2", 1, 3);
+        const constraint = createConstraint("c1", "distanceX", ["p1", "p2"], 5);
+
+        sketch.primitives = [p1, p2];
+        sketch.constraints = [constraint];
+
+        const result = await solver.solve(sketch);
+
+        expect(result.success).toBe(true);
+
+        const updatedP2 = result.sketch.primitives.find(
+          (p) => p.id === "p2"
+        ) as SketchPoint;
+
+        // X distance from p1(0,0) to p2 should be 5
+        expect(Math.abs(updatedP2.x - 0)).toBeCloseTo(5, 4);
+      });
+    });
+
+    describe("distanceY constraint", () => {
+      it("should enforce vertical distance between two points", async () => {
+        const sketch = createEmptySketch();
+        const p1 = createPoint("p1", 0, 0, true);
+        const p2 = createPoint("p2", 3, 1);
+        const constraint = createConstraint("c1", "distanceY", ["p1", "p2"], 7);
+
+        sketch.primitives = [p1, p2];
+        sketch.constraints = [constraint];
+
+        const result = await solver.solve(sketch);
+
+        expect(result.success).toBe(true);
+
+        const updatedP2 = result.sketch.primitives.find(
+          (p) => p.id === "p2"
+        ) as SketchPoint;
+
+        // Y distance from p1(0,0) to p2 should be 7
+        expect(Math.abs(updatedP2.y - 0)).toBeCloseTo(7, 4);
+      });
+
+      it("distanceX with value=0 effectively aligns points vertically", async () => {
+        const sketch = createEmptySketch();
+        const p1 = createPoint("p1", 0, 0, true);
+        const p2 = createPoint("p2", 3, 5);
+        const constraint = createConstraint("c1", "distanceX", ["p1", "p2"], 0);
+
+        sketch.primitives = [p1, p2];
+        sketch.constraints = [constraint];
+
+        const result = await solver.solve(sketch);
+
+        expect(result.success).toBe(true);
+
+        const updatedP2 = result.sketch.primitives.find(
+          (p) => p.id === "p2"
+        ) as SketchPoint;
+
+        // X should be same as p1 (distance = 0)
+        expect(updatedP2.x).toBeCloseTo(0, 4);
+      });
+    });
+
+    describe("midpoint constraint", () => {
+      it("should warn and not crash (midpoint is a TODO/no-op)", async () => {
+        const consoleSpy = jest.spyOn(console, "warn").mockImplementation();
+
+        const sketch = createEmptySketch();
+        const p1 = createPoint("p1", 0, 0, true);
+        const p2 = createPoint("p2", 4, 0, true);
+        const mid = createPoint("mid", 0, 5);
+        const line = createLine("line1", "p1", "p2");
+        const constraint = createConstraint("c1", "midpoint", ["mid", "line1"]);
+
+        sketch.primitives = [p1, p2, mid, line];
+        sketch.constraints = [constraint];
+
+        const result = await solver.solve(sketch);
+
+        // Should solve without crashing (midpoint is a no-op)
+        expect(result.success).toBe(true);
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Midpoint constraint not yet fully implemented")
+        );
+
+        consoleSpy.mockRestore();
+      });
+    });
   });
 
   describe("solve() - Dimensional Constraints", () => {
@@ -687,6 +799,23 @@ describe("SketchSolverService", () => {
       expect(result.success).toBe(true);
       expect(result.sketch.primitives).toHaveLength(0);
       expect(result.dof).toBe(0);
+    });
+
+    it("zero-length line with horizontal constraint", async () => {
+      const sketch = createEmptySketch();
+      // Both points at the same location (zero-length line)
+      const p1 = createPoint("p1", 5, 5);
+      const p2 = createPoint("p2", 5, 5);
+      const line = createLine("line1", "p1", "p2");
+      const constraint = createConstraint("c1", "horizontal", ["line1"]);
+
+      sketch.primitives = [p1, p2, line];
+      sketch.constraints = [constraint];
+
+      const result = await solver.solve(sketch);
+
+      // Should handle gracefully without crashing
+      expect(result.success).toBe(true);
     });
 
     it("no constraints -> preserve positions", async () => {

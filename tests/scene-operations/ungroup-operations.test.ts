@@ -404,6 +404,37 @@ describe("ungroup-operations", () => {
       expect(result.updatedElements).toHaveLength(1);
     });
 
+    it("should handle nested CompoundBrep (child is CompoundBrep)", () => {
+      const innerBrep1 = createSimpleBrep();
+      const innerBrep2 = createSimpleBrep();
+      const innerCompound = new CompoundBrep([innerBrep1, innerBrep2]);
+      // Outer compound has an inner CompoundBrep as child
+      const outerCompound = new CompoundBrep([innerCompound as any, createSimpleBrep()]);
+
+      const elements: SceneElement[] = [
+        {
+          brep: outerCompound,
+          nodeId: "compound_1",
+          position: new THREE.Vector3(0, 0, 0),
+          selected: true,
+        },
+      ];
+
+      brepGraph.addNode({ id: "compound_1", brep: outerCompound, mesh: null, connections: [] });
+      objectsMap.set("compound_1", new THREE.Group());
+
+      const result = ungroupSelectedElement(
+        elements,
+        "compound_1",
+        10,
+        brepGraph,
+        objectsMap
+      );
+
+      // Should produce 2 elements (outer children count, not flattened)
+      expect(result.updatedElements).toHaveLength(2);
+    });
+
     it("should handle compound with many children (10+)", () => {
       const compound = createCompoundBrep(15);
       const elements: SceneElement[] = [
@@ -546,6 +577,126 @@ describe("ungroup-operations", () => {
       const nodeId = result.updatedElements[0].nodeId;
       const mesh = objectsMap.get(nodeId);
       expect(mesh?.userData.nodeId).toBe(nodeId);
+    });
+  });
+
+  describe("Optional fields handling", () => {
+    it("rotation is NOT preserved on ungrouped children (implementation gap)", () => {
+      const compound = createCompoundBrep(2);
+      const elements: SceneElement[] = [
+        {
+          brep: compound,
+          nodeId: "compound_1",
+          position: new THREE.Vector3(5, 10, 15),
+          rotation: new THREE.Euler(Math.PI / 4, 0, 0),
+          selected: true,
+        },
+      ];
+
+      brepGraph.addNode({ id: "compound_1", brep: compound, mesh: null, connections: [] });
+      objectsMap.set("compound_1", new THREE.Group());
+
+      const result = ungroupSelectedElement(
+        elements,
+        "compound_1",
+        10,
+        brepGraph,
+        objectsMap
+      );
+
+      // Implementation gap: ungroup creates { brep, nodeId, position, selected }
+      // It does NOT copy the rotation field from the compound element
+      result.updatedElements.forEach((el) => {
+        expect(el.rotation).toBeUndefined();
+      });
+    });
+
+    it("occBrep is NOT preserved on ungrouped children", () => {
+      const compound = createCompoundBrep(2);
+      const elements: SceneElement[] = [
+        {
+          brep: compound,
+          nodeId: "compound_1",
+          position: new THREE.Vector3(0, 0, 0),
+          occBrep: "serialized_data",
+          selected: true,
+        },
+      ];
+
+      brepGraph.addNode({ id: "compound_1", brep: compound, mesh: null, connections: [] });
+      objectsMap.set("compound_1", new THREE.Group());
+
+      const result = ungroupSelectedElement(
+        elements,
+        "compound_1",
+        10,
+        brepGraph,
+        objectsMap
+      );
+
+      // occBrep is not propagated to children
+      result.updatedElements.forEach((el) => {
+        expect(el.occBrep).toBeUndefined();
+      });
+    });
+
+    it("edgeGeometry is NOT preserved on ungrouped children", () => {
+      const compound = createCompoundBrep(2);
+      const edgeGeo = new THREE.BufferGeometry();
+      const elements: SceneElement[] = [
+        {
+          brep: compound,
+          nodeId: "compound_1",
+          position: new THREE.Vector3(0, 0, 0),
+          edgeGeometry: edgeGeo,
+          selected: true,
+        },
+      ];
+
+      brepGraph.addNode({ id: "compound_1", brep: compound, mesh: null, connections: [] });
+      objectsMap.set("compound_1", new THREE.Group());
+
+      const result = ungroupSelectedElement(
+        elements,
+        "compound_1",
+        10,
+        brepGraph,
+        objectsMap
+      );
+
+      // edgeGeometry is not propagated to children
+      result.updatedElements.forEach((el) => {
+        expect(el.edgeGeometry).toBeUndefined();
+      });
+    });
+
+    it("compound position at negative coordinates → children get correct position", () => {
+      const compound = createCompoundBrep(2);
+      const elements: SceneElement[] = [
+        {
+          brep: compound,
+          nodeId: "compound_1",
+          position: new THREE.Vector3(-50, -100, -25),
+          selected: true,
+        },
+      ];
+
+      brepGraph.addNode({ id: "compound_1", brep: compound, mesh: null, connections: [] });
+      objectsMap.set("compound_1", new THREE.Group());
+
+      const result = ungroupSelectedElement(
+        elements,
+        "compound_1",
+        10,
+        brepGraph,
+        objectsMap
+      );
+
+      result.updatedElements.forEach((el) => {
+        expect(el.position.x).toBe(-50);
+        expect(el.position.y).toBe(-100);
+        expect(el.position.z).toBe(-25);
+      });
     });
   });
 });

@@ -828,4 +828,118 @@ describe("union-operations", () => {
       expect(result).toBeNull();
     });
   });
+
+  describe("BooleanOperationOptions", () => {
+    test("uses targetId + toolIds as effective selection when options provided", async () => {
+      const result = await unionSelectedElements(
+        elements,
+        [], // empty selectedElements
+        idCounter,
+        brepGraph,
+        objectsMap,
+        { targetId: "node_1", toolIds: ["node_2"] }
+      );
+
+      // Should still create compound despite empty selectedElements
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
+      const newElement = result!.updatedElements.find(
+        (el: SceneElement) => el.nodeId === "node_6"
+      );
+      expect(newElement?.brep).toBeInstanceOf(CompoundBrep);
+    });
+
+    test("keepTools option does not prevent union from working", async () => {
+      const result = await unionSelectedElements(
+        elements,
+        [],
+        idCounter,
+        brepGraph,
+        objectsMap,
+        { targetId: "node_1", toolIds: ["node_2"], keepTools: true }
+      );
+
+      // Union should still work with keepTools
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
+    });
+  });
+
+  describe("element properties", () => {
+    test("element with rotation field is handled in union", async () => {
+      elements[0].rotation = new THREE.Euler(Math.PI / 4, 0, 0);
+
+      const result = await unionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      // Union should still work with rotated elements
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
+    });
+
+    test("element with occBrep field is included in compound", async () => {
+      elements[0].occBrep = "fake_serialized_brep_data";
+
+      const result = await unionSelectedElements(
+        elements,
+        selectedElements,
+        idCounter,
+        brepGraph,
+        objectsMap
+      );
+
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
+    });
+  });
+
+  describe("commutativity", () => {
+    test("union(A,B) produces same structure as union(B,A)", async () => {
+      // First: A then B
+      const objectsMap1 = new Map<string, THREE.Object3D>();
+      const brepGraph1 = new BrepGraph();
+      const elements1 = elements.map(el => ({ ...el }));
+      elements1.forEach(el => {
+        objectsMap1.set(el.nodeId, new THREE.Mesh());
+        brepGraph1.addNode({ id: el.nodeId, brep: el.brep, mesh: null, connections: [] });
+      });
+
+      const result1 = await unionSelectedElements(
+        elements1,
+        ["node_1", "node_2"],
+        idCounter,
+        brepGraph1,
+        objectsMap1
+      );
+
+      // Second: B then A
+      const objectsMap2 = new Map<string, THREE.Object3D>();
+      const brepGraph2 = new BrepGraph();
+      const elements2 = elements.map(el => ({ ...el }));
+      elements2.forEach(el => {
+        objectsMap2.set(el.nodeId, new THREE.Mesh());
+        brepGraph2.addNode({ id: el.nodeId, brep: el.brep, mesh: null, connections: [] });
+      });
+
+      const result2 = await unionSelectedElements(
+        elements2,
+        ["node_2", "node_1"],
+        idCounter,
+        brepGraph2,
+        objectsMap2
+      );
+
+      // Both should produce CompoundBrep with same number of children
+      expect(result1).not.toBeNull();
+      expect(result2).not.toBeNull();
+      const compound1 = result1!.updatedElements.find(el => el.nodeId === "node_6")?.brep as CompoundBrep;
+      const compound2 = result2!.updatedElements.find(el => el.nodeId === "node_6")?.brep as CompoundBrep;
+      expect(compound1.children.length).toBe(compound2.children.length);
+    });
+  });
 });

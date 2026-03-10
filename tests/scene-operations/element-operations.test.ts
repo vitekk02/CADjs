@@ -204,4 +204,93 @@ describe("element-operations", () => {
       expect(updatedElements).toBe(elements);
     });
   });
+
+  describe("optional SceneElement fields", () => {
+    test("addElement does NOT include rotation (only brep, nodeId, position, selected)", () => {
+      const position = new THREE.Vector3(1, 2, 3);
+      const result = addElement(elements, simpleBrep, position, 0, objectsMap);
+
+      // addElement creates { brep, nodeId, position, selected: false } — no rotation
+      expect(result.updatedElements[0].rotation).toBeUndefined();
+    });
+
+    test("addElement does NOT include elementType", () => {
+      const position = new THREE.Vector3(1, 2, 3);
+      const result = addElement(elements, simpleBrep, position, 0, objectsMap);
+
+      expect(result.updatedElements[0].elementType).toBeUndefined();
+    });
+
+    test("addElement does NOT include occBrep", () => {
+      const position = new THREE.Vector3(1, 2, 3);
+      const result = addElement(elements, simpleBrep, position, 0, objectsMap);
+
+      expect(result.updatedElements[0].occBrep).toBeUndefined();
+    });
+
+    test("addElement does NOT include edgeGeometry", () => {
+      const position = new THREE.Vector3(1, 2, 3);
+      const result = addElement(elements, simpleBrep, position, 0, objectsMap);
+
+      expect(result.updatedElements[0].edgeGeometry).toBeUndefined();
+    });
+
+    test("updateElementPosition preserves rotation field via spread", () => {
+      const el: SceneElement = {
+        nodeId: "node_rot",
+        brep: simpleBrep,
+        position: new THREE.Vector3(0, 0, 0),
+        rotation: new THREE.Euler(Math.PI / 4, 0, 0),
+        selected: false,
+      };
+      const elGroup = new THREE.Group();
+      objectsMap.set("node_rot", elGroup);
+
+      const updatedElements = updateElementPosition(
+        [el],
+        "node_rot",
+        new THREE.Vector3(5, 5, 5),
+        objectsMap
+      );
+
+      expect(updatedElements[0].rotation).toBeDefined();
+      expect(updatedElements[0].rotation!.x).toBeCloseTo(Math.PI / 4);
+    });
+
+    test("updateElementPosition preserves occBrep field via spread", () => {
+      const el: SceneElement = {
+        nodeId: "node_occ",
+        brep: simpleBrep,
+        position: new THREE.Vector3(0, 0, 0),
+        occBrep: "some_serialized_data",
+        selected: false,
+      };
+      objectsMap.set("node_occ", new THREE.Group());
+
+      const updatedElements = updateElementPosition(
+        [el],
+        "node_occ",
+        new THREE.Vector3(5, 5, 5),
+        objectsMap
+      );
+
+      expect(updatedElements[0].occBrep).toBe("some_serialized_data");
+    });
+
+    test("updateElementPosition with very large coordinates (1e10)", () => {
+      const result1 = addElement([], simpleBrep, new THREE.Vector3(0, 0, 0), 0, objectsMap);
+      const largePos = new THREE.Vector3(1e10, 1e10, 1e10);
+
+      const updatedElements = updateElementPosition(
+        result1.updatedElements,
+        "node_1",
+        largePos,
+        objectsMap
+      );
+
+      expect(updatedElements[0].position.x).toBe(1e10);
+      expect(updatedElements[0].position.y).toBe(1e10);
+      expect(updatedElements[0].position.z).toBe(1e10);
+    });
+  });
 });

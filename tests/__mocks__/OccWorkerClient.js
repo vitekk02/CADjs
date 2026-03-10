@@ -1,4 +1,10 @@
-// Mock OccWorkerClient for Jest (import.meta.url not available in CommonJS)
+// Smart mock for OccWorkerClient that routes through the real OCC dispatch logic.
+// Only the Worker transport is bypassed — all handler/helper functions run for real.
+//
+// IMPORTANT: OpenCascadeService and dispatchOccRequest are required lazily inside send()
+// to break a circular dependency: mock → OpenCascadeService → convertBRepToGeometry →
+// scene-operations/index → union-operations → OccWorkerClient (this mock, still loading).
+
 class OccWorkerClient {
   static instance = null;
 
@@ -10,7 +16,7 @@ class OccWorkerClient {
   }
 
   static isAvailable() {
-    return false;
+    return true;
   }
 
   async waitForReady() {
@@ -18,7 +24,11 @@ class OccWorkerClient {
   }
 
   async send(request) {
-    throw new Error(`OccWorkerClient.send() not available in test environment. Request type: ${request.type}`);
+    // Lazy require to avoid circular dependency at module load time
+    const { OpenCascadeService } = require("../../src/services/OpenCascadeService");
+    const { dispatchOccRequest } = require("../../src/workers/occ-dispatch");
+    const oc = await OpenCascadeService.getInstance().getOC();
+    return dispatchOccRequest(oc, request.type, request.payload);
   }
 
   cancel() {}

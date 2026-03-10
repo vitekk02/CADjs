@@ -84,6 +84,113 @@ describe("selection-operations", () => {
       });
     });
 
+    test("Group with edge overlay: resets overlay opacity, does NOT color reset overlay", () => {
+      const group = new THREE.Group();
+      const realMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: SELECTION.selected })
+      );
+      const overlayMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: 0x000000, opacity: 0.5, transparent: true })
+      );
+      overlayMesh.userData.isEdgeOverlay = true;
+      group.add(realMesh);
+      group.add(overlayMesh);
+      objectsMap.set("node_1", group);
+
+      handleSetMode(elements, "move", objectsMap);
+
+      // Real mesh should be reset to BODY.default
+      expect((realMesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(BODY.default);
+      // Overlay opacity should be reset to 1.0
+      expect((overlayMesh.material as THREE.MeshStandardMaterial).opacity).toBe(1.0);
+      expect((overlayMesh.material as THREE.MeshStandardMaterial).transparent).toBe(false);
+    });
+
+    test("Group with helper: helper set to visible=false on mode switch", () => {
+      const group = new THREE.Group();
+      const realMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: SELECTION.selected })
+      );
+      const edgeHelper = new THREE.LineSegments(
+        new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial()
+      );
+      edgeHelper.userData.helperType = "edge";
+      edgeHelper.userData.isHelper = true;
+      edgeHelper.visible = true;
+
+      const vertexHelper = new THREE.Mesh(
+        new THREE.SphereGeometry(0.05),
+        new THREE.MeshBasicMaterial()
+      );
+      vertexHelper.userData.helperType = "vertex";
+      vertexHelper.userData.isHelper = true;
+      vertexHelper.visible = true;
+
+      group.add(realMesh);
+      group.add(edgeHelper);
+      group.add(vertexHelper);
+      objectsMap.set("node_1", group);
+
+      handleSetMode(elements, "move", objectsMap);
+
+      // Both helpers should be hidden
+      expect(edgeHelper.visible).toBe(false);
+      expect(vertexHelper.visible).toBe(false);
+      // Real mesh should be color reset
+      expect((realMesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(BODY.default);
+    });
+
+    test("Group with Mesh + overlay + helper: all three handled correctly", () => {
+      const group = new THREE.Group();
+      const realMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: SELECTION.selected })
+      );
+      const overlay = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ opacity: 0.5, transparent: true })
+      );
+      overlay.userData.isEdgeOverlay = true;
+      const helper = new THREE.Mesh(
+        new THREE.SphereGeometry(),
+        new THREE.MeshBasicMaterial()
+      );
+      helper.userData.isHelper = true;
+      helper.userData.helperType = "edge";
+      helper.visible = true;
+
+      group.add(realMesh);
+      group.add(overlay);
+      group.add(helper);
+      objectsMap.set("node_1", group);
+
+      handleSetMode(elements, "move", objectsMap);
+
+      // Mesh: color reset
+      expect((realMesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(BODY.default);
+      // Overlay: opacity reset
+      expect((overlay.material as THREE.MeshStandardMaterial).opacity).toBe(1.0);
+      // Helper: hidden
+      expect(helper.visible).toBe(false);
+    });
+
+    test("bare Mesh resets material on mode switch", () => {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: SELECTION.selected })
+      );
+      objectsMap.set("node_1", mesh);
+
+      handleSetMode(elements, "move", objectsMap);
+
+      expect((mesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(BODY.default);
+      expect((mesh.material as THREE.MeshStandardMaterial).opacity).toBe(1.0);
+    });
+
     test("handles non-Mesh objects gracefully", () => {
       objectsMap.set("node_1", new THREE.Group());
 
@@ -323,6 +430,51 @@ describe("selection-operations", () => {
       const color = (deepMesh.material as THREE.MeshStandardMaterial).color;
       expect(color.getHex()).toBe(SELECTION.selected);
     });
+
+    test("selectElement colors ALL Mesh children including overlay", () => {
+      // selectElement does not skip isEdgeOverlay — it colors everything
+      const group = new THREE.Group();
+      const realMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: BODY.default })
+      );
+      const overlay = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: BODY.default })
+      );
+      overlay.userData.isEdgeOverlay = true;
+      group.add(realMesh);
+      group.add(overlay);
+      objectsMap.set("node_1", group);
+
+      selectElement(elements, selectedElements, "node_1", objectsMap);
+
+      // Both get selection color (no isEdgeOverlay check in selectElement)
+      expect((realMesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(SELECTION.selected);
+      expect((overlay.material as THREE.MeshStandardMaterial).color.getHex()).toBe(SELECTION.selected);
+    });
+
+    test("selectElement colors helper Mesh children too", () => {
+      // selectElement does not skip isHelper — it colors everything
+      const group = new THREE.Group();
+      const realMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: BODY.default })
+      );
+      const helper = new THREE.Mesh(
+        new THREE.SphereGeometry(),
+        new THREE.MeshStandardMaterial({ color: BODY.default })
+      );
+      helper.userData.isHelper = true;
+      group.add(realMesh);
+      group.add(helper);
+      objectsMap.set("node_1", group);
+
+      selectElement(elements, selectedElements, "node_1", objectsMap);
+
+      expect((realMesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(SELECTION.selected);
+      expect((helper.material as THREE.MeshStandardMaterial).color.getHex()).toBe(SELECTION.selected);
+    });
   });
 
   describe("deselectElement - basic", () => {
@@ -553,6 +705,28 @@ describe("selection-operations", () => {
 
       const color = (deepMesh.material as THREE.MeshStandardMaterial).color;
       expect(color.getHex()).toBe(BODY.default);
+    });
+
+    test("deselecting element resets color on all children including overlays", () => {
+      const group = new THREE.Group();
+      const realMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: SELECTION.selected })
+      );
+      const overlay = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial({ color: SELECTION.selected })
+      );
+      overlay.userData.isEdgeOverlay = true;
+      group.add(realMesh);
+      group.add(overlay);
+      objectsMap.set("node_1", group);
+
+      deselectElement(elements, ["node_1"], "node_1", objectsMap);
+
+      // Both get default color (deselectElement doesn't check isEdgeOverlay)
+      expect((realMesh.material as THREE.MeshStandardMaterial).color.getHex()).toBe(BODY.default);
+      expect((overlay.material as THREE.MeshStandardMaterial).color.getHex()).toBe(BODY.default);
     });
   });
 });

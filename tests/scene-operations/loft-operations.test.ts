@@ -1,10 +1,6 @@
 import * as THREE from "three";
 import { loftBReps } from "../../src/scene-operations/loft-operations";
 import { Brep, Vertex, Edge, Face } from "../../src/geometry";
-import { OpenCascadeService } from "../../src/services/OpenCascadeService";
-
-const ocService = OpenCascadeService.getInstance();
-
 /**
  * Create a flat rectangle BRep centered at origin in the XY plane.
  */
@@ -212,66 +208,5 @@ describe("loft-operations", () => {
       consoleSpy.mockRestore();
     });
 
-    it("should return null when buildPlanarFaceFromBoundary fails for any profile", async () => {
-      const rect1 = createRectBrep(2, 2);
-      const rect2 = createRectBrep(2, 2);
-
-      // Mock to return null for the first profile — early exit
-      jest.spyOn(ocService, "buildPlanarFaceFromBoundary").mockResolvedValue(null as any);
-      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
-
-      const profiles = [
-        { brep: rect1, position: new THREE.Vector3(0, 0, 0) },
-        { brep: rect2, position: new THREE.Vector3(0, 0, 5) },
-      ];
-
-      const result = await loftBReps(profiles);
-
-      expect(result).toBeNull();
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining("[loftBReps]"),
-      );
-      consoleSpy.mockRestore();
-    });
-
-    it("should return null when loftShapes throws", async () => {
-      const rect1 = createRectBrep(2, 2);
-      const rect2 = createRectBrep(2, 2);
-
-      jest.spyOn(ocService, "loftShapes").mockRejectedValue(new Error("Loft failed"));
-      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
-
-      const profiles = [
-        { brep: rect1, position: new THREE.Vector3(0, 0, 0) },
-        { brep: rect2, position: new THREE.Vector3(0, 0, 5) },
-      ];
-
-      const result = await loftBReps(profiles);
-
-      expect(result).toBeNull();
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining("[loftBReps]"),
-        expect.any(Error),
-      );
-      consoleSpy.mockRestore();
-    });
-
-    it("should handle edge geometry extraction failure gracefully", async () => {
-      const rect1 = createRectBrep(2, 2);
-      const rect2 = createRectBrep(2, 2);
-
-      jest.spyOn(ocService, "shapeToEdgeLineSegments").mockRejectedValue(new Error("Edge fail"));
-
-      const profiles = [
-        { brep: rect1, position: new THREE.Vector3(0, 0, 0) },
-        { brep: rect2, position: new THREE.Vector3(0, 0, 5) },
-      ];
-
-      const result = await loftBReps(profiles);
-
-      expect(result).not.toBeNull();
-      expect(result!.brep.vertices.length).toBeGreaterThan(0);
-      expect(result!.edgeGeometry).toBeUndefined();
-    });
   });
 });

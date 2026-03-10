@@ -78,6 +78,18 @@ describe("constraint-validation", () => {
         expect(constraints).toContain("diameter");
       });
 
+      it("single line -> includes distance", () => {
+        const p1 = createPoint("p1");
+        const p2 = createPoint("p2");
+        const line = createLine("line1", "p1", "p2");
+        const primitives: SketchPrimitive[] = [p1, p2, line];
+
+        const constraints = getAvailableConstraints(["line1"], primitives);
+
+        // distance has a single-line rule (requiredCount: 1, combination: "line")
+        expect(constraints).toContain("distance");
+      });
+
       it("point -> [] (no single-point constraints)", () => {
         const point = createPoint("p1");
         const primitives: SketchPrimitive[] = [point];
@@ -164,6 +176,31 @@ describe("constraint-validation", () => {
         const constraints = getAvailableConstraints(["point", "circle1"], primitives);
 
         expect(constraints).toContain("pointOnCircle");
+      });
+
+      it("point + point does NOT include distanceX/distanceY (implementation gap)", () => {
+        // Implementation gap: distanceX/distanceY have solver support but no CONSTRAINT_RULES entry
+        const p1 = createPoint("p1", 0, 0);
+        const p2 = createPoint("p2", 1, 1);
+        const primitives: SketchPrimitive[] = [p1, p2];
+
+        const constraints = getAvailableConstraints(["p1", "p2"], primitives);
+
+        expect(constraints).not.toContain("distanceX");
+        expect(constraints).not.toContain("distanceY");
+      });
+
+      it("point + line does NOT include midpoint (no CONSTRAINT_RULES entry)", () => {
+        // Implementation gap: midpoint has label/icon support but not in CONSTRAINT_RULES
+        const p1 = createPoint("p1");
+        const p2 = createPoint("p2");
+        const p3 = createPoint("p3");
+        const line = createLine("line1", "p1", "p2");
+        const primitives: SketchPrimitive[] = [p1, p2, p3, line];
+
+        const constraints = getAvailableConstraints(["p3", "line1"], primitives);
+
+        expect(constraints).not.toContain("midpoint");
       });
     });
 
@@ -337,6 +374,18 @@ describe("constraint-validation", () => {
       expect(requiresValue("angle")).toBe(true);
     });
 
+    it("distanceX and distanceY are not in CONSTRAINT_RULES (implementation gap)", () => {
+      // NOTE: distanceX/distanceY have solver support but are missing from CONSTRAINT_RULES
+      // So requiresValue returns false for them (no rule found → defaults to false)
+      expect(requiresValue("distanceX")).toBe(false);
+      expect(requiresValue("distanceY")).toBe(false);
+    });
+
+    it("midpoint and symmetric return false", () => {
+      expect(requiresValue("midpoint")).toBe(false);
+      expect(requiresValue("symmetric")).toBe(false);
+    });
+
     it("should return false for: horizontal, vertical, parallel, perpendicular, coincident, etc.", () => {
       expect(requiresValue("horizontal")).toBe(false);
       expect(requiresValue("vertical")).toBe(false);
@@ -404,6 +453,17 @@ describe("constraint-validation", () => {
 
         expect(value).toBe(1);
       });
+
+      it("should return line length for single line selection", () => {
+        const p1 = createPoint("p1", 0, 0);
+        const p2 = createPoint("p2", 3, 4);
+        const line = createLine("line1", "p1", "p2");
+        const primitives: SketchPrimitive[] = [p1, p2, line];
+
+        const value = getDefaultValue("distance", ["line1"], primitives);
+
+        expect(value).toBeCloseTo(5); // 3-4-5 triangle
+      });
     });
 
     describe("angle", () => {
@@ -429,6 +489,28 @@ describe("constraint-validation", () => {
         const value = getDefaultValue("angle", ["nonexistent1", "nonexistent2"], primitives);
 
         expect(value).toBe(90);
+      });
+    });
+
+    describe("distanceX / distanceY", () => {
+      it("distanceX returns undefined (not in CONSTRAINT_RULES, so requiresValue is false)", () => {
+        // Implementation gap: distanceX has solver support but missing from CONSTRAINT_RULES
+        const p1 = createPoint("p1", 0, 0);
+        const p2 = createPoint("p2", 3, 4);
+        const primitives: SketchPrimitive[] = [p1, p2];
+
+        const value = getDefaultValue("distanceX", ["p1", "p2"], primitives);
+        expect(value).toBeUndefined();
+      });
+
+      it("distanceY returns undefined (not in CONSTRAINT_RULES, so requiresValue is false)", () => {
+        // Implementation gap: distanceY has solver support but missing from CONSTRAINT_RULES
+        const p1 = createPoint("p1", 0, 0);
+        const p2 = createPoint("p2", 3, 4);
+        const primitives: SketchPrimitive[] = [p1, p2];
+
+        const value = getDefaultValue("distanceY", ["p1", "p2"], primitives);
+        expect(value).toBeUndefined();
       });
     });
 

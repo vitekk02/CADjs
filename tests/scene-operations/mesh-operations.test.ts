@@ -34,6 +34,21 @@ describe("mesh-operations", () => {
       );
     });
 
+    test("mesh material uses DoubleSide", () => {
+      const v1 = new Vertex(0, 0, 0);
+      const v2 = new Vertex(1, 0, 0);
+      const v3 = new Vertex(1, 1, 0);
+      const v4 = new Vertex(0, 1, 0);
+      const face = new Face([v1, v2, v3, v4]);
+      const brep = new Brep([v1, v2, v3, v4], [], [face]);
+
+      const group = createMeshFromBrep(brep);
+      const mesh = findChildMesh(group);
+
+      expect(mesh).not.toBeNull();
+      expect((mesh!.material as THREE.MeshStandardMaterial).side).toBe(THREE.DoubleSide);
+    });
+
     test("creates error mesh group when brep has no faces", () => {
       // Create an empty brep
       const brep = new Brep([], [], []);
@@ -216,6 +231,61 @@ describe("mesh-operations", () => {
       parent.add(child);
 
       expect(isDescendantOf(parent, child)).toBe(false);
+    });
+  });
+
+  describe("findChildMesh", () => {
+    test("returns null on empty Group", () => {
+      const group = new THREE.Group();
+      expect(findChildMesh(group)).toBeNull();
+    });
+
+    test("returns null on Group with only edge overlay Mesh", () => {
+      const group = new THREE.Group();
+      const overlay = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial()
+      );
+      overlay.userData.isEdgeOverlay = true;
+      group.add(overlay);
+
+      expect(findChildMesh(group)).toBeNull();
+    });
+
+    test("returns real Mesh when Group has overlay + real Mesh", () => {
+      const group = new THREE.Group();
+      const overlay = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial()
+      );
+      overlay.userData.isEdgeOverlay = true;
+      const realMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial()
+      );
+      group.add(overlay);
+      group.add(realMesh);
+
+      const found = findChildMesh(group);
+      expect(found).toBe(realMesh);
+    });
+
+    test("returns null on bare LineSegments (not Mesh)", () => {
+      const lineSegments = new THREE.LineSegments(
+        new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial()
+      );
+
+      expect(findChildMesh(lineSegments)).toBeNull();
+    });
+
+    test("returns the Mesh itself when called on a bare Mesh", () => {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(),
+        new THREE.MeshStandardMaterial()
+      );
+
+      expect(findChildMesh(mesh)).toBe(mesh);
     });
   });
 });

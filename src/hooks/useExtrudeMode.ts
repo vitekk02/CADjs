@@ -990,7 +990,7 @@ export function useExtrudeMode() {
       }
 
       // Snap to grid if not holding a modifier key
-      if (!event.ctrlKey) {
+      if (!(event.ctrlKey || event.metaKey)) {
         extrusionDepth = Math.round(extrusionDepth * 4) / 4; // 0.25 unit snap
       }
 

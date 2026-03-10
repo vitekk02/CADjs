@@ -37,6 +37,10 @@ interface SketchContextMenuProps {
   onApplyConstraint: (type: ConstraintType, value?: number) => void;
   onDeleteConstraint?: (id: string) => void;
   onToggleFixPoint?: () => void;
+  onDeletePrimitive?: () => void;
+  onGetCurrentValue?: (type: ConstraintType) => number | undefined;
+  onValueChange?: (type: ConstraintType, value: number) => void;
+  onValueCancel?: () => void;
 }
 
 const SketchContextMenu: FC<SketchContextMenuProps> = ({
@@ -50,6 +54,10 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
   onApplyConstraint,
   onDeleteConstraint,
   onToggleFixPoint,
+  onDeletePrimitive,
+  onGetCurrentValue,
+  onValueChange,
+  onValueCancel,
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const [valueInputVisible, setValueInputVisible] = React.useState(false);
@@ -57,10 +65,11 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
   const [inputValue, setInputValue] = React.useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Focus input when value input becomes visible
+  // Focus and select all text when value input becomes visible
   useEffect(() => {
     if (valueInputVisible && inputRef.current) {
       inputRef.current.focus();
+      inputRef.current.select();
     }
   }, [valueInputVisible]);
 
@@ -120,8 +129,10 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
 
   const handleConstraintClick = (option: ConstraintOption) => {
     if (option.requiresValue) {
-      // Show value input
+      // Show value input, pre-filled with current value if available
       setPendingConstraintType(option.type);
+      const currentValue = onGetCurrentValue?.(option.type);
+      setInputValue(currentValue !== undefined ? currentValue.toFixed(2) : "");
       setValueInputVisible(true);
     } else {
       // Apply constraint directly
@@ -144,11 +155,23 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
       e.preventDefault();
       e.stopPropagation();
     } else if (e.key === "Escape") {
+      onValueCancel?.();
       setValueInputVisible(false);
       setPendingConstraintType(null);
       setInputValue("");
       e.preventDefault();
       e.stopPropagation();
+    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+      const step = e.shiftKey ? 0.1 : 1;
+      const current = parseFloat(inputValue) || 0;
+      const newVal = e.key === "ArrowUp" ? current + step : Math.max(0.01, current - step);
+      const newStr = newVal.toFixed(2);
+      setInputValue(newStr);
+      if (onValueChange && pendingConstraintType && newVal > 0) {
+        onValueChange(pendingConstraintType, newVal);
+      }
     }
   };
 
@@ -196,7 +219,16 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
               ref={inputRef}
               type="text"
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setInputValue(val);
+                if (onValueChange && pendingConstraintType) {
+                  const num = parseFloat(val);
+                  if (!isNaN(num) && num > 0) {
+                    onValueChange(pendingConstraintType, num);
+                  }
+                }
+              }}
               onKeyDown={handleValueKeyDown}
               className="w-20 px-2 py-1 text-sm bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500 focus:outline-none"
               placeholder="Value"
@@ -242,6 +274,18 @@ const SketchContextMenu: FC<SketchContextMenuProps> = ({
             <div className="px-3 py-2 text-sm text-gray-500">
               No constraints available
             </div>
+          )}
+          {onDeletePrimitive && primitiveIds.length > 0 && (
+            <button
+              onClick={() => {
+                onDeletePrimitive();
+                onClose();
+              }}
+              className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-gray-700 flex items-center justify-between border-t border-gray-700"
+            >
+              <span>Delete{primitiveIds.length > 1 ? ` (${primitiveIds.length})` : ""}</span>
+              <span className="text-xs text-gray-500">Del</span>
+            </button>
           )}
         </>
       )}

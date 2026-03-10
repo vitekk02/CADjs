@@ -8,26 +8,7 @@ import opencascade from "opencascade.js/dist/opencascade.full.js";
 import opencascadeWasm from "opencascade.js/dist/opencascade.full.wasm?url";
 import type { WorkerRequest, WorkerResponse } from "./occ-worker-types";
 import { collectTransferables } from "./geometry-reconstruction";
-import {
-  handleExtrude,
-  handleSweep,
-  handleLoft,
-  handleRevolve,
-  handleFillet,
-  handleChamfer,
-  handleBoolean,
-  handleEdgeAnalysis,
-  handlePreviewGeometry,
-  handleSketchToBrep,
-  handleSketchToProfiles,
-  handleProcessProfile,
-  handleUnifyCompound,
-  handleImportFile,
-  handleExportFile,
-  handleEdgeLength,
-  handleEdgeDirection,
-  handleSketchToWire,
-} from "./occ-worker-handlers";
+import { dispatchOccRequest } from "./occ-dispatch";
 
 let oc: OpenCascadeInstance | null = null;
 const cancelledIds = new Set<string>();
@@ -79,69 +60,7 @@ function handleMessage(request: WorkerRequest): void {
   }
 
   try {
-    let result: unknown;
-
-    switch (request.type) {
-      case "extrude":
-        result = handleExtrude(oc, request.payload);
-        break;
-      case "sweep":
-        result = handleSweep(oc, request.payload);
-        break;
-      case "loft":
-        result = handleLoft(oc, request.payload);
-        break;
-      case "revolve":
-        result = handleRevolve(oc, request.payload);
-        break;
-      case "fillet":
-        result = handleFillet(oc, request.payload);
-        break;
-      case "chamfer":
-        result = handleChamfer(oc, request.payload);
-        break;
-      case "boolean":
-        result = handleBoolean(oc, request.payload);
-        break;
-      case "edgeAnalysis":
-        result = handleEdgeAnalysis(oc, request.payload);
-        break;
-      case "previewGeometry":
-        result = handlePreviewGeometry(oc, request.payload);
-        break;
-      case "sketchToBrep":
-        result = handleSketchToBrep(oc, request.payload);
-        break;
-      case "sketchToProfiles":
-        result = handleSketchToProfiles(oc, request.payload);
-        break;
-      case "processProfile":
-        result = handleProcessProfile(oc, request.payload);
-        break;
-      case "unifyCompound":
-        result = handleUnifyCompound(oc, request.payload);
-        break;
-      case "importFile":
-        result = handleImportFile(oc, request.payload);
-        break;
-      case "exportFile":
-        result = handleExportFile(oc, request.payload);
-        break;
-      case "edgeLength":
-        result = handleEdgeLength(oc, request.payload);
-        break;
-      case "edgeDirection":
-        result = handleEdgeDirection(oc, request.payload);
-        break;
-      case "sketchToWire":
-        result = handleSketchToWire(oc, request.payload);
-        break;
-      default: {
-        const unknownRequest = request as WorkerRequest;
-        respond({ id: unknownRequest.id, status: "error", error: `Unknown request type: ${(unknownRequest as any).type}` });
-        return;
-      }
-    }
+    const result = dispatchOccRequest(oc, request.type, request.payload);
 
     // Check cancellation after operation
     if (cancelledIds.has(request.id)) {

@@ -78,7 +78,7 @@ const FileMenu: React.FC = () => {
           </svg>
         </button>
         {menuOpen && (
-          <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-600 rounded-md shadow-lg py-1 z-30 min-w-[200px]">
+          <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-600 rounded-md shadow-lg py-1 z-50 min-w-[200px]">
             <button
               className="w-full px-4 py-2 text-sm text-left hover:bg-gray-700 text-gray-200"
               onClick={handleImportClick}
@@ -95,24 +95,6 @@ const FileMenu: React.FC = () => {
             >
               Export as STEP (.step)
             </button>
-            <button
-              className={`w-full px-4 py-2 text-sm text-left text-gray-200 ${
-                hasElements ? "hover:bg-gray-700" : "text-gray-500 cursor-not-allowed"
-              }`}
-              disabled={!hasElements}
-              onClick={() => handleExport("stl")}
-            >
-              Export as STL (.stl)
-            </button>
-            <button
-              className={`w-full px-4 py-2 text-sm text-left text-gray-200 ${
-                hasElements ? "hover:bg-gray-700" : "text-gray-500 cursor-not-allowed"
-              }`}
-              disabled={!hasElements}
-              onClick={() => handleExport("iges")}
-            >
-              Export as IGES (.iges)
-            </button>
           </div>
         )}
       </div>
@@ -121,7 +103,7 @@ const FileMenu: React.FC = () => {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".step,.stp,.stl"
+        accept=".step,.stp"
         className="hidden"
         onChange={handleFileChange}
       />
