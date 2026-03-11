@@ -97,6 +97,9 @@ export async function differenceSelectedElements(
         occBrep: el.occBrep,
         isCompound,
         compoundBrepJson: isCompound ? (el.brep as CompoundBrep).toJSON() : undefined,
+        rotation: el.rotation
+          ? { x: el.rotation.x, y: el.rotation.y, z: el.rotation.z, order: el.rotation.order }
+          : undefined,
       };
     });
 

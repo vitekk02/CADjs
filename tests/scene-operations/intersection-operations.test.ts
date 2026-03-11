@@ -572,8 +572,17 @@ describe("intersection-operations", () => {
     });
 
     test("handles elements with rotation", async () => {
+      // Use 3D boxes that still overlap after rotation
+      const box1 = createBoxBrep(-2, -2, -2, 4, 4, 4);
+      const box2 = createBoxBrep(-2, -2, -2, 4, 4, 4);
+
+      elements[0].brep = box1;
+      elements[0].position = new THREE.Vector3(0, 0, 0);
       elements[0].rotation = new THREE.Euler(Math.PI / 4, 0, 0);
-      elements[1].rotation = new THREE.Euler(0, Math.PI / 2, 0);
+
+      elements[1].brep = box2;
+      elements[1].position = new THREE.Vector3(0, 0, 0);
+      elements[1].rotation = new THREE.Euler(0, Math.PI / 4, 0);
 
       const result = await intersectionSelectedElements(
         elements,
@@ -583,8 +592,9 @@ describe("intersection-operations", () => {
         objectsMap
       );
 
-      // Operation should still succeed
-      expect(result.nextIdCounter).toBe(6);
+      // Operation should still succeed — overlapping 3D boxes with rotation
+      expect(result).not.toBeNull();
+      expect(result!.nextIdCounter).toBe(6);
     });
   });
 

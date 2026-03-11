@@ -794,7 +794,18 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       setElements((prevElements) =>
         prevElements.map((element) => {
           if (element.nodeId === nodeId) {
-            return { ...element, brep: newBrep, position, occBrep, edgeGeometry, faceGeometry, vertexPositions };
+            const is3DOperation = featureUpdate?.type === "extrude" || featureUpdate?.type === "sweep" || featureUpdate?.type === "loft" || featureUpdate?.type === "revolve";
+            return {
+              ...element,
+              brep: newBrep,
+              position,
+              occBrep,
+              edgeGeometry,
+              faceGeometry,
+              vertexPositions,
+              // Clear sketchPlane after 3D operations so element is no longer treated as a flat profile
+              ...(is3DOperation ? { sketchPlane: undefined } : {}),
+            };
           }
           return element;
         })

@@ -36,6 +36,9 @@ export class ImportExportService {
           brepJson: el.brep.toJSON(),
           position: { x: el.position.x, y: el.position.y, z: el.position.z },
           occBrep: el.occBrep,
+          rotation: el.rotation
+            ? { x: el.rotation.x, y: el.rotation.y, z: el.rotation.z, order: el.rotation.order }
+            : undefined,
         })),
         format: "step",
       },
@@ -52,6 +55,9 @@ export class ImportExportService {
           brepJson: el.brep.toJSON(),
           position: { x: el.position.x, y: el.position.y, z: el.position.z },
           occBrep: el.occBrep,
+          rotation: el.rotation
+            ? { x: el.rotation.x, y: el.rotation.y, z: el.rotation.z, order: el.rotation.order }
+            : undefined,
         })),
         format: "stl",
       },
@@ -68,6 +74,9 @@ export class ImportExportService {
           brepJson: el.brep.toJSON(),
           position: { x: el.position.x, y: el.position.y, z: el.position.z },
           occBrep: el.occBrep,
+          rotation: el.rotation
+            ? { x: el.rotation.x, y: el.rotation.y, z: el.rotation.z, order: el.rotation.order }
+            : undefined,
         })),
         format: "iges",
       },

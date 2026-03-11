@@ -299,16 +299,15 @@ function postProcessResult(oc: OpenCascadeInstance, resultShape: any, rotation?:
 }
 
 export function handleBoolean(oc: OpenCascadeInstance, payload: BooleanRequest["payload"]): WorkerBooleanResult {
-  // Convert all operands to world-space OCC shapes
+  // Convert all operands to world-space OCC shapes (with rotation support)
   const shapes = payload.operands.map(op => {
-    if (op.occBrep) return occBrepToOCShapeHelper(oc, op.occBrep, op.position);
     // Handle compound BRep JSON — use unifiedBRep or first child if available
     let brepJson = op.brepJson;
     if ((brepJson as any)?.type === "compound") {
       const compoundJson = brepJson as any;
       brepJson = compoundJson.unifiedBRep || compoundJson.children?.[0] || brepJson;
     }
-    return brepToOCShapeHelper(oc, brepJson, op.position);
+    return buildWorldShape(oc, brepJson, op.position, op.occBrep, op.rotation);
   });
 
   if (shapes.length < 2) throw new Error("Need at least 2 operands for boolean");
@@ -599,9 +598,7 @@ export function handleExportFile(oc: OpenCascadeInstance, payload: ExportFileReq
   builder.MakeCompound(compound);
 
   for (const el of payload.elements) {
-    const shape = el.occBrep
-      ? occBrepToOCShapeHelper(oc, el.occBrep, el.position)
-      : brepToOCShapeHelper(oc, el.brepJson, el.position);
+    const shape = buildWorldShape(oc, el.brepJson, el.position, el.occBrep, el.rotation);
     builder.Add(compound, shape);
   }
 

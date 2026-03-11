@@ -102,6 +102,7 @@ export interface BooleanRequest extends WorkerRequestBase {
       occBrep?: string;
       isCompound?: boolean;
       compoundBrepJson?: CompoundBrepJSON;
+      rotation?: EulerJSON;
     }>;
     options?: {
       targetId?: string;
@@ -185,6 +186,7 @@ export interface ExportFileRequest extends WorkerRequestBase {
       brepJson: BrepJSON;
       position: Vec3;
       occBrep?: string;
+      rotation?: EulerJSON;
     }>;
     format: "step" | "stl" | "iges";
   };
