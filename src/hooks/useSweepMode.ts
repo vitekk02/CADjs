@@ -313,7 +313,7 @@ export function useSweepMode() {
       }
     } catch (error) {
       console.error("[useSweepMode] Sweep failed:", error);
-      showToast("Sweep failed", "error");
+      showToast(`Sweep failed: ${error instanceof Error ? error.message : "unknown error"}`, "error");
     }
 
     setState(prev => ({

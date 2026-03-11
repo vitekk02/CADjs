@@ -82,7 +82,7 @@ export function useExtrudeMode() {
   const dimSceneBodies = useCallback(() => {
     dimmedMaterialsRef.current.clear();
     elements.forEach((el) => {
-      if (isFlatShape(el.brep)) return; // Only dim 3D bodies, leave flat profiles visible
+      if (isFlatShape(el.brep) || el.sketchPlane) return; // Only dim 3D bodies, leave flat profiles visible
       const obj = getObject(el.nodeId);
       if (!obj) return;
       obj.traverse((child) => {
@@ -448,16 +448,23 @@ export function useExtrudeMode() {
         );
         previewMesh.renderOrder = 500;
 
-        // The cached geometry is a unit extrusion (depth=1) along the flat normal
-        // Scale the appropriate axis to match the desired depth
+        // The cached geometry is a unit extrusion (depth=1) along the flat normal.
+        // Scale along the normal direction using: M = I + (s-1) * (n ⊗ n)
+        // This correctly handles non-axis-aligned normals (e.g. fillet faces).
         const normal = getFlatNormal(originalBrepRef.current, element);
         const s = extrusionDepth * directionSign;
-        previewMesh.scale.set(
-          normal.x ? s : 1,
-          normal.y ? s : 1,
-          normal.z ? s : 1,
+        const nx = normal.x, ny = normal.y, nz = normal.z;
+        const f = s - 1;
+
+        previewMesh.matrixAutoUpdate = false;
+        const m = new THREE.Matrix4();
+        m.set(
+          1 + f * nx * nx, f * nx * ny,     f * nx * nz,     element.position.x,
+          f * ny * nx,     1 + f * ny * ny, f * ny * nz,     element.position.y,
+          f * nz * nx,     f * nz * ny,     1 + f * nz * nz, element.position.z,
+          0,               0,               0,               1,
         );
-        previewMesh.position.copy(element.position);
+        previewMesh.matrix.copy(m);
         previewMesh.userData.isPreview = true;
 
         if (scene) {
@@ -537,7 +544,7 @@ export function useExtrudeMode() {
         forceSceneUpdate();
       } catch (error) {
         console.error("Extrusion failed:", error);
-        showToast("Extrusion failed", "error");
+        showToast(`Extrusion failed: ${error instanceof Error ? error.message : "unknown error"}`, "error");
         // Restore original on failure
         restoreOriginalMesh();
       }
@@ -702,7 +709,7 @@ export function useExtrudeMode() {
         forceSceneUpdate();
       } catch (error) {
         console.error("Cut extrusion failed:", error);
-        showToast("Cut extrusion failed", "error");
+        showToast(`Cut extrusion failed: ${error instanceof Error ? error.message : "unknown error"}`, "error");
         restoreOriginalMesh();
       }
 
@@ -803,7 +810,7 @@ export function useExtrudeMode() {
       }
 
       // Only pick flat profiles — 3D bodies are dimmed and non-interactive
-      const flatElements = elements.filter(el => isFlatShape(el.brep));
+      const flatElements = elements.filter(el => isFlatShape(el.brep) || el.sketchPlane);
       const meshes = collectPickableMeshes(flatElements, getObject);
       const intersects = raycaster.intersectObjects(meshes, false);
       if (intersects.length > 0) {
@@ -888,7 +895,7 @@ export function useExtrudeMode() {
         raycaster.setFromCamera(mouse, camera);
 
         // Only hover-highlight flat profiles — 3D bodies are dimmed and non-interactive
-        const flatElements = elements.filter(el => isFlatShape(el.brep));
+        const flatElements = elements.filter(el => isFlatShape(el.brep) || el.sketchPlane);
         const meshes = collectPickableMeshes(flatElements, getObject);
         const intersects = raycaster.intersectObjects(meshes, false);
         if (intersects.length > 0) {

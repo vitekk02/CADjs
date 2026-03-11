@@ -160,18 +160,18 @@ export function useCombineMode(): UseCombineModeResult {
     if (!canCombine || !targetBody) return;
 
     const currentToolBodies = [...toolBodies];
-    const success = await combineSelectedElements(operationType, {
+    const result = await combineSelectedElements(operationType, {
       targetId: targetBody,
       toolIds: currentToolBodies,
       keepTools,
     });
 
-    if (!success) {
+    if (result !== true) {
       const opName = operationType === "join" ? "Join" : operationType === "cut" ? "Cut" : "Intersect";
-      showToast(`${opName} operation failed`, "error");
+      showToast(`${opName} failed: ${typeof result === "string" ? result : "unknown error"}`, "error");
       // Reset colors on failure
       resetAllColors();
-    } else if (keepTools) {
+    } else if (result === true && keepTools) {
       // Tool bodies survived — reset their color to default
       currentToolBodies.forEach((id) => setElementColor(id, BODY.default));
     }

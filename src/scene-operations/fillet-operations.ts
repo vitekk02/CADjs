@@ -11,6 +11,8 @@ export interface FilletResult {
   vertexPositions?: Float32Array;
   occBrep?: string;
   faceGeometry?: THREE.BufferGeometry;
+  success: boolean;
+  error?: string;
 }
 
 /**
@@ -53,10 +55,11 @@ export async function filletBRep(
       vertexPositions: raw.vertexPositions,
       occBrep: raw.occBrep,
       faceGeometry,
+      success: true,
     };
   } catch (error) {
     console.error("[filletBRep] Worker fillet operation failed:", error);
-    return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
+    return { brep, positionOffset: { x: 0, y: 0, z: 0 }, success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -100,9 +103,10 @@ export async function chamferBRep(
       vertexPositions: raw.vertexPositions,
       occBrep: raw.occBrep,
       faceGeometry,
+      success: true,
     };
   } catch (error) {
     console.error("[chamferBRep] Worker chamfer operation failed:", error);
-    return { brep, positionOffset: { x: 0, y: 0, z: 0 } };
+    return { brep, positionOffset: { x: 0, y: 0, z: 0 }, success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }

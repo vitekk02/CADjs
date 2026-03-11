@@ -92,7 +92,7 @@ export interface CadCoreContextType {
   unionSelectedElements: () => Promise<boolean>;
   differenceSelectedElements: () => Promise<boolean>;
   intersectionSelectedElements: () => Promise<boolean>;
-  combineSelectedElements: (opType: CombineOperationType, options: BooleanOperationOptions) => Promise<boolean>;
+  combineSelectedElements: (opType: CombineOperationType, options: BooleanOperationOptions) => Promise<boolean | string>;
   updateElementRotation: (nodeId: string, rotation: THREE.Euler) => void;
   getObject: (nodeId: string) => THREE.Object3D | undefined;
   getAllObjects: () => Map<string, THREE.Object3D>;
@@ -670,9 +670,9 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
   const combineSelectedElementsImpl = useCallback(async (
     opType: CombineOperationType,
     options: BooleanOperationOptions,
-  ): Promise<boolean> => {
+  ): Promise<boolean | string> => {
     const effectiveSelected = [options.targetId, ...options.toolIds];
-    if (effectiveSelected.length < 2) return false;
+    if (effectiveSelected.length < 2) return "need at least 2 elements";
 
     const opLabel = opType === "join" ? "Join" : opType === "cut" ? "Cut" : "Intersect";
     pushUndo(opLabel);
@@ -692,7 +692,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
         console.error(`${opLabel} operation failed`);
         undoStackRef.current = undoStackRef.current.slice(0, -1);
         setUndoRedoVersion((v) => v + 1);
-        return false;
+        return "operation returned no result";
       }
 
       setElements(result.updatedElements);
@@ -712,7 +712,7 @@ export const CadCoreProvider: React.FC<{ children: ReactNode }> = ({
       console.error(`${opLabel} error:`, error);
       undoStackRef.current = undoStackRef.current.slice(0, -1);
       setUndoRedoVersion((v) => v + 1);
-      return false;
+      return error instanceof Error ? error.message : "unknown error";
     } finally {
       setOperationPending(false);
     }

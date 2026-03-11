@@ -7,7 +7,7 @@ import {
   extrudeBRep,
   extrudeThreeJsObject,
 } from "../scene-operations/resize-operations";
-import { isDescendantOf, collectPickableMeshes } from "../scene-operations/mesh-operations";
+import { isDescendantOf, collectPickableMeshes, disposeObject3D } from "../scene-operations/mesh-operations";
 import { RESIZE } from "../theme";
 
 /**
@@ -129,6 +129,7 @@ export function useResizeMode() {
     if (scene) {
       resizeHandlesRef.current.forEach((handle) => {
         scene.remove(handle);
+        disposeObject3D(handle);
       });
       resizeHandlesRef.current = [];
     }
@@ -391,6 +392,7 @@ export function useResizeMode() {
         const axisRange = (bbox.max as any)[flatAxis] - (bbox.min as any)[flatAxis];
         const isFlat = Math.abs(axisRange) < 0.01;
         if (isFlat) {
+          ((handle as THREE.Mesh).material as THREE.Material).dispose();
           (handle as THREE.Mesh).material = new THREE.MeshBasicMaterial({
             color: RESIZE.previewWireframe,
           });
@@ -403,6 +405,7 @@ export function useResizeMode() {
             handle.position.z = dir > 0 ? bbox.max.z + 0.1 : bbox.min.z - 0.1;
           }
         } else {
+          ((handle as THREE.Mesh).material as THREE.Material).dispose();
           (handle as THREE.Mesh).material = new THREE.MeshBasicMaterial({
             color: RESIZE.handle,
           });

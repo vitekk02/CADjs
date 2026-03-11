@@ -13,6 +13,7 @@ import { Brep, CompoundBrep, Edge, Face, Vertex } from "../geometry";
 import { SceneElement } from "../scene-operations/types";
 import { useCadCore } from "./CoreContext";
 import { SCENE, LIGHTING, BODY, SELECTION, HELPERS, DRAW } from "../theme";
+import { disposeObject3D } from "../scene-operations/mesh-operations";
 
 export type ShapeType = "rectangle" | "triangle" | "circle" | "custom";
 
@@ -998,7 +999,8 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
         child.userData.isSketchPrimitive === true ||
         child.userData.primitiveId !== undefined ||
         child.userData.isMeasureOverlay === true ||
-        child.userData.isMeasureEdgeOverlay === true
+        child.userData.isMeasureEdgeOverlay === true ||
+        child.userData.isFilletEdgeOverlay === true
       ) {
         return false;
       }
@@ -1023,10 +1025,11 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
       return true;
     });
 
-    // Remove stale objects
+    // Remove stale objects and dispose GPU resources
     if (objectsToRemove.length > 0) {
       objectsToRemove.forEach((child) => {
         scene.remove(child);
+        disposeObject3D(child);
       });
     }
   }, [elements, getObject]);
@@ -1038,6 +1041,7 @@ export const CadVisualizerProvider: React.FC<{ children: ReactNode }> = ({
     // Clean up existing ground plane
     if (groundPlaneRef.current) {
       scene.remove(groundPlaneRef.current);
+      disposeObject3D(groundPlaneRef.current);
       groundPlaneRef.current = null;
     }
 

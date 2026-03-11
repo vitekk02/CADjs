@@ -217,7 +217,7 @@ export function useLoftMode() {
       }
     } catch (error) {
       console.error("[useLoftMode] Loft failed:", error);
-      showToast("Loft failed", "error");
+      showToast(`Loft failed: ${error instanceof Error ? error.message : "unknown error"}`, "error");
     }
 
     setState(prev => ({

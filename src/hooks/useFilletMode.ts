@@ -279,6 +279,14 @@ export function useFilletMode() {
           element.rotation,
         );
 
+        if (!result.success) {
+          const opName = state.operationType === "fillet" ? "Fillet" : "Chamfer";
+          console.warn(`[useFilletMode] ${opName} operation failed:`, result.error);
+          showToast(`${opName} failed: ${result.error ?? "unknown error"}`, "error");
+          setState((prev) => ({ ...prev, isApplying: false }));
+          return;
+        }
+
         const newPosition = new THREE.Vector3(
           element.position.x + result.positionOffset.x,
           element.position.y + result.positionOffset.y,
@@ -295,6 +303,7 @@ export function useFilletMode() {
         cleanupEdgeOverlay();
         cleanupPreview();
         restoreOriginalMesh();
+        resetBodyHover();
         setState({
           selectedElement: null,
           selectedEdgeIndices: [],
@@ -323,7 +332,9 @@ export function useFilletMode() {
       cleanupEdgeOverlay,
       cleanupPreview,
       restoreOriginalMesh,
+      resetBodyHover,
       forceSceneUpdate,
+      showToast,
     ],
   );
 

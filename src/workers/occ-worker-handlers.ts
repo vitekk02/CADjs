@@ -225,18 +225,7 @@ export function handleRevolve(oc: OpenCascadeInstance, payload: RevolveRequest["
 }
 
 export function handleFillet(oc: OpenCascadeInstance, payload: FilletRequest["payload"]): WorkerGeometryResult {
-  // Reconstruct world shape
-  let worldShape: any;
-  if (payload.occBrep) {
-    worldShape = occBrepToOCShapeHelper(oc, payload.occBrep, payload.position);
-  } else {
-    worldShape = brepToOCShapeHelper(oc, payload.brepJson, payload.position);
-  }
-
-  // Apply rotation if present
-  if (payload.rotation) {
-    worldShape = applyRotation(oc, worldShape, payload.rotation);
-  }
+  const worldShape = buildWorldShape(oc, payload.brepJson, payload.position, payload.occBrep, payload.rotation);
 
   const skipFix = !!payload.occBrep;
   const filleted = filletEdgesHelper(oc, worldShape, payload.edgeIndices, payload.radius, skipFix);
@@ -251,13 +240,7 @@ export function handleFillet(oc: OpenCascadeInstance, payload: FilletRequest["pa
 }
 
 export function handleChamfer(oc: OpenCascadeInstance, payload: ChamferRequest["payload"]): WorkerGeometryResult {
-  let worldShape: any;
-  if (payload.occBrep) {
-    worldShape = occBrepToOCShapeHelper(oc, payload.occBrep, payload.position);
-  } else {
-    worldShape = brepToOCShapeHelper(oc, payload.brepJson, payload.position);
-  }
-  if (payload.rotation) worldShape = applyRotation(oc, worldShape, payload.rotation);
+  const worldShape = buildWorldShape(oc, payload.brepJson, payload.position, payload.occBrep, payload.rotation);
 
   const skipFix = !!payload.occBrep;
   const chamfered = chamferEdgesHelper(oc, worldShape, payload.edgeIndices, payload.distance, skipFix);
@@ -303,7 +286,8 @@ function postProcessResult(oc: OpenCascadeInstance, resultShape: any, rotation?:
     localShape = applyRotation(oc, localShape, invRotation);
   }
 
-  const { brepJson } = ocShapeToBRepHelper(oc, localShape, true);
+  // localShape is already centered at origin — don't re-center (avoids tessellation bbox drift)
+  const { brepJson } = ocShapeToBRepHelper(oc, localShape, false);
   let occBrep: string | undefined;
   try { occBrep = serializeShapeHelper(oc, localShape); } catch { /* best effort */ }
 
@@ -362,13 +346,7 @@ export function handleBoolean(oc: OpenCascadeInstance, payload: BooleanRequest["
 }
 
 export function handleEdgeAnalysis(oc: OpenCascadeInstance, payload: EdgeAnalysisRequest["payload"]): WorkerEdgeAnalysisResult {
-  let shape: any;
-  if (payload.occBrep) {
-    shape = occBrepToOCShapeHelper(oc, payload.occBrep, payload.position);
-  } else {
-    shape = brepToOCShapeHelper(oc, payload.brepJson, payload.position);
-  }
-  if (payload.rotation) shape = applyRotation(oc, shape, payload.rotation);
+  const shape = buildWorldShape(oc, payload.brepJson, payload.position, payload.occBrep, payload.rotation);
 
   const skipFix = !!payload.occBrep;
   const edges = getEdgeLineSegmentsPerEdgeHelper(oc, shape, 0.003, skipFix, payload.allEdges);

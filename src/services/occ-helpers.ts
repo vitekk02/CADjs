@@ -56,7 +56,7 @@ function createPolygonWireHelper(oc: OpenCascadeInstance, points: gp_Pnt_3[]): T
     if (edge.IsDone()) wireBuilder.Add_1(edge.Edge());
   }
   if (wireBuilder.IsDone()) return oc.TopoDS.Wire_1(wireBuilder.Wire());
-  throw new Error("Failed to create wire");
+  throw new Error(`Failed to create wire: ${wireErrorToString(oc, wireBuilder)}`);
 }
 
 function isCircularFaceHelper(vertices: VertexJSON[]): { center: Vec3; radius: number; normal: Vec3 } | null {
@@ -477,7 +477,12 @@ export function extrudeShapeHelper(
 
   const prism = new oc.BRepPrimAPI_MakePrism_1(baseShape, extrusionVec, false, true);
   prism.Build(progressRange);
-  if (!prism.IsDone()) { extrusionVec.delete(); progressRange.delete(); throw new Error("Prism creation failed"); }
+  if (!prism.IsDone()) {
+    let detail = "unknown reason";
+    try { prism.Check(); } catch (e: any) { detail = e?.message || String(e); }
+    extrusionVec.delete(); progressRange.delete();
+    throw new Error(`Prism creation failed: ${detail}`);
+  }
 
   const result = prism.Shape();
   const fixer = new oc.ShapeFix_Shape_2(result);
@@ -540,6 +545,15 @@ export function sweepShapeAdvancedHelper(
     pipeShell.Build(new oc.Message_ProgressRange_1());
 
     if (!pipeShell.IsDone()) {
+      let reason = "unknown";
+      try {
+        const status = pipeShell.GetStatus();
+        if (status === oc.BRepBuilderAPI_PipeError.BRepBuilderAPI_PlaneNotIntersectGuide)
+          reason = "guide curve does not intersect profile plane";
+        else if (status === oc.BRepBuilderAPI_PipeError.BRepBuilderAPI_ImpossibleContact)
+          reason = "impossible contact between profile and path";
+      } catch { /* best effort */ }
+      console.warn(`[sweepShapeAdvanced] MakePipeShell failed: ${reason}, falling back to simple pipe`);
       pipeShell.delete();
       return sweepShapeSimpleHelper(oc, profileFace, pathWire);
     }
@@ -581,8 +595,10 @@ export function revolveShapeHelper(
 
   revolBuilder.Build(new oc.Message_ProgressRange_1());
   if (!revolBuilder.IsDone()) {
+    let detail = "unknown reason";
+    try { revolBuilder.Check(); } catch (e: any) { detail = e?.message || String(e); }
     origin.delete(); direction.delete(); axis.delete(); revolBuilder.delete();
-    throw new Error("BRepPrimAPI_MakeRevol: IsDone() returned false");
+    throw new Error(`Revolve failed: ${detail}`);
   }
 
   let result = revolBuilder.Shape();
@@ -610,7 +626,12 @@ export function loftShapesHelper(
     explorer.delete();
   }
   thruSections.Build(new oc.Message_ProgressRange_1());
-  if (!thruSections.IsDone()) { thruSections.delete(); throw new Error("ThruSections failed"); }
+  if (!thruSections.IsDone()) {
+    let detail = "unknown reason";
+    try { thruSections.Check(); } catch (e: any) { detail = e?.message || String(e); }
+    thruSections.delete();
+    throw new Error(`ThruSections failed: ${detail}`);
+  }
   let result = thruSections.Shape();
   const fixer = new oc.ShapeFix_Shape_2(result);
   fixer.Perform(new oc.Message_ProgressRange_1());
@@ -660,7 +681,7 @@ export function booleanUnionHelper(
   const args = new oc.TopTools_ListOfShape_1(); args.Append_1(fixed1); op.SetArguments(args);
   const tools = new oc.TopTools_ListOfShape_1(); tools.Append_1(fixed2); op.SetTools(tools);
   op.Build(progressRange);
-  if (!op.IsDone()) throw new Error("Boolean union failed");
+  if (!op.IsDone()) throw new Error(`Boolean union failed: ${collectBooleanDiagnostics(oc, op)}`);
   return fixAndOrient(oc, op.Shape());
 }
 
@@ -681,7 +702,7 @@ export function booleanDifferenceHelper(
   const args = new oc.TopTools_ListOfShape_1(); args.Append_1(fixedBase); op.SetArguments(args);
   const tools = new oc.TopTools_ListOfShape_1(); tools.Append_1(fixedTool); op.SetTools(tools);
   op.Build(progressRange);
-  if (!op.IsDone()) throw new Error("Boolean difference failed");
+  if (!op.IsDone()) throw new Error(`Boolean difference failed: ${collectBooleanDiagnostics(oc, op)}`);
   return fixAndOrient(oc, op.Shape());
 }
 
@@ -702,7 +723,7 @@ export function booleanIntersectionHelper(
   const args = new oc.TopTools_ListOfShape_1(); args.Append_1(fixed1); op.SetArguments(args);
   const tools = new oc.TopTools_ListOfShape_1(); tools.Append_1(fixed2); op.SetTools(tools);
   op.Build(progressRange);
-  if (!op.IsDone()) throw new Error("Boolean intersection failed");
+  if (!op.IsDone()) throw new Error(`Boolean intersection failed: ${collectBooleanDiagnostics(oc, op)}`);
   return fixAndOrient(oc, op.Shape());
 }
 
@@ -732,7 +753,10 @@ export function filletEdgesHelper(
     }
   }
   fillet.Build(progressRange);
-  if (!fillet.IsDone()) throw new Error("Fillet operation failed");
+  if (!fillet.IsDone()) {
+    const detail = collectFilletDiagnostics(oc, fillet);
+    throw new Error(detail);
+  }
   return fixAndOrient(oc, fillet.Shape());
 }
 
@@ -760,8 +784,86 @@ export function chamferEdgesHelper(
     }
   }
   chamfer.Build(progressRange);
-  if (!chamfer.IsDone()) throw new Error("Chamfer operation failed");
+  if (!chamfer.IsDone()) {
+    const detail = collectChamferDiagnostics(oc, chamfer);
+    throw new Error(detail);
+  }
   return fixAndOrient(oc, chamfer.Shape());
+}
+
+// ─── Wire diagnostics ─────────────────────────────────────────────
+
+function wireErrorToString(oc: OpenCascadeInstance, wire: any): string {
+  try {
+    const err = wire.Error();
+    if (err === oc.BRepBuilderAPI_WireError.BRepBuilderAPI_EmptyWire) return "no edges in wire";
+    if (err === oc.BRepBuilderAPI_WireError.BRepBuilderAPI_DisconnectedWire) return "edges are disconnected";
+    if (err === oc.BRepBuilderAPI_WireError.BRepBuilderAPI_NonManifoldWire) return "non-manifold wire";
+  } catch { /* best effort */ }
+  return "unknown reason";
+}
+
+// ─── Boolean diagnostics ──────────────────────────────────────────
+
+function collectBooleanDiagnostics(oc: OpenCascadeInstance, op: any): string {
+  const parts: string[] = [];
+  try { if (op.HasErrors()) parts.push("shape computation error"); } catch { /* best effort */ }
+  try { if (op.HasWarnings()) parts.push("with warnings"); } catch { /* best effort */ }
+  return parts.length > 0 ? parts.join(", ") : "unknown reason";
+}
+
+// ─── Fillet/Chamfer diagnostics ───────────────────────────────────
+
+function statusToString(oc: OpenCascadeInstance, status: any): string {
+  if (status === oc.ChFiDS_ErrorStatus.ChFiDS_WalkingFailure) return "radius too large for edge geometry";
+  if (status === oc.ChFiDS_ErrorStatus.ChFiDS_StartsolFailure) return "cannot compute fillet at this edge";
+  if (status === oc.ChFiDS_ErrorStatus.ChFiDS_TwistedSurface) return "fillet surface would self-intersect";
+  if (status === oc.ChFiDS_ErrorStatus.ChFiDS_Error) return "computation error";
+  return "unknown status";
+}
+
+function collectFilletDiagnostics(oc: OpenCascadeInstance, fillet: any): string {
+  const parts: string[] = [];
+  try {
+    const nFaulty = fillet.NbFaultyContours();
+    if (nFaulty > 0) {
+      for (let i = 1; i <= nFaulty; i++) {
+        const ic = fillet.FaultyContour(i);
+        try {
+          const status = fillet.StripeStatus(ic);
+          const name = statusToString(oc, status);
+          parts.push(name);
+        } catch { /* best effort */ }
+      }
+    }
+  } catch { /* best effort */ }
+  try {
+    const nVerts = fillet.NbFaultyVertices();
+    if (nVerts > 0) parts.push(`${nVerts} faulty vertex(es)`);
+  } catch { /* best effort */ }
+  return parts.length > 0 ? parts.join(", ") : "unknown reason";
+}
+
+function collectChamferDiagnostics(oc: OpenCascadeInstance, chamfer: any): string {
+  const parts: string[] = [];
+  try {
+    const nFaulty = chamfer.NbFaultyContours();
+    if (nFaulty > 0) {
+      for (let i = 1; i <= nFaulty; i++) {
+        const ic = chamfer.FaultyContour(i);
+        try {
+          const status = chamfer.StripeStatus(ic);
+          const name = statusToString(oc, status);
+          parts.push(name);
+        } catch { /* best effort */ }
+      }
+    }
+  } catch { /* best effort */ }
+  try {
+    const nVerts = chamfer.NbFaultyVertices();
+    if (nVerts > 0) parts.push(`${nVerts} faulty vertex(es)`);
+  } catch { /* best effort */ }
+  return parts.length > 0 ? parts.join(", ") : "unknown reason";
 }
 
 // ─── Edge analysis ────────────────────────────────────────────────

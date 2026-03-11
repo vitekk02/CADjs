@@ -140,6 +140,26 @@ export function createMeshFromPath(
   return group;
 }
 
+/**
+ * Recursively dispose all GPU resources (geometries + materials) on an Object3D tree.
+ * Call after removing an object from the scene to prevent memory leaks.
+ */
+export function disposeObject3D(obj: THREE.Object3D): void {
+  obj.traverse((child) => {
+    if ((child as any).geometry) {
+      (child as any).geometry.dispose();
+    }
+    if ((child as any).material) {
+      const material = (child as any).material;
+      if (Array.isArray(material)) {
+        material.forEach((m: THREE.Material) => m.dispose());
+      } else {
+        (material as THREE.Material).dispose();
+      }
+    }
+  });
+}
+
 export function getAllFaces(brep: Brep): Face[] {
   if ("children" in brep && Array.isArray((brep as any).children)) {
     const compoundBrep = brep as unknown as CompoundBrep;
